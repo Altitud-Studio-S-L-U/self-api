@@ -65,6 +65,7 @@
       "id": "local-worker",
       "title": "Resume authorized maintenance jobs",
       "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/7",
       "acceptance": [
         "Persist subscriptions, observed evidence, authorized jobs, and attempts without starting a worker on SDK import.",
         "Reconcile interrupted validation, owned containers and late durable outcomes without replaying a consumed approval.",
