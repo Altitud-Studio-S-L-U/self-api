@@ -1,4 +1,4 @@
-import { captureConsumer } from './consumer-files.js';
+import { captureConsumer, type ConsumerCapture } from './consumer-files.js';
 import { createHash } from 'node:crypto';
 import type { ConsumerInventory } from './consumer-contracts.js';
 import { inspectSource } from './inspect-source.js';
@@ -10,7 +10,11 @@ function object(value: unknown): value is Record<string, unknown> {
 
 /** Reads source and package metadata. Does not resolve imports or run project tools. */
 export async function scanConsumer(rootPath: string): Promise<ConsumerInventory> {
-  const captured = await captureConsumer(rootPath);
+  return scanCapturedConsumer(await captureConsumer(rootPath));
+}
+
+/** Analyzes captured strings without resolving imports or reading the live consumer. */
+export function scanCapturedConsumer(captured: ConsumerCapture): ConsumerInventory {
   const inspections = captured.files.map(inspectSource);
   const packages: ConsumerInventory['packages'][number][] = [];
   const validationCandidates: ConsumerInventory['validationCandidates'][number][] = [];
