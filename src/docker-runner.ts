@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { lstat, mkdir, mkdtemp, open, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
+import { loadLocalJson } from './local-file.js';
 
 export const DOCKER_PROFILE = Object.freeze({
-  id: 'node24-linux-amd64-v1',
+  id: 'node24-linux-amd64-v2',
   image: 'node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd',
   platform: 'linux/amd64',
   executable: '/usr/bin/docker',
@@ -19,6 +20,12 @@ export const DOCKER_PROFILE = Object.freeze({
   entrypoint: '/usr/local/bin/node',
   command: Object.freeze(['--test', '--test-reporter=tap', '--']),
   environment: Object.freeze({ PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' }),
+  journal: Object.freeze({
+    schemaVersion: 1, directory: 'containers', maxBytes: 16 * 1024,
+    beforeCreate: 'exclusive-fsynced-intent', beforeStart: 'exclusive-fsynced-created',
+    cleanup: 'verified-id-removal-record', recovery: 'guarded-remove-only',
+    labelPrefix: 'io.plumber.',
+  }),
   isolationArgs: Object.freeze([
     '--pull=never', '--network=none', '--read-only', '--user=65534:65534',
     '--cap-drop=ALL', '--security-opt=no-new-privileges=true', '--security-opt=seccomp=builtin',
@@ -33,6 +40,25 @@ export interface DockerValidationInput {
   readonly snapshotPath: string;
   readonly testPaths: readonly string[];
   readonly statePath: string;
+  readonly execution?: DockerExecutionIdentity & { readonly phase: 'baseline' | 'candidate' };
+  readonly guard?: () => void;
+}
+
+export interface DockerExecutionIdentity {
+  readonly intentId: string;
+  readonly receiptId: string;
+  readonly requestId: string;
+}
+
+export interface DockerRecoveryInput {
+  readonly statePath: string;
+  readonly execution: DockerExecutionIdentity;
+  readonly guard: () => void;
+}
+
+export interface DockerRecoveryResult {
+  readonly cleanup: 'removed' | 'not-created' | 'pending' | 'failed';
+  readonly reason?: string;
 }
 
 export interface DockerValidationResult {
@@ -177,6 +203,196 @@ function absent(result: ProcessResult, name: string): boolean {
     && new RegExp(`^(?:Error(?: response from daemon)?: )?No such (?:object|container): ${name}\\s*$`).test(result.stderr);
 }
 
+type Phase = 'baseline' | 'candidate';
+interface ContainerIntent extends DockerExecutionIdentity {
+  readonly schemaVersion: 1;
+  readonly phase: Phase;
+  readonly statePathSha256: string;
+  readonly profileSha256: string;
+  readonly owner: string;
+  readonly containerName: string;
+  readonly imageId: string;
+  readonly commandSha256: string;
+  readonly recordedAt: string;
+}
+interface CreationRecord { readonly schemaVersion: 1; readonly intentSha256: string; readonly containerId: string }
+interface RemovalRecord extends CreationRecord { readonly removedAt: string }
+interface Journal {
+  readonly directory: string;
+  readonly intent: ContainerIntent;
+  readonly intentSha256: string;
+  readonly created: CreationRecord | null;
+  readonly removed: RemovalRecord | null;
+}
+type Control = (args: readonly string[]) => Promise<ProcessResult>;
+const HASH = /^[a-f0-9]{64}$/u;
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
+const IMAGE_ID = /^sha256:[a-f0-9]{64}$/u;
+const PHASES: readonly Phase[] = ['baseline', 'candidate'];
+const INTENT_FIELDS = ['schemaVersion', 'intentId', 'receiptId', 'requestId', 'phase', 'statePathSha256', 'profileSha256', 'owner', 'containerName', 'imageId', 'commandSha256', 'recordedAt'];
+const OWNED_INSPECT_FORMAT = '{"id":{{json .Id}},"name":{{json .Name}},"imageId":{{json .Image}},"image":{{json .Config.Image}},'
+  + '"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}},"entrypoint":{{json .Config.Entrypoint}},"command":{{json .Config.Cmd}},'
+  + '"user":{{json .Config.User}},"workingDir":{{json .Config.WorkingDir}},"readonly":{{json .HostConfig.ReadonlyRootfs}},'
+  + '"network":{{json .HostConfig.NetworkMode}},"privileged":{{json .HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},'
+  + '"capDrop":{{json .HostConfig.CapDrop}},"securityOpt":{{json .HostConfig.SecurityOpt}}}';
+
+function hashJson(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
+function pathHash(path: string): string { return hashJson(process.platform === 'win32' ? path.toLowerCase() : path); }
+function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+function exactFields(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  return object(value) && Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field));
+}
+function timestamp(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+function executionIdentity(value: DockerExecutionIdentity): DockerExecutionIdentity {
+  if (!value || typeof value.intentId !== 'string' || !HASH.test(value.intentId)
+    || typeof value.requestId !== 'string' || !HASH.test(value.requestId)
+    || typeof value.receiptId !== 'string' || !UUID.test(value.receiptId)) throw new Error('Invalid execution identity.');
+  return { intentId: value.intentId, receiptId: value.receiptId, requestId: value.requestId };
+}
+function sameIdentity(value: ContainerIntent, identity: DockerExecutionIdentity): boolean {
+  return value.intentId === identity.intentId && value.receiptId === identity.receiptId && value.requestId === identity.requestId;
+}
+async function checkMarker(state: string, identity: DockerExecutionIdentity): Promise<void> {
+  const marker = await loadLocalJson(join(state, 'marker.json'), DOCKER_PROFILE.journal.maxBytes);
+  if (!object(marker) || marker.schemaVersion !== 1 || marker.receiptId !== identity.receiptId
+    || typeof marker.planId !== 'string' || !HASH.test(marker.planId)
+    || typeof marker.executionDigest !== 'string' || !HASH.test(marker.executionDigest) || !timestamp(marker.consumedAt)) {
+    throw new Error('Execution marker does not match.');
+  }
+}
+async function checkPrivateDirectory(path: string): Promise<string> {
+  const checked = await checkedPath(path, true);
+  if (process.platform !== 'win32' && ((await lstat(checked)).mode & 0o077) !== 0) throw new Error('Journal directory must be private.');
+  return checked;
+}
+async function optionalJson(path: string): Promise<unknown> {
+  try {
+    const attributes = await lstat(path);
+    if (!attributes.isFile() || attributes.isSymbolicLink()
+      || (process.platform !== 'win32' && (attributes.mode & 0o077) !== 0)) throw new Error('Journal must be a private regular file.');
+  } catch (error) {
+    if (object(error) && error.code === 'ENOENT') return undefined;
+    throw error;
+  }
+  return loadLocalJson(path, DOCKER_PROFILE.journal.maxBytes);
+}
+async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(directory, 'r');
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+async function writeJournal(path: string, value: unknown): Promise<void> {
+  const directory = await checkPrivateDirectory(dirname(path));
+  const json = `${JSON.stringify(value)}\n`;
+  if (Buffer.byteLength(json) > DOCKER_PROFILE.journal.maxBytes) throw new Error('Journal exceeds its byte limit.');
+  const handle = await open(path, 'wx', 0o600);
+  try { await handle.writeFile(json, 'utf8'); await handle.sync(); } finally { await handle.close(); }
+  await syncDirectory(directory);
+}
+function labels(journal: Pick<Journal, 'intent' | 'intentSha256'>): Record<string, string> {
+  const value = journal.intent;
+  const prefix = DOCKER_PROFILE.journal.labelPrefix;
+  return {
+    [DOCKER_PROFILE.ownershipLabel]: value.owner,
+    [`${prefix}request`]: value.requestId, [`${prefix}receipt`]: value.receiptId,
+    [`${prefix}phase`]: value.phase, [`${prefix}profile`]: value.profileSha256,
+    [`${prefix}intent`]: value.intentId, [`${prefix}journal`]: journal.intentSha256,
+  };
+}
+function checkCreation(value: unknown, intentSha256: string): CreationRecord {
+  if (!exactFields(value, ['schemaVersion', 'intentSha256', 'containerId']) || value.schemaVersion !== 1
+    || value.intentSha256 !== intentSha256 || typeof value.containerId !== 'string' || !HASH.test(value.containerId)) {
+    throw new Error('Invalid creation receipt.');
+  }
+  return value as unknown as CreationRecord;
+}
+function checkRemoval(value: unknown, intentSha256: string): RemovalRecord {
+  if (!exactFields(value, ['schemaVersion', 'intentSha256', 'containerId', 'removedAt']) || !timestamp(value.removedAt)) {
+    throw new Error('Invalid removal receipt.');
+  }
+  checkCreation({ schemaVersion: value.schemaVersion, intentSha256: value.intentSha256, containerId: value.containerId }, intentSha256);
+  return value as unknown as RemovalRecord;
+}
+async function readJournal(directory: string, state: string, phase: Phase, identity: DockerExecutionIdentity): Promise<Journal | null> {
+  const intent = await optionalJson(join(directory, `${phase}.intent.json`));
+  const created = await optionalJson(join(directory, `${phase}.created.json`));
+  const removed = await optionalJson(join(directory, `${phase}.cleanup.json`));
+  if (intent === undefined) {
+    if (created !== undefined || removed !== undefined) throw new Error('Journal intent is missing.');
+    return null;
+  }
+  if (!exactFields(intent, INTENT_FIELDS) || intent.schemaVersion !== 1 || intent.phase !== phase
+    || intent.statePathSha256 !== pathHash(state) || intent.profileSha256 !== hashJson(DOCKER_PROFILE)
+    || typeof intent.owner !== 'string' || !UUID.test(intent.owner) || intent.containerName !== `plumber-validation-${intent.owner}`
+    || typeof intent.imageId !== 'string' || !IMAGE_ID.test(intent.imageId)
+    || typeof intent.commandSha256 !== 'string' || !HASH.test(intent.commandSha256) || !timestamp(intent.recordedAt)
+    || !sameIdentity(intent as unknown as ContainerIntent, identity)) throw new Error('Journal identity does not match the attempt.');
+  const intentSha256 = hashJson(intent);
+  const createdReceipt = created === undefined ? null : checkCreation(created, intentSha256);
+  const removedReceipt = removed === undefined ? null : checkRemoval(removed, intentSha256);
+  if (createdReceipt && removedReceipt && createdReceipt.containerId !== removedReceipt.containerId) throw new Error('Journal container identities disagree.');
+  return { directory, intent: intent as unknown as ContainerIntent, intentSha256, created: createdReceipt, removed: removedReceipt };
+}
+function inspectedOwnedContainer(value: unknown, journal: Journal, state: string): string | null {
+  if (!object(value) || typeof value.id !== 'string' || !HASH.test(value.id) || value.name !== `/${journal.intent.containerName}`
+    || (journal.created !== null && value.id !== journal.created.containerId)
+    || (journal.removed !== null && value.id !== journal.removed.containerId)
+    || value.imageId !== journal.intent.imageId || value.image !== DOCKER_PROFILE.image
+    || !object(value.labels) || !Object.entries(labels(journal)).every(([key, expected]) => (value.labels as Record<string, unknown>)[key] === expected)
+    || JSON.stringify(value.entrypoint) !== JSON.stringify([DOCKER_PROFILE.entrypoint])
+    || !Array.isArray(value.command) || !value.command.every(item => typeof item === 'string') || hashJson(value.command) !== journal.intent.commandSha256
+    || value.user !== '65534:65534' || value.workingDir !== DOCKER_PROFILE.mountTarget
+    || value.readonly !== true || value.network !== 'none' || value.privileged !== false
+    || (value.capAdd !== null && (!Array.isArray(value.capAdd) || value.capAdd.length !== 0))
+    || JSON.stringify(value.capDrop) !== '["ALL"]' || !Array.isArray(value.securityOpt) || value.securityOpt.length !== 2
+    || !['no-new-privileges=true', 'seccomp=builtin'].every(item => (value.securityOpt as unknown[]).includes(item))
+    || !Array.isArray(value.mounts)) return null;
+  const mounts = value.mounts as unknown[];
+  const binds = mounts.filter(item => object(item) && item.Type === 'bind');
+  if (binds.length !== 1 || !object(binds[0]) || binds[0].Source !== join(state, journal.intent.phase)
+    || binds[0].Destination !== DOCKER_PROFILE.mountTarget || binds[0].RW !== false
+    || !mounts.every(item => object(item) && (item === binds[0] || (item.Type === 'tmpfs' && item.Destination === '/tmp')))) return null;
+  return value.id;
+}
+async function saveRemoval(journal: Journal, containerId: string): Promise<void> {
+  if (journal.removed !== null) {
+    if (journal.removed.containerId !== containerId) throw new Error('Removal identity changed.');
+    return;
+  }
+  await writeJournal(join(journal.directory, `${journal.intent.phase}.cleanup.json`), {
+    schemaVersion: 1, intentSha256: journal.intentSha256, containerId, removedAt: new Date().toISOString(),
+  } satisfies RemovalRecord);
+}
+async function removeJournalContainer(journal: Journal, state: string, control: Control, guard: () => void): Promise<DockerRecoveryResult> {
+  const target = journal.created?.containerId ?? journal.intent.containerName;
+  const inspect = (identity: string): Promise<ProcessResult> => control(['inspect', '--type', 'container', '--format', OWNED_INSPECT_FORMAT, identity]);
+  guard();
+  const existing = await inspect(target);
+  if (absent(existing, target)) {
+    if (journal.created === null) return { cleanup: 'pending', reason: 'creation-outcome-unknown' };
+    // The name is checked too: a replacement must not be mistaken for the recorded object.
+    const byName = await inspect(journal.intent.containerName);
+    if (!absent(byName, journal.intent.containerName)) return { cleanup: 'failed', reason: 'container-identity-mismatch' };
+    guard();
+    await saveRemoval(journal, journal.created.containerId);
+    return { cleanup: 'removed' };
+  }
+  if (existing.status !== 'exited' || existing.exitCode !== 0) return { cleanup: 'failed', reason: 'docker-inspection-unavailable' };
+  let containerId: string | null = null;
+  try { containerId = inspectedOwnedContainer(JSON.parse(existing.stdout) as unknown, journal, state); } catch { /* Fail closed on incomplete Docker identity. */ }
+  if (containerId === null) return { cleanup: 'failed', reason: 'container-identity-mismatch' };
+  guard();
+  await control(['rm', '--force', '--volumes', containerId]);
+  const afterId = await inspect(containerId);
+  const afterName = await inspect(journal.intent.containerName);
+  if (!absent(afterId, containerId) || !absent(afterName, journal.intent.containerName)) return { cleanup: 'failed', reason: 'container-removal-unconfirmed' };
+  guard();
+  await saveRemoval(journal, containerId);
+  return journal.created === null ? { cleanup: 'pending', reason: 'creation-outcome-unknown' } : { cleanup: 'removed' };
+}
+
 // This module-only process seam lets tests exercise deadlines and cleanup without Docker.
 export function createDockerValidationRunner(options: RunnerOptions): (input: DockerValidationInput) => Promise<DockerValidationResult> {
   return async input => {
@@ -189,6 +405,8 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
     let config: string | undefined;
     let containerName: string | undefined;
     let ownership: string | undefined;
+    let journal: Journal | undefined;
+    let createAttempted = false;
     let uncertainCreate = false;
     let result: DockerValidationResult;
     const control = (args: readonly string[], until = deadline): Promise<ProcessResult> =>
@@ -199,6 +417,17 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
     try {
       const paths = await preparePaths(input);
       state = paths.state;
+      const executionContext = input.execution === undefined ? undefined : {
+        ...executionIdentity(input.execution), phase: input.execution.phase,
+      };
+      if (executionContext !== undefined) {
+        if (!PHASES.includes(executionContext.phase) || paths.snapshot !== join(state, executionContext.phase)) throw new Error('Execution snapshot does not match its phase.');
+        await checkPrivateDirectory(state);
+        await checkMarker(state, executionContext);
+        // The caller binds requestId to its approved request; its potentially large body is not reparsed here.
+        await checkedPath(join(state, 'request.json'), false);
+      }
+      input.guard?.();
       temporary = await mkdtemp(join(state, '.docker-'));
       config = join(temporary, 'config');
       await mkdir(config, { mode: 0o700 });
@@ -211,16 +440,44 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
         if (image.stdout.trim() !== DOCKER_PROFILE.platform) return blocked('The pinned Docker image has an unsupported platform.');
         ownership = randomUUID();
         containerName = `plumber-validation-${ownership}`;
+        const command = [...DOCKER_PROFILE.command, ...paths.tests.map(path => `${DOCKER_PROFILE.mountTarget}/${path}`)];
+        if (executionContext !== undefined) {
+          const inspectedImage = await control(['image', 'inspect', '--format', '{{.Id}}', DOCKER_PROFILE.image]);
+          if (inspectedImage.status !== 'exited' || inspectedImage.exitCode !== 0 || !IMAGE_ID.test(inspectedImage.stdout.trim())) {
+            return preflightFailure(inspectedImage, 'The pinned Docker image identity could not be verified.');
+          }
+          const directory = join(state!, DOCKER_PROFILE.journal.directory);
+          try { await mkdir(directory, { mode: 0o700 }); }
+          catch (error) { if (!object(error) || error.code !== 'EEXIST') throw error; }
+          await checkPrivateDirectory(directory);
+          await syncDirectory(state!);
+          const intent: ContainerIntent = {
+            schemaVersion: 1, ...executionContext, statePathSha256: pathHash(state!), profileSha256: hashJson(DOCKER_PROFILE),
+            owner: ownership, containerName, imageId: inspectedImage.stdout.trim(),
+            commandSha256: hashJson(command), recordedAt: new Date().toISOString(),
+          };
+          input.guard?.();
+          await writeJournal(join(directory, `${executionContext.phase}.intent.json`), intent);
+          journal = { directory, intent, intentSha256: hashJson(intent), created: null, removed: null };
+        }
+        const containerLabels = journal === undefined ? { [DOCKER_PROFILE.ownershipLabel]: ownership } : labels(journal);
+        input.guard?.();
+        createAttempted = true;
         const create = await control([
-          'create', '--name', containerName, '--label', `${DOCKER_PROFILE.ownershipLabel}=${ownership}`,
+          'create', '--name', containerName, ...Object.entries(containerLabels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
           '--platform', DOCKER_PROFILE.platform, ...DOCKER_PROFILE.isolationArgs,
           '--mount', `type=bind,source=${paths.snapshot},target=${DOCKER_PROFILE.mountTarget},${DOCKER_PROFILE.mountOptions}`,
-          '--entrypoint', DOCKER_PROFILE.entrypoint, DOCKER_PROFILE.image, ...DOCKER_PROFILE.command,
-          ...paths.tests.map(path => `${DOCKER_PROFILE.mountTarget}/${path}`),
+          '--entrypoint', DOCKER_PROFILE.entrypoint, DOCKER_PROFILE.image, ...command,
         ]);
         uncertainCreate = create.status !== 'exited';
         if (create.status !== 'exited' || create.exitCode !== 0) return preflightFailure(create, 'Docker could not create the validation container.');
         if (!/^[a-f0-9]{64}\s*$/.test(create.stdout)) return blocked('Docker returned an invalid container identity.');
+        if (journal !== undefined) {
+          const created: CreationRecord = { schemaVersion: 1, intentSha256: journal.intentSha256, containerId: create.stdout.trim() };
+          await writeJournal(join(journal.directory, `${journal.intent.phase}.created.json`), created);
+          journal = { ...journal, created };
+        }
+        input.guard?.();
         const execution = await captureProcess(options.spawn, ['start', '--attach', create.stdout.trim()], config!, deadline, DOCKER_PROFILE.maxOutputBytes);
         if (execution.status === 'exited') {
           const inspect = await control(['inspect', '--type', 'container', '--format', '{{json .State}}', create.stdout.trim()]);
@@ -250,17 +507,30 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
       result = blocked('Validation inputs or local run state are not usable.');
     }
 
-    if (containerName !== undefined && config !== undefined) {
+    if ((createAttempted || journal !== undefined) && containerName !== undefined && config !== undefined) {
       const cleanupDeadline = Date.now() + (options.cleanupTimeoutMs ?? DOCKER_PROFILE.cleanupTimeoutMs);
       let removed = false;
       try {
-        const inspect = ['inspect', '--type', 'container', '--format', '{{json .Config.Labels}}', containerName];
-        const existing = await control(inspect, cleanupDeadline);
-        if (absent(existing, containerName)) removed = true;
-        else if (existing.status === 'exited' && existing.exitCode === 0
-          && (JSON.parse(existing.stdout) as Record<string, unknown>)[DOCKER_PROFILE.ownershipLabel] === ownership) {
-          await control(['rm', '--force', '--volumes', containerName], cleanupDeadline);
-          removed = absent(await control(inspect, cleanupDeadline), containerName);
+        input.guard?.();
+        if (journal !== undefined) {
+          const cleanup = await removeJournalContainer(journal, state!, args => control(args, cleanupDeadline), input.guard ?? (() => {}));
+          removed = cleanup.cleanup === 'removed';
+        } else {
+          const inspect = (identity: string): Promise<ProcessResult> => control(['inspect', '--type', 'container', '--format',
+            '{"id":{{json .Id}},"labels":{{json .Config.Labels}}}', identity], cleanupDeadline);
+          const existing = await inspect(containerName);
+          if (absent(existing, containerName)) removed = true;
+          else if (existing.status === 'exited' && existing.exitCode === 0) {
+            const inspected: unknown = JSON.parse(existing.stdout);
+            if (object(inspected) && typeof inspected.id === 'string' && HASH.test(inspected.id)
+              && object(inspected.labels) && inspected.labels[DOCKER_PROFILE.ownershipLabel] === ownership) {
+              input.guard?.();
+              await control(['rm', '--force', '--volumes', inspected.id], cleanupDeadline);
+              const afterId = await inspect(inspected.id);
+              const afterName = await inspect(containerName);
+              removed = absent(afterId, inspected.id) && absent(afterName, containerName);
+            }
+          }
         }
       } catch { /* Unknown ownership or daemon failure must not become a successful cleanup. */ }
       result.containerName = containerName;
@@ -274,6 +544,7 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
     }
     if (temporary !== undefined && state !== undefined) {
       try {
+        input.guard?.();
         const target = await realpath(temporary);
         const attributes = await lstat(temporary);
         if (attributes.isSymbolicLink() || target !== temporary || dirname(target) !== state || !basename(target).startsWith('.docker-')) {
@@ -291,3 +562,66 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
 }
 
 export const runDockerValidation = createDockerValidationRunner({ spawn, platform: process.platform, arch: process.arch });
+
+/** The guard is the caller's live recovery lease check; this function never authorizes or starts work. */
+export function createDockerRecoveryRunner(options: RunnerOptions): (input: DockerRecoveryInput) => Promise<DockerRecoveryResult> {
+  return async input => {
+    let temporary: string | undefined;
+    let state: string | undefined;
+    let result: DockerRecoveryResult;
+    try {
+      if (typeof input.guard !== 'function') throw new Error('A recovery ownership guard is required.');
+      const identity = executionIdentity(input.execution);
+      input.guard();
+      try { state = await checkPrivateDirectory(input.statePath); }
+      catch (error) {
+        if (object(error) && error.code === 'ENOENT') return { cleanup: 'not-created' };
+        throw error;
+      }
+      await checkMarker(state, identity);
+      const directory = join(state, DOCKER_PROFILE.journal.directory);
+      try { await checkPrivateDirectory(directory); }
+      catch (error) {
+        if (object(error) && error.code === 'ENOENT') return { cleanup: 'not-created' };
+        throw error;
+      }
+      const journals: Journal[] = [];
+      for (const phase of PHASES) {
+        const journal = await readJournal(directory, state, phase, identity);
+        if (journal !== null) journals.push(journal);
+      }
+      if (journals.length === 0) return { cleanup: 'not-created' };
+      await checkedPath(join(state, 'request.json'), false);
+      if (options.platform !== 'linux' || options.arch !== 'x64') {
+        return { cleanup: 'failed', reason: 'Docker recovery currently requires a Linux x64 host.' };
+      }
+      input.guard();
+      temporary = await mkdtemp(join(state, '.docker-recovery-'));
+      const config = join(temporary, 'config');
+      await mkdir(config, { mode: 0o700 });
+      const deadline = Date.now() + (options.cleanupTimeoutMs ?? DOCKER_PROFILE.cleanupTimeoutMs);
+      const control: Control = args => captureProcess(options.spawn, args, config, deadline, DOCKER_PROFILE.maxControlOutputBytes);
+      result = { cleanup: 'removed' };
+      for (const journal of journals) {
+        const recovered = await removeJournalContainer(journal, state, control, input.guard);
+        if (recovered.cleanup === 'failed') { result = recovered; break; }
+        if (recovered.cleanup === 'pending') result = recovered;
+      }
+    } catch {
+      result = { cleanup: 'failed', reason: 'Recovery ownership or durable container evidence could not be verified.' };
+    }
+    if (temporary !== undefined && state !== undefined) {
+      try {
+        input.guard();
+        const target = await realpath(temporary);
+        if ((await lstat(temporary)).isSymbolicLink() || target !== temporary || dirname(target) !== state || !basename(target).startsWith('.docker-recovery-')) {
+          throw new Error('Recovery state changed.');
+        }
+        await rm(target, { recursive: true, force: false });
+      } catch { result = { cleanup: 'failed', reason: 'Could not remove the owned temporary recovery configuration.' }; }
+    }
+    return result;
+  };
+}
+
+export const recoverDockerValidation = createDockerRecoveryRunner({ spawn, platform: process.platform, arch: process.arch });

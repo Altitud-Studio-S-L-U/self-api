@@ -8,11 +8,11 @@ import { analyzeImpact } from './impact.js';
 import type { ImpactReport } from './impact.js';
 import type { ConsumerInventory } from './consumer-contracts.js';
 import { createMigrationPlan } from './migration-plan.js';
-import type { MigrationPlan } from './migration-plan.js';
 import { loadLocalJson } from './local-file.js';
-import { createInterface } from 'node:readline/promises';
 import { prepareMigrationValidation, approveMigrationValidation, executeMigrationValidation } from './migration-validation.js';
-import type { MigrationValidationRequest } from './migration-validation.js';
+import { runWorkerCli } from './worker-cli.js';
+import { escapeTerminal, jsonLine, renderPlan, renderValidation, confirmLocalRequest } from './cli-presentation.js';
+import { runJobCli } from './job-cli.js';
 
 interface CliOptions {
   readonly compare?: typeof compareOpenApi;
@@ -34,6 +34,16 @@ const help = `Usage: plumber compare <base.json> <revision.json> --engine <path>
        plumber validation-plan <base.json> <revision.json> <plan-options> --test <relative-test-file> [--json]
        plumber approve <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory>
        plumber validate <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory> --approval <receipt-id> [--json]
+       plumber subscribe <source.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
+       plumber worker --once --state <directory> --engine <path> [--subscription <id>] [--json]
+       plumber subscriptions --state <directory> [--json]
+       plumber jobs --state <directory> [--json]
+       plumber job-plan <job-id> --state <directory> --engine <path> --recipe <path> --test <file> [--json]
+       plumber job-approve <job-id> --state <directory> --engine <path> --recipe <path> --test <file>
+       plumber job-queue <job-id> --state <directory> --engine <path> --recipe <path> --test <file> --approval <receipt-id> [--json]
+       plumber run-approved --once --state <directory> --engine <path> [--intent <id>] [--limit <1-10>] [--json]
+       plumber recover-approved --state <directory> [--limit <1-10>] [--json]
+       plumber executions --state <directory> [--json]
 
 Compare local OpenAPI JSON contracts using an explicitly selected oasdiff executable.
 
@@ -41,7 +51,7 @@ Options:
   --engine <path>  Path to the local oasdiff executable (required).
   --consumer <directory>  Consumer repository to inspect without executing code.
   --provider-base-url <url>  Explicit HTTP(S) provider origin and optional base path.
-  --recipe <path>  Explicit local migration decisions and exact edits (plan only).
+  --recipe <path>  Explicit local migration decisions and exact edits.
   --test <path>    Captured Node test file; repeat to select multiple tests.
   --state <path>   Private local state outside the consumer checkout.
   --approval <id>  Single-use approval from an explicit approve action.
@@ -62,17 +72,12 @@ approve requires a terminal confirmation of the exact request; it never starts v
 validate runs approved tests against isolated copies using the fixed Linux x64 Docker profile.
 validate exits 0 only when both baseline and candidate pass, 1 for completed failures/improvement,
 or 2 for invalid authorization/unavailable execution. It never changes the live consumer or publishes.
+job-approve requires the same explicit terminal review; job-queue only persists existing authorization.
+run-approved defaults to one queued intent and never retries an interrupted attempt.
+recover-approved reconciles expired/interrupted intents; it cannot execute tests or grant approval.
+Execution passes exit 0 for no work or all passing outcomes, 1 for completed failures/improvement,
+and 2 for blocked, interrupted, or unavailable execution. JSON artifacts are private local data.
 `;
-
-function escapeTerminal(text: string): string {
-  // Contract and engine text must not control the terminal or reorder its output.
-  return text.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/gu,
-    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
-}
-
-function jsonLine(value: unknown): string {
-  return `${escapeTerminal(JSON.stringify(value))}\n`;
-}
 
 function renderReport(report: ComparisonReport, withConsumerEvidence = false): string {
   const summary = report.status === 'breaking-changes'
@@ -124,52 +129,17 @@ function renderImpact(report: ImpactReport): string {
   return `${renderReport(report.comparison, true)}${renderInventory(report.inventory)}Potentially affected changes: ${report.matches.length}\n${links.length ? `${links.join('\n')}\n` : ''}Unmapped changes: ${report.unmappedChangeIndexes.length}\nConclusion: review required; no migration or consumer compatibility has been validated.\n`;
 }
 
-function renderPlan(plan: MigrationPlan): string {
-  const lines = [
-    `Migration proposal: ${plan.id}`,
-    escapeTerminal(plan.summary),
-    `Status: ${plan.status}`,
-    `Authorization: ${plan.authorization}`,
-    `Validation: ${plan.validation}; consumer tests have not run.`,
-    'Consumer files modified: no. Consumer code executed: no.',
-  ];
-  for (const decision of plan.decisions) lines.push(`- ${escapeTerminal(decision.question)} ${escapeTerminal(decision.answer?.trim() || '(pending)')}`);
-  for (const requirement of plan.requirements) lines.push(`- Decision ${escapeTerminal(requirement.id)}: ${escapeTerminal(requirement.question)}`);
-  for (const file of plan.files) lines.push(`- Proposed file: ${escapeTerminal(file.path)} (${file.beforeSha256} -> ${file.afterSha256})`);
-  lines.push('Use --json for the exact local before/after previews. They contain source code and must remain local.');
-  return `${lines.join('\n')}\n`;
-}
-
-function renderValidation(request: MigrationValidationRequest, includeSource = false): string {
-  const lines = [renderPlan(request.plan).trimEnd(), `Validation request: ${request.id}`,
-    `Profile: ${escapeTerminal(JSON.stringify(request.spec.profile))}`,
-    'Actions: baseline tests, then candidate tests in separate captured copies.',
-    'No dependency installation, live checkout writes, network access, or Git publication.',
-    'Only captured JS/TS source and package manifests are available; other data/dependencies are omitted.',
-    `Command in each copy: node ${request.spec.profile.command.join(' ')} ${request.spec.testPaths.map(path => escapeTerminal(JSON.stringify(`/workspace/${path}`))).join(' ')}`,
-    'Local approval expires after 15 minutes and permits one attempt, including failures.',
-  ];
-  if (includeSource) {
-    for (const file of request.plan.files) {
-      lines.push(`Before: ${escapeTerminal(file.path)}`, ...file.before.split('\n').map(line => `- ${escapeTerminal(line)}`));
-      lines.push(`After: ${escapeTerminal(file.path)}`, ...file.after.split('\n').map(line => `+ ${escapeTerminal(line)}`));
-    }
-  }
-  return `${lines.join('\n')}\n`;
-}
-
-async function confirmLocalRequest(requestId: string): Promise<boolean> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new PlumberError('INVALID_INPUT', 'Approval requires an interactive terminal; there is no implicit or piped confirmation.');
-  }
-  const terminal = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const answer = await terminal.question(`Type the exact validation request ID to authorize one attempt (anything else cancels):\n${requestId}\n> `);
-    return answer.trim() === requestId;
-  } finally { terminal.close(); }
-}
-
 export async function runCli(args: string[], options: CliOptions = {}): Promise<number> {
+  if (args.includes('--help') || args.includes('-h')) {
+    (options.stdout ?? ((text: string) => { process.stdout.write(text); }))(help);
+    return 0;
+  }
+  if (['subscribe', 'worker', 'subscriptions', 'jobs'].includes(args[0] ?? '')) {
+    return runWorkerCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (['job-plan', 'job-approve', 'job-queue', 'run-approved', 'recover-approved', 'executions'].includes(args[0] ?? '')) {
+    return runJobCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });
   let parsed;

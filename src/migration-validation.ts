@@ -10,6 +10,7 @@ import type { ApprovalReceipt } from './approval-store.js';
 import { DOCKER_PROFILE, isSupportedDockerTestPath, runDockerValidation } from './docker-runner.js';
 import type { DockerValidationResult } from './docker-runner.js';
 import { PlumberError } from './errors.js';
+import { persistValidationOutcome } from './validation-outcome.js';
 
 export interface MigrationValidationOptions extends MigrationPlanOptions {
   readonly testPaths: readonly string[];
@@ -158,8 +159,15 @@ export async function executeMigrationValidation(input: {
   options: MigrationValidationOptions;
   statePath: string;
   receiptId: string;
+  intentId?: string;
+  guard?: () => void;
 }): Promise<MigrationValidationResult> {
+  if (input.intentId !== undefined && (typeof input.intentId !== 'string' || !/^[a-f0-9]{64}$/u.test(input.intentId))) {
+    invalid('Execution intent identifiers must be canonical hashes.');
+  }
+  input.guard?.();
   const { request, captured } = await prepare(input.options);
+  input.guard?.();
   const { attemptPath } = await consumeApproval({
     statePath: input.statePath,
     consumerRoot: input.options.consumerRoot,
@@ -168,16 +176,23 @@ export async function executeMigrationValidation(input: {
     executionDigest: request.executionDigest,
     policyDigest: request.policyDigest,
   });
+  input.guard?.();
   // Snapshots use captured bytes; the live checkout is never a container mount.
   await writeFile(join(attemptPath, 'request.json'), JSON.stringify(request), { flag: 'wx', mode: 0o600 });
   const baselinePath = join(attemptPath, 'baseline');
   const candidatePath = join(attemptPath, 'candidate');
   await stageSnapshot(baselinePath, captured);
   await stageSnapshot(candidatePath, captured, request.plan);
-  const baseline = await runDockerValidation({ snapshotPath: baselinePath, testPaths: request.spec.testPaths, statePath: attemptPath });
+  const execution = { intentId: input.intentId ?? createHash('sha256').update(input.receiptId).digest('hex'), receiptId: input.receiptId, requestId: request.id };
+  const guard = input.guard ?? (() => {});
+  guard();
+  const baseline = await runDockerValidation({ snapshotPath: baselinePath, testPaths: request.spec.testPaths, statePath: attemptPath,
+    execution: { ...execution, phase: 'baseline' }, guard });
   let candidate: DockerValidationResult | undefined;
   if (completed(baseline)) {
-    candidate = await runDockerValidation({ snapshotPath: candidatePath, testPaths: request.spec.testPaths, statePath: attemptPath });
+    guard();
+    candidate = await runDockerValidation({ snapshotPath: candidatePath, testPaths: request.spec.testPaths, statePath: attemptPath,
+      execution: { ...execution, phase: 'candidate' }, guard });
   }
   let status: MigrationValidationResult['status'] = 'blocked';
   if (completed(baseline) && candidate && completed(candidate)) {
@@ -189,6 +204,7 @@ export async function executeMigrationValidation(input: {
     schemaVersion: 1, requestId: request.id, receiptId: input.receiptId, status,
     baseline, ...(candidate ? { candidate } : {}), consumerModified: false, publication: 'not-authorized',
   };
-  await writeFile(join(attemptPath, 'result.json'), JSON.stringify(result), { flag: 'wx', mode: 0o600 });
+  guard();
+  await persistValidationOutcome({ attemptPath, result, ...(input.intentId ? { intentId: input.intentId } : {}) });
   return result;
 }
