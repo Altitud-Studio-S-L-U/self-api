@@ -18,16 +18,24 @@
   "bin": {
     "plumber": "./dist/cli.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
+    "dev": "node tooling/development.mjs status",
+    "dev:check": "node tooling/development.mjs check",
     "engine:setup": "node tooling/setup-oasdiff.mjs",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test test/*.test.mjs",
+    "test:isolated": "pnpm build && node --test --test-concurrency=1 integration/*.test.mjs",
     "check": "pnpm typecheck && pnpm test"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@babel/parser": "8.0.6"
   }
 }

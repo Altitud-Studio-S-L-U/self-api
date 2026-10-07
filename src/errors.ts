@@ -1,6 +1,8 @@
 export type PlumberErrorCode =
   | 'INVALID_INPUT'
   | 'UNSUPPORTED_CONTRACT'
+  | 'STATE_LIMIT'
+  | 'LEASE_LOST'
   | 'ENGINE_UNAVAILABLE'
   | 'ENGINE_FAILED';
 
