@@ -136,6 +136,8 @@ Use transactions and durable identifiers for source transitions and consumer att
 
 Do not overwrite human commits on a generated branch. A changed base requires applicability checks and renewed validation. New upstream versions are reconciled from the last adopted consumer state; they do not erase unfinished migrations. Retry transient transport failures within limits; stop on semantic uncertainty, invalid credentials, conflicting changes, or exhausted budgets.
 
+The initial publication slice is a local preflight, not publication authorization. Reconstruct the completed validation request, compare durable outcomes, and require captured source/manifests to match raw HEAD blobs and the index in both directions. Bind candidate edits to the local root, commit, tree, blob modes and hashes; do not claim whole-repository compatibility from the bounded source profile. The destination and remote base remain unverified. The following slice must resolve repository identity and base through the customer's authorized GitHub connection, issue separate publication authorization, and reconcile uncertain writes. Never use a validation receipt as permission to send code or create a branch/PR.
+
 Report source freshness, execution status, and adoption separately. Emit meaningful Slack transitions and update the existing run conversation rather than creating repeated alerts. Cloud subscription entitlements are enforced by the cloud; local clock changes must not extend the server-managed trial.
 
 ## 11. Validation and integrity

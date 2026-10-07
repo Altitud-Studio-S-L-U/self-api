@@ -13,6 +13,7 @@ import { prepareMigrationValidation, approveMigrationValidation, executeMigratio
 import { runWorkerCli } from './worker-cli.js';
 import { escapeTerminal, jsonLine, renderPlan, renderValidation, confirmLocalRequest } from './cli-presentation.js';
 import { runJobCli } from './job-cli.js';
+import { runPublicationCli } from './publication-cli.js';
 
 interface CliOptions {
   readonly compare?: typeof compareOpenApi;
@@ -44,6 +45,7 @@ const help = `Usage: plumber compare <base.json> <revision.json> --engine <path>
        plumber run-approved --once --state <directory> --engine <path> [--intent <id>] [--limit <1-10>] [--json]
        plumber recover-approved --state <directory> [--limit <1-10>] [--json]
        plumber executions --state <directory> [--json]
+       plumber publication-plan <intent-id> --state <directory> --git <absolute-executable> --engine <path> --repository OWNER/REPO --base <branch> [--json]
 
 Compare local OpenAPI JSON contracts using an explicitly selected oasdiff executable.
 
@@ -77,6 +79,8 @@ run-approved defaults to one queued intent and never retries an interrupted atte
 recover-approved reconciles expired/interrupted intents; it cannot execute tests or grant approval.
 Execution passes exit 0 for no work or all passing outcomes, 1 for completed failures/improvement,
 and 2 for blocked, interrupted, or unavailable execution. JSON artifacts are private local data.
+publication-plan exits 0 for a local Git-bound candidate or 2 for unavailable/invalid evidence.
+It does not access GitHub, verify the remote base, grant publication approval, or create a branch/PR.
 `;
 
 function renderReport(report: ComparisonReport, withConsumerEvidence = false): string {
@@ -139,6 +143,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   }
   if (['job-plan', 'job-approve', 'job-queue', 'run-approved', 'recover-approved', 'executions'].includes(args[0] ?? '')) {
     return runJobCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (args[0] === 'publication-plan') {
+    return runPublicationCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
   }
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });
