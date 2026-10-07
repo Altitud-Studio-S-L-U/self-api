@@ -1,0 +1,52 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Fictional Payments Sandbox",
+    "version": "2026-02",
+    "description": "Test-only GET API. Header version 2026-01 is retired with HTTP 410. The existing caller currency is now required. Decimal amount.value denotes EUR/USD major units of amount.currency_code with exactly two fractional digits, exactly 100 minor units per major unit."
+  },
+  "servers": [{ "url": "http://127.0.0.1:43127" }],
+  "paths": {
+    "/payments/{id}": {
+      "get": {
+        "operationId": "getPayment",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "X-Api-Version", "in": "header", "required": true, "schema": { "type": "string", "enum": ["2026-02"] } },
+          { "name": "currency", "in": "query", "required": true, "schema": { "type": "string", "enum": ["EUR", "USD"] } }
+        ],
+        "security": [{ "sandboxToken": [] }],
+        "responses": {
+          "200": {
+            "description": "The decimal amount is in major currency units. Consumers must preserve exact minor units without floating-point rounding.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["id", "amount"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "amount": {
+                      "type": "object",
+                      "required": ["value", "currency_code"],
+                      "properties": {
+                        "value": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.[0-9]{2}$" },
+                        "currency_code": { "type": "string", "enum": ["EUR", "USD"] }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid request, missing currency or unsupported API version" },
+          "401": { "description": "Invalid sandbox credential" },
+          "410": { "description": "API version retired" },
+          "429": { "description": "Rate limit; Retry-After does not authorize an automatic retry" },
+          "503": { "description": "Provider unavailable" }
+        }
+      }
+    }
+  },
+  "components": { "securitySchemes": { "sandboxToken": { "type": "http", "scheme": "bearer" } } }
+}

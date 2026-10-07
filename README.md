@@ -146,6 +146,8 @@ The MCP fixture changes both an input and a parsed output. Expect comparison exi
 
 The comparison engine must be installed before checks; missing infrastructure fails explicitly rather than skipping coverage. The package check reuses the cached dependency versions and performs no registry publication. The Docker suite requires its pinned image to be provisioned separately; see the [execution prerequisites](docs/local-workflow.md#approve-and-validate-captured-copies).
 
+The [fictional payments scenarios](docs/local-workflow.md#exercise-a-fictional-payments-provider) use real HTTP/TLS sockets. They cover API retirement, required request fields, nested decimal amounts, currency integrity, rate limits and provider failures. The Linux Docker suite runs the approved worker migration and HTTPS capture inside the existing network-isolated profile. No real payment provider or account is contacted.
+
 CI is configured for Windows, Linux and macOS, with a separate real Docker job. Running checks locally does not trigger CI, push commits or deploy. Follow the branch conventions in [AGENTS.md](AGENTS.md). Keep credentials, local state, archives and intermediate files out of Git; `work/` is ignored.
 
 ## Limits and troubleshooting

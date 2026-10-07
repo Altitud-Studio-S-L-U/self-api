@@ -27,7 +27,7 @@ Only the prepared Linux x64 Docker profile can execute consumer tests. Windows a
 
 ## Current boundary
 
-- The OpenAPI comparator accepts local OpenAPI 3.0.x/3.1.x JSON, at most 4 MiB and 128 nesting levels. External references, custom dialects, `$id`, dynamic references/anchors, reusable `components.pathItems`, and root webhooks are rejected. Inputs must be regular files without symlinked ancestors; URLs, UNC/device paths, stdin, Git refs, and alternate data streams are not supported. Other local source profiles are described below. Remote source fetching, YAML and automatic SDK call mapping remain unsupported. Authorized validation changes only an isolated captured copy.
+- The OpenAPI comparator accepts local OpenAPI 3.0.x/3.1.x JSON, at most 4 MiB and 128 nesting levels. External references, custom dialects, `$id`, dynamic references/anchors, reusable `components.pathItems`, and root webhooks are rejected. Direct comparator inputs must be regular files without symlinked ancestors; URLs, UNC/device paths, stdin, Git refs, and alternate data streams are not supported. The observer can separately capture remote sources using explicit HTTPS policies, as described below. YAML and general SDK call mapping remain unsupported. Authorized validation changes only an isolated captured copy.
 - Captured input digests and API/specification versions identify the compared evidence. The local engine validates both contracts before comparing immutable temporary copies.
 - Structural breaking-change findings only. `no-breaking-changes` does not prove consumer compatibility or unchanged business semantics; every report says `consumerImpact: not-analyzed`. Additive and prose-only changes can set `contentChanged` without producing breaking findings.
 - The comparison engine disables external references, uses its own empty configuration, and receives a filtered environment. Comparison does not run consumer scripts. Engine process timeout and output limits are applied; this engine process is not a container sandbox or a hard memory limit. Consumer execution uses the separate Docker profile described below.
@@ -272,6 +272,30 @@ Private sources require a non-public opaque `authContextId` in the policy and an
 Snapshots preserve exact bytes. ETag/Last-Modified and the authorization context are retained locally; a `304` reuses only a verified matching snapshot with a previously sent validator. Observers acquire ownership before capture and commit the bytes, conditional cache, history and any OpenAPI review job in the same SQLite transaction after successful comparison. Failed downloads, unsupported contracts, lost ownership and persistence errors preserve the last successful evidence. No shared filesystem mirror sits between download and comparison. Existing core state migrates from schema 1/2 to 3; source-observer state migrates from schema 1 to 2 without resetting history.
 
 OpenAPI job planning/validation uses the last successfully observed HTTPS snapshot and rejects jobs superseded by newer successful captures. Those steps do not silently contact the provider. Cached evidence is not proof of present-time provider behavior: explicitly observe again before reviewing a migration, and inspect its observation timestamp. Provider capture, customer adoption and production deployment remain distinct states.
+
+## Exercise a fictional payments provider
+
+`fixtures/payments/` describes a made-up, read-only payment lookup API, not PayPal or another live provider. Version `2026-01` returns integer `totalCents`; `2026-02` retires the old header with HTTP 410, requires the caller's existing currency and returns a nested decimal amount. Both contracts explicitly define the relationship between major and minor units. The example migration uses integer arithmetic, rejects unsupported precision or unsafe values, and preserves `{reference, amountMinor, currency}`. The SDK does not infer this business decision from property names.
+
+After `pnpm build`, run the portable scenario checks:
+
+```sh
+node --test test/payments-scenarios.test.mjs
+```
+
+The check starts an actual HTTP server on loopback in each selected fixture, without replacing `fetch`. It proves that the original client passes against version A, fails independently in request construction and parsing against version B, and that the reviewed recipe produces the expected passing candidate. It also verifies missing business decisions block validation and selected tests cannot be edited to manufacture success. The synthetic fixtures share port 43127 and are run sequentially; do not run both fixture files together on the same host.
+
+On the prepared Linux x64 Docker host, run:
+
+```sh
+node --test --test-concurrency=1 integration/payments-validation.test.mjs integration/http-provider.test.mjs
+```
+
+The first integration creates a real worker subscription and review job, separately approves and queues the migration, and executes baseline/candidate tests with the fixed Docker profile. The provider and its assertions live in the selected test file, so the recipe cannot change either. The consumer checkout and test bytes remain unchanged, container cleanup is verified, and a consumed approval cannot be replayed. Cases include encoded IDs, explicit EUR/USD currency, exact cents including `0.29`, zero and safe-integer boundaries, additive fields, malformed JSON/money, currency mismatch and HTTP 401/410/429/503. Error responses deliberately resemble valid payments and must still fail; `Retry-After` never triggers an implicit retry.
+
+The second integration exercises the actual Node HTTPS transport against a local TLS server, with an ephemeral one-day certificate generated by the host's OpenSSL. A trusted fixture adapter routes the socket to loopback while preserving TLS verification; production still rejects private addresses. It checks exact captures, conditional 304 responses, a changed contract, invalid CA/hostname, redirects, compression, size limits, timeouts and cancellation. This verifies transport behavior on a controlled route, not public DNS or a live provider. The host needs `/usr/bin/openssl`; missing prerequisites fail explicitly.
+
+Both Docker tests use `--network=none`, a non-root user and a read-only snapshot. Loopback communication stays inside each container, without published ports, provider accounts or real credentials. The existing `pnpm test:isolated` CI job includes these tests automatically.
 
 ## Integration versions and function boundaries
 

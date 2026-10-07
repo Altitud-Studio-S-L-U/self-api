@@ -1,0 +1,45 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Fictional Payments Sandbox",
+    "version": "2026-01",
+    "description": "Test-only GET API. This is not PayPal, does not process payments, and uses synthetic credentials."
+  },
+  "servers": [{ "url": "http://127.0.0.1:43127" }],
+  "paths": {
+    "/payments/{id}": {
+      "get": {
+        "operationId": "getPayment",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "X-Api-Version", "in": "header", "required": true, "schema": { "type": "string", "enum": ["2026-01"] } }
+        ],
+        "security": [{ "sandboxToken": [] }],
+        "responses": {
+          "200": {
+            "description": "A fictional payment. totalCents uses integer EUR/USD minor units, exactly 100 per major unit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["id", "totalCents", "currency"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "totalCents": { "type": "integer", "minimum": 0 },
+                    "currency": { "type": "string", "enum": ["EUR", "USD"] }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid request or unsupported API version" },
+          "401": { "description": "Invalid sandbox credential" },
+          "410": { "description": "API version retired" },
+          "429": { "description": "Rate limit; Retry-After does not authorize an automatic retry" },
+          "503": { "description": "Provider unavailable" }
+        }
+      }
+    }
+  },
+  "components": { "securitySchemes": { "sandboxToken": { "type": "http", "scheme": "bearer" } } }
+}
