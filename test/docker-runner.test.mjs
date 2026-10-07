@@ -60,8 +60,8 @@ function fakeDocker(overrides = {}) {
       } else if (args[0] === 'start') response = { stdout: 'synthetic test passed\n', code: 0 };
       else if (args[0] === 'inspect') response = args.includes('{{json .State}}')
         ? { stdout: JSON.stringify({ Status: 'exited', Running: false, Dead: false, Error: '', OOMKilled: false, ExitCode: testExit }), code: 0 }
-        : exists ? { stdout: JSON.stringify({ [DOCKER_PROFILE.ownershipLabel]: ownership }), code: 0 }
-          : { stderr: `Error: No such object: ${name}\n`, code: 1 };
+        : exists ? { stdout: JSON.stringify({ id: containerId, labels: { [DOCKER_PROFILE.ownershipLabel]: ownership } }), code: 0 }
+          : { stderr: `Error: No such object: ${args.at(-1)}\n`, code: 1 };
       else if (args[0] === 'rm') {
         exists = false;
         response = { stdout: `${name}\n`, code: 0 };
@@ -72,8 +72,7 @@ function fakeDocker(overrides = {}) {
       if (response.error) { child.emit('error', response.error); return; }
       if (response.stdout) child.stdout.write(response.stdout);
       if (response.stderr && !child.stderr.destroyed) child.stderr.write(response.stderr);
-      if (response.delay) setTimeout(() => child.emit('close', response.code ?? 0), response.delay);
-      else child.emit('close', response.code ?? 0);
+      child.emit('close', response.code ?? 0);
     });
     return child;
   };
@@ -100,13 +99,15 @@ test('validates selected tests with fixed policy and verifies removal before ret
   assert.equal(result.cleanup, 'removed');
   assert.match(result.containerName, /^plumber-validation-[a-f0-9-]{36}$/);
   assert.equal(result.stdout, 'synthetic test passed\n');
-  assert.deepEqual(docker.calls.map(call => call.args[0]), ['info', 'image', 'create', 'start', 'inspect', 'inspect', 'rm', 'inspect']);
+  assert.deepEqual(docker.calls.map(call => call.args[0]), ['info', 'image', 'create', 'start', 'inspect', 'inspect', 'rm', 'inspect', 'inspect']);
   const create = docker.calls.find(call => call.args[0] === 'create');
   const required = ['--pull=never', '--network=none', '--read-only', '--user=65534:65534', '--cap-drop=ALL', '--security-opt=no-new-privileges=true', '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=128', '--log-driver=none'];
   for (const flag of required) assert.ok(create.args.includes(flag), flag);
   assert.ok(create.args.includes(`type=bind,source=${input.snapshotPath},target=/workspace,readonly,bind-recursive=disabled`));
   assert.deepEqual(create.args.slice(create.args.indexOf('--entrypoint')), ['--entrypoint', '/usr/local/bin/node', DOCKER_PROFILE.image, '--test', '--test-reporter=tap', '--', '/workspace/example.test.mjs']);
   assert.deepEqual(docker.calls.find(call => call.args[0] === 'start').args, ['start', '--attach', containerId]);
+  assert.deepEqual(docker.calls.find(call => call.args[0] === 'rm').args, ['rm', '--force', '--volumes', containerId]);
+  assert.deepEqual(docker.calls.slice(-2).map(call => call.args.at(-1)), [containerId, result.containerName]);
   for (const call of docker.calls) {
     assert.equal(call.command, '/usr/bin/docker');
     assert.equal(call.options.shell, false);
@@ -207,8 +208,9 @@ test('preserves failing test exit and output while still removing the container'
   assert.equal(result.cleanup, 'removed');
 });
 
-test('timeout kills the attached CLI and verifies container removal', async () => {
-  const docker = fakeDocker({ start: () => ({ hang: true }) });
+test('timeout kills the attached CLI and verifies container removal', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const docker = fakeDocker({ start: () => { t.mock.timers.tick(80); return { hang: true }; } });
   const result = await docker.runner({ timeoutMs: 80 })(await fixture());
   assert.equal(result.status, 'timed-out');
   assert.equal(result.exitCode, null);
@@ -217,16 +219,27 @@ test('timeout kills the attached CLI and verifies container removal', async () =
   assert.equal(docker.calls.at(-1).args[0], 'inspect');
 });
 
-test('one total deadline includes preflight and does not reset for test execution', async () => {
-  const docker = fakeDocker({ info: ({ response }) => ({ ...response, delay: 120 }), start: () => ({ code: 0, delay: 120 }) });
+test('one total deadline includes preflight and does not reset for test execution', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const docker = fakeDocker({
+    info: ({ response }) => { t.mock.timers.tick(120); return response; },
+    start: ({ response }) => { t.mock.timers.tick(120); return response; },
+  });
   const result = await docker.runner({ timeoutMs: 200 })(await fixture());
   assert.equal(result.status, 'timed-out');
   assert.equal(result.cleanup, 'removed');
-  const blockedDocker = fakeDocker({ info: () => ({ hang: true }) });
+  const blockedDocker = fakeDocker({ info: () => { t.mock.timers.tick(30); return { hang: true }; } });
   const blockedResult = await blockedDocker.runner({ timeoutMs: 30 })(await fixture());
   assert.equal(blockedResult.status, 'timed-out');
   assert.equal(blockedResult.cleanup, 'not-created');
   assert.deepEqual(blockedDocker.calls.map(call => call.args[0]), ['info']);
+  const expiredBeforeDocker = fakeDocker();
+  const expiredResult = await expiredBeforeDocker.runner({ timeoutMs: 30 })({
+    ...await fixture(), guard() { t.mock.timers.tick(30); },
+  });
+  assert.equal(expiredResult.status, 'timed-out');
+  assert.equal(expiredResult.cleanup, 'not-created');
+  assert.deepEqual(expiredBeforeDocker.calls, []);
 });
 
 test('bounds combined stdout and stderr and removes the container on overflow', async () => {
@@ -239,9 +252,10 @@ test('bounds combined stdout and stderr and removes the container on overflow', 
   assert.deepEqual(docker.kills, [{ command: 'start', signal: 'SIGKILL' }]);
 });
 
-test('cleanup failure overrides a passing test and never removes a differently owned container', async () => {
+test('cleanup failure overrides a passing test and never removes a differently owned container', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
   for (const overrides of [
-    { inspect: ({ call, response }) => call.args.includes('{{json .State}}') ? response : ({ code: 0, stdout: JSON.stringify({ [DOCKER_PROFILE.ownershipLabel]: 'someone-else' }) }) },
+    { inspect: ({ call, response }) => call.args.includes('{{json .State}}') ? response : ({ code: 0, stdout: JSON.stringify({ id: containerId, labels: { [DOCKER_PROFILE.ownershipLabel]: 'someone-else' } }) }) },
     { inspect: ({ call, response }) => call.args.includes('{{json .State}}') ? response : ({ code: 1, stderr: 'Cannot connect to the Docker daemon' }) },
     { inspect: ({ call, response }) => call.args.includes('{{json .State}}') ? response : ({ code: 0, stdout: '{broken' }) },
   ]) {
@@ -252,14 +266,45 @@ test('cleanup failure overrides a passing test and never removes a differently o
     assert.equal(result.exitCode, 0);
     assert.ok(docker.calls.every(call => call.args[0] !== 'rm'));
   }
-  const docker = fakeDocker({ rm: () => ({ hang: true }), inspect: ({ response, exists }) => exists ? response : ({ code: 1, stderr: 'daemon unavailable' }) });
+  const docker = fakeDocker({ rm: () => { t.mock.timers.tick(30); return { hang: true }; }, inspect: ({ response, exists }) => exists ? response : ({ code: 1, stderr: 'daemon unavailable' }) });
   const result = await docker.runner({ cleanupTimeoutMs: 30 })(await fixture());
   assert.equal(result.status, 'cleanup-failed');
   assert.equal(result.cleanup, 'failed');
 });
 
-test('interrupted creation attempts cleanup but cannot claim no pending daemon creation', async () => {
-  const docker = fakeDocker({ create: () => ({ hang: true }) });
+test('cleanup cannot remove a replacement that takes the inspected container name', async () => {
+  let inspectedOwner = false;
+  let replacementExists = false;
+  const replacementId = 'b'.repeat(64);
+  const docker = fakeDocker({
+    inspect: ({ call, response, name }) => {
+      if (call.args.includes('{{json .State}}')) return response;
+      if (!inspectedOwner) {
+        inspectedOwner = true;
+        // The original disappears after inspection and a different container takes its name.
+        replacementExists = true;
+        return response;
+      }
+      if (call.args.at(-1) === name && replacementExists) {
+        return { code: 0, stdout: JSON.stringify({ id: replacementId, labels: { [DOCKER_PROFILE.ownershipLabel]: 'another-owner' } }) };
+      }
+      return { code: 1, stderr: `Error: No such object: ${call.args.at(-1)}\n` };
+    },
+    rm: ({ call, name }) => {
+      if (call.args.at(-1) === name) replacementExists = false;
+      return { code: 1, stderr: `Error: No such container: ${containerId}\n` };
+    },
+  });
+  const result = await docker.runner()(await fixture());
+  assert.deepEqual(docker.calls.filter(call => call.args[0] === 'rm').map(call => call.args.at(-1)), [containerId]);
+  assert.equal(replacementExists, true);
+  assert.equal(result.status, 'cleanup-failed');
+  assert.equal(result.cleanup, 'failed');
+});
+
+test('interrupted creation attempts cleanup but cannot claim no pending daemon creation', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const docker = fakeDocker({ create: () => { t.mock.timers.tick(50); return { hang: true }; } });
   const result = await docker.runner({ timeoutMs: 50 })(await fixture());
   assert.equal(result.status, 'cleanup-failed');
   assert.equal(result.cleanup, 'failed');

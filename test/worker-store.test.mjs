@@ -220,7 +220,7 @@ test('subscription and per-report quotas fail explicitly without deleting pendin
 
 test('rejects future or foreign databases without changing their contents or permissions', async () => {
   const { DatabaseSync } = await import('node:sqlite');
-  for (const sql of ['PRAGMA user_version=2;', 'CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES (\'retained\');']) {
+  for (const sql of ['PRAGMA application_id=1347179853; PRAGMA user_version=99;', 'CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES (\'retained\');']) {
     const statePath = join(owned, `foreign-${sequence++}`);
     await mkdir(statePath, { mode: 0o700 });
     const path = join(statePath, 'worker.sqlite3');
