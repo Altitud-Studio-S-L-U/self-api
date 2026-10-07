@@ -16,3 +16,7 @@ export type { ApprovalReceipt } from './approval-store.js';
 export { registerLocalSubscription, observeOnce, listLocalSubscriptions, listMaintenanceJobs } from './worker.js';
 export type { LocalSubscriptionOptions, ObservationCycle } from './worker.js';
 export type { WorkerSubscription, WorkerJob } from './worker-store.js';
+export { prepareJobValidation, approveJobValidation, queueJobValidation, runApprovedJobsOnce, recoverApprovedJobs, listJobExecutions } from './job-validation.js';
+export type { JobValidationOptions, JobExecutionCycle } from './job-validation.js';
+export type { ExecutionIntent } from './worker-store.js';
+export type { ValidationOutcome } from './validation-outcome.js';

@@ -53,6 +53,7 @@
       "id": "local-observation",
       "title": "Persist local subscriptions and review jobs",
       "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/6",
       "acceptance": [
         "Persist exact bounded OpenAPI bytes and an explicit configured baseline without claiming adoption or deployment.",
         "Observe local file subscriptions once, identify potential consumer impact, and retain pending review jobs across restarts.",
@@ -63,12 +64,24 @@
     {
       "id": "local-worker",
       "title": "Resume authorized maintenance jobs",
-      "status": "planned",
+      "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/7",
       "acceptance": [
         "Persist subscriptions, observed evidence, authorized jobs, and attempts without starting a worker on SDK import.",
-        "Recover interrupted work and reconcile duplicate events without losing pending migrations or duplicating publication.",
-        "Respect changed bases, human commits, stale observations, and authorization limits.",
+        "Reconcile interrupted validation, owned containers and late durable outcomes without replaying a consumed approval.",
+        "Respect changed source and consumer evidence, bounded ownership claims and authorization expiry.",
         "Keep observed, validated, adopted, and deployed state distinct."
+      ]
+    },
+    {
+      "id": "local-publication",
+      "title": "Publish an explicitly authorized migration from the customer environment",
+      "status": "planned",
+      "acceptance": [
+        "Bind publication to a reviewed repository, base commit, remote destination, permitted files and validation evidence.",
+        "Require separate publication scope, isolate credentials from consumer execution and preserve human commits.",
+        "Create a branch and draft pull request directly from the local runner with idempotent reconciliation after uncertain responses.",
+        "Demonstrate the flow in an explicitly authorized test repository without automatic merge, deployment or code transmission to Plumber Cloud."
       ]
     },
     {

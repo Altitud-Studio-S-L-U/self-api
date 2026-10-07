@@ -2,9 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { isProxy } from 'node:util/types';
 import type { SnapshotMetadata } from './contracts.js';
 import type { ImpactReport } from './impact.js';
 import { PlumberError } from './errors.js';
+import { validateValidationOutcome, type ValidationOutcome } from './validation-outcome.js';
 
 export interface WorkerSnapshot { readonly bytes: Uint8Array; readonly metadata: SnapshotMetadata }
 export interface WorkerSubscription {
@@ -39,6 +41,43 @@ export interface WorkerJob {
   readonly report: ImpactReport;
   readonly createdAt: string;
 }
+export type ExecutionStatus = 'queued' | 'running' | 'completed' | 'blocked' | 'interrupted';
+export type ExecutionBlockReason = 'stale-evidence' | 'approval-invalid' | 'execution-failed' | 'request-mismatch';
+export type ExecutionRecoveryReason = 'execution-interrupted' | 'cleanup-unresolved' | 'invalid-outcome';
+export interface ExecutionIntent {
+  readonly id: string;
+  readonly jobId: string;
+  readonly receiptId: string;
+  readonly requestId: string;
+  readonly planId: string;
+  readonly executionDigest: string;
+  readonly policyDigest: string;
+  readonly recipeJson: string;
+  readonly testPaths: readonly string[];
+  readonly status: ExecutionStatus;
+  readonly owner: string | null;
+  readonly generation: number;
+  readonly expiresAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly outcome: ValidationOutcome | null;
+  readonly reason: string | null;
+}
+export interface ExecutionClaim {
+  readonly intent: ExecutionIntent;
+  readonly owner: string;
+  readonly generation: number;
+}
+export interface EnqueueExecutionInput {
+  readonly jobId: string;
+  readonly receiptId: string;
+  readonly requestId: string;
+  readonly planId: string;
+  readonly executionDigest: string;
+  readonly policyDigest: string;
+  readonly recipeJson: string;
+  readonly testPaths: readonly string[];
+}
 export interface WorkerStore {
   readonly statePath: string;
   register(input: {
@@ -50,12 +89,30 @@ export interface WorkerStore {
   completeObservation(input: { lease: WorkerLease; snapshot: WorkerSnapshot; report: ImpactReport }): { job: WorkerJob | null; created: boolean; transition: boolean };
   failObservation(input: { lease: WorkerLease; reason: string }): void;
   listJobs(): WorkerJob[];
+  getJobEvidence(jobId: string): { job: WorkerJob; subscription: WorkerSubscription; baseline: WorkerSnapshot; revision: WorkerSnapshot };
+  enqueueExecution(input: EnqueueExecutionInput): { intent: ExecutionIntent; created: boolean };
+  listExecutionIntents(): ExecutionIntent[];
+  claimExecution(intentId?: string): ExecutionClaim | null;
+  assertExecutionOwnership(claim: ExecutionClaim): void;
+  completeExecution(input: { claim: ExecutionClaim; outcome: ValidationOutcome }): void;
+  blockExecution(input: { claim: ExecutionClaim; reason: ExecutionBlockReason }): void;
+  interruptExecution(input: { claim: ExecutionClaim; reason: 'cleanup-unresolved' }): void;
+  listExpiredExecutions(): ExecutionIntent[];
+  claimRecovery(intentId: string): ExecutionClaim | null;
+  assertRecoveryOwnership(claim: ExecutionClaim): void;
+  reconcileExecution(input: { claim: ExecutionClaim; outcome?: ValidationOutcome; reason?: ExecutionRecoveryReason }): void;
   close(): void;
 }
 
 const HASH = /^[a-f0-9]{64}$/u;
 const APPLICATION_ID = 0x504c554d;
 const LEASE_MS = 5 * 60 * 1000;
+const EXECUTION_LEASE_MS = 10 * 60 * 1000;
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
+const RECIPE_LIMIT = 1024 * 1024;
+const TOTAL_RECIPE_LIMIT = 64 * 1024 * 1024;
+const BLOCK_REASONS = new Set<ExecutionBlockReason>(['stale-evidence', 'approval-invalid', 'execution-failed', 'request-mismatch']);
+const RECOVERY_REASONS = new Set<ExecutionRecoveryReason>(['execution-interrupted', 'cleanup-unresolved', 'invalid-outcome']);
 const SNAPSHOT_LIMIT = 4 * 1024 * 1024;
 const TOTAL_SNAPSHOT_LIMIT = 64 * 1024 * 1024;
 const REPORT_LIMIT = 4 * 1024 * 1024;
@@ -142,6 +199,67 @@ function job(row: Row): WorkerJob {
   };
 }
 
+function canonicalRecipe(json: string): string {
+  if (typeof json !== 'string') invalid('An execution recipe must contain JSON text.');
+  if (Buffer.byteLength(json) > RECIPE_LIMIT) limit('An execution recipe exceeds the 1 MiB limit.');
+  let parsed: unknown;
+  try { parsed = JSON.parse(json); } catch { invalid('An execution recipe must contain JSON data.'); }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) invalid('An execution recipe must be a JSON object.');
+  let nodes = 0;
+  const canonical = (value: unknown, depth: number): unknown => {
+    if (depth > 64 || ++nodes > 100_000) invalid('An execution recipe exceeds the supported JSON structure limits.');
+    if (typeof value === 'number' && !Number.isFinite(value)) invalid('Execution recipe numbers must be finite JSON values.');
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(child => canonical(child, depth + 1));
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Row)[key], depth + 1)]));
+  };
+  return JSON.stringify(canonical(parsed, 0));
+}
+
+function executionTests(value: readonly string[]): string[] {
+  if (!value || typeof value !== 'object' || isProxy(value) || !Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Array.prototype || value.length === 0 || value.length > 20) {
+    invalid('Execution requires between 1 and 20 unique relative test paths.');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).length !== value.length + 1) invalid('Test paths must form a plain dense JSON array.');
+  const paths: string[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) invalid('Test paths cannot contain accessors or missing elements.');
+    const path: unknown = descriptor.value;
+    if (typeof path !== 'string' || !path || path.length > 500 || /[\\:\u0000-\u001f\u007f]/u.test(path)
+      || path.split('/').some(part => !part || part === '.' || part === '..') || paths.includes(path)) {
+      invalid('Execution test paths must be unique bounded relative paths without traversal.');
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+function execution(row: Row): ExecutionIntent {
+  return {
+    id: row.id as string, jobId: row.job_id as string, receiptId: row.receipt_id as string, requestId: row.request_id as string,
+    planId: row.plan_id as string, executionDigest: row.execution_digest as string, policyDigest: row.policy_digest as string,
+    recipeJson: row.recipe_json as string, testPaths: JSON.parse(row.test_paths_json as string) as string[],
+    status: row.status as ExecutionStatus, owner: row.owner as string | null, generation: row.generation as number,
+    expiresAt: iso(row.expires_at), createdAt: iso(row.created_at)!, updatedAt: iso(row.updated_at)!,
+    outcome: row.outcome_json === null ? null : validateValidationOutcome(JSON.parse(row.outcome_json as string)),
+    reason: row.reason as string | null,
+  };
+}
+
+const EXECUTION_SCHEMA = `
+CREATE TABLE execution_intents (
+  id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), receipt_id TEXT NOT NULL UNIQUE,
+  request_id TEXT NOT NULL, plan_id TEXT NOT NULL, execution_digest TEXT NOT NULL, policy_digest TEXT NOT NULL,
+  recipe_json TEXT NOT NULL, test_paths_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued','running','completed','blocked','interrupted')),
+  owner TEXT, generation INTEGER NOT NULL DEFAULT 0, expires_at INTEGER,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, outcome_json TEXT, reason TEXT
+) STRICT;
+CREATE INDEX execution_intents_status ON execution_intents(status,created_at,id);`;
+
 const SCHEMA = `
 CREATE TABLE snapshots (sha TEXT PRIMARY KEY, bytes BLOB NOT NULL, metadata_json TEXT NOT NULL, captured_at INTEGER NOT NULL) STRICT;
 CREATE TABLE subscriptions (
@@ -160,7 +278,8 @@ CREATE TABLE jobs (
   consumer_digest TEXT NOT NULL, engine_version TEXT NOT NULL, report_json TEXT NOT NULL, created_at INTEGER NOT NULL,
   UNIQUE(subscription_id, baseline_sha, revision_sha, consumer_digest, engine_version)
 ) STRICT;
-PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=1;`;
+${EXECUTION_SCHEMA}
+PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=2;`;
 
 /** Opens customer-owned local state explicitly. Importing this module starts no worker and opens no database. */
 export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
@@ -189,8 +308,8 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
     database = db;
     const application = (): number => db.prepare('PRAGMA application_id').get()!.application_id as number;
     const version = (): number => db.prepare('PRAGMA user_version').get()!.user_version as number;
-    if (version() !== 0 && (version() !== 1 || application() !== APPLICATION_ID)) invalid('The worker database version or identity is unsupported.');
-    if (version() === 0) {
+    if (version() !== 0 && (![1, 2].includes(version()) || application() !== APPLICATION_ID)) invalid('The worker database version or identity is unsupported.');
+    if (version() < 2) {
       db.exec('BEGIN IMMEDIATE');
       try {
         if (version() === 0) {
@@ -198,7 +317,11 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
             invalid('An existing foreign database cannot be imported as worker state.');
           }
           db.exec(SCHEMA);
-        } else if (version() !== 1 || application() !== APPLICATION_ID) invalid('The worker database version or identity is unsupported.');
+        } else if (![1, 2].includes(version()) || application() !== APPLICATION_ID) invalid('The worker database version or identity is unsupported.');
+        if (version() === 1) {
+          db.exec(EXECUTION_SCHEMA);
+          db.exec('PRAGMA user_version=2');
+        }
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     }
@@ -245,6 +368,58 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
       if (row.lease_owner !== lease.owner || row.lease_generation !== lease.generation || (row.lease_expires_at as number | null) === null
         || (row.lease_expires_at as number) <= Date.now()) throw new PlumberError('LEASE_LOST', 'The worker no longer owns an unexpired observation lease.');
       return row;
+    };
+    const requiredJob = (id: string): Row => {
+      if (typeof id !== 'string' || !HASH.test(id)) invalid('A job identifier must be a lowercase SHA-256 value.');
+      const row = db.prepare('SELECT * FROM jobs WHERE id=?').get(id);
+      if (!row) invalid('The worker job does not exist.');
+      return row;
+    };
+    const capturedSnapshot = (sha: string): WorkerSnapshot => {
+      const value = db.prepare('SELECT bytes,metadata_json FROM snapshots WHERE sha=?').get(sha);
+      if (!value) invalid('The job snapshot does not exist.');
+      const checked = snapshot({ bytes: value.bytes as Uint8Array, metadata: JSON.parse(value.metadata_json as string) as SnapshotMetadata });
+      if (checked.metadata.sha256 !== sha) invalid('The job snapshot does not match its immutable reference.');
+      return { bytes: Uint8Array.from(checked.bytes), metadata: checked.metadata };
+    };
+    const requiredExecution = (id: string): Row => {
+      if (typeof id !== 'string' || !HASH.test(id)) invalid('An execution identifier must be a lowercase SHA-256 value.');
+      const row = db.prepare('SELECT * FROM execution_intents WHERE id=?').get(id);
+      if (!row) invalid('The execution intent does not exist.');
+      return row;
+    };
+    const ownedExecution = (claim: ExecutionClaim, recovery = false): Row => {
+      if (!claim || !claim.intent || typeof claim.owner !== 'string' || !UUID.test(claim.owner)
+        || !Number.isSafeInteger(claim.generation) || claim.generation < 1) invalid('A valid execution claim is required.');
+      const row = requiredExecution(claim.intent.id);
+      if (row.status !== (recovery ? 'interrupted' : 'running') || (recovery && row.reason !== 'recovery-in-progress')
+        || row.owner !== claim.owner || row.generation !== claim.generation || row.expires_at === null
+        || (row.expires_at as number) <= Date.now()) {
+        throw new PlumberError('LEASE_LOST', 'The worker no longer owns this unexpired execution phase.');
+      }
+      return row;
+    };
+    const boundOutcome = (row: Row, outcome: ValidationOutcome): string => {
+      const checked = validateValidationOutcome(outcome);
+      if (checked.intentId !== row.id || checked.requestId !== row.request_id || checked.receiptId !== row.receipt_id) {
+        invalid('The validation outcome does not match the execution intent.');
+      }
+      return JSON.stringify(checked);
+    };
+    const recoverable = (row: Row, now: number): boolean => (
+      row.status === 'running' && row.expires_at !== null && (row.expires_at as number) <= now
+    ) || (
+      row.status === 'interrupted' && ((row.reason === 'cleanup-unresolved' && row.owner === null)
+        || (row.reason === 'recovery-in-progress' && row.expires_at !== null && (row.expires_at as number) <= now))
+    );
+    const makeClaim = (row: Row, recovery: boolean): ExecutionClaim => {
+      const now = Date.now();
+      const owner = randomUUID();
+      const generation = (row.generation as number) + 1;
+      db.prepare('UPDATE execution_intents SET status=?,owner=?,generation=?,expires_at=?,updated_at=?,reason=? WHERE id=?')
+        .run(recovery ? 'interrupted' : 'running', owner, generation, now + (recovery ? LEASE_MS : EXECUTION_LEASE_MS), now,
+          recovery ? 'recovery-in-progress' : null, row.id as string);
+      return { intent: execution(requiredExecution(row.id as string)), owner, generation };
     };
     return {
       statePath: state,
@@ -336,6 +511,97 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
         db.prepare('UPDATE subscriptions SET last_checked_at=?,last_error=?,lease_owner=NULL,lease_expires_at=NULL WHERE id=?').run(Date.now(), reason, lease.subscriptionId);
       }); },
       listJobs() { return operate(() => db.prepare('SELECT * FROM jobs ORDER BY created_at,id').all().map(job)); },
+      getJobEvidence(jobId) { return operate(() => {
+        const current = requiredJob(jobId);
+        return { job: job(current), subscription: subscription(required(current.subscription_id as string)),
+          baseline: capturedSnapshot(current.baseline_sha as string), revision: capturedSnapshot(current.revision_sha as string) };
+      }); },
+      enqueueExecution(input) { return transaction(() => {
+        if (!input || [input.jobId, input.requestId, input.planId, input.executionDigest, input.policyDigest]
+          .some(value => typeof value !== 'string' || !HASH.test(value)) || typeof input.receiptId !== 'string' || !UUID.test(input.receiptId)) {
+          invalid('Execution intents require valid immutable evidence and approval identifiers.');
+        }
+        requiredJob(input.jobId);
+        const recipeJson = canonicalRecipe(input.recipeJson);
+        const testPaths = JSON.stringify(executionTests(input.testPaths));
+        const id = hash(input.receiptId);
+        const existing = db.prepare('SELECT * FROM execution_intents WHERE receipt_id=?').get(input.receiptId);
+        if (existing) {
+          if (existing.id !== id || existing.job_id !== input.jobId || existing.request_id !== input.requestId || existing.plan_id !== input.planId
+            || existing.execution_digest !== input.executionDigest || existing.policy_digest !== input.policyDigest
+            || existing.recipe_json !== recipeJson || existing.test_paths_json !== testPaths) {
+            invalid('An approval receipt cannot be queued with different evidence or execution inputs.');
+          }
+          return { intent: execution(existing), created: false };
+        }
+        if ((db.prepare('SELECT count(*) AS n FROM execution_intents').get()!.n as number) >= 1000) limit('Execution intents exceed the limit of 1000.');
+        const used = db.prepare('SELECT coalesce(sum(length(CAST(recipe_json AS BLOB))),0) AS n FROM execution_intents').get()!.n as number;
+        if (used + Buffer.byteLength(recipeJson) > TOTAL_RECIPE_LIMIT) limit('Execution recipes exceed the total 64 MiB limit.');
+        const now = Date.now();
+        db.prepare(`INSERT INTO execution_intents
+          (id,job_id,receipt_id,request_id,plan_id,execution_digest,policy_digest,recipe_json,test_paths_json,status,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?)`).run(id, input.jobId, input.receiptId, input.requestId, input.planId,
+          input.executionDigest, input.policyDigest, recipeJson, testPaths, now, now);
+        return { intent: execution(requiredExecution(id)), created: true };
+      }); },
+      listExecutionIntents() { return operate(() => db.prepare('SELECT * FROM execution_intents ORDER BY created_at,id').all().map(execution)); },
+      claimExecution(intentId) { return transaction(() => {
+        const row = intentId === undefined
+          ? db.prepare("SELECT * FROM execution_intents WHERE status='queued' ORDER BY created_at,id LIMIT 1").get()
+          : requiredExecution(intentId);
+        return row && row.status === 'queued' ? makeClaim(row, false) : null;
+      }); },
+      assertExecutionOwnership(claim) { operate(() => { ownedExecution(claim); }); },
+      completeExecution({ claim, outcome }) { transaction(() => {
+        const row = ownedExecution(claim);
+        const json = boundOutcome(row, outcome);
+        const checked = JSON.parse(json) as ValidationOutcome;
+        if (checked.baseline.cleanup === 'failed' || checked.candidate?.cleanup === 'failed') {
+          invalid('Unresolved cleanup requires recovery before the execution can be completed.');
+        }
+        ownedExecution(claim);
+        db.prepare("UPDATE execution_intents SET status='completed',outcome_json=?,owner=NULL,expires_at=NULL,reason=NULL,updated_at=? WHERE id=?")
+          .run(json, Date.now(), row.id as string);
+      }); },
+      blockExecution({ claim, reason }) { transaction(() => {
+        const row = ownedExecution(claim);
+        if (!BLOCK_REASONS.has(reason)) invalid('Execution failures require a supported fixed reason.');
+        db.prepare("UPDATE execution_intents SET status='blocked',owner=NULL,expires_at=NULL,reason=?,updated_at=? WHERE id=?")
+          .run(reason, Date.now(), row.id as string);
+      }); },
+      interruptExecution({ claim, reason }) { transaction(() => {
+        const row = ownedExecution(claim);
+        if (reason !== 'cleanup-unresolved') invalid('An interrupted execution must preserve its unresolved cleanup state.');
+        db.prepare("UPDATE execution_intents SET status='interrupted',owner=NULL,expires_at=NULL,reason=?,updated_at=? WHERE id=?")
+          .run(reason, Date.now(), row.id as string);
+      }); },
+      listExpiredExecutions() { return operate(() => {
+        const now = Date.now();
+        return db.prepare("SELECT * FROM execution_intents WHERE status IN ('running','interrupted') ORDER BY created_at,id")
+          .all().filter(row => recoverable(row, now)).map(execution);
+      }); },
+      claimRecovery(intentId) { return transaction(() => {
+        const row = requiredExecution(intentId);
+        // A terminal interruption may receive a late artifact from its original consumed attempt; it can only be reconciled.
+        const lateArtifactEligible = row.status === 'interrupted' && row.owner === null
+          && (row.reason === 'execution-interrupted' || row.reason === 'invalid-outcome');
+        return recoverable(row, Date.now()) || lateArtifactEligible ? makeClaim(row, true) : null;
+      }); },
+      assertRecoveryOwnership(claim) { operate(() => { ownedExecution(claim, true); }); },
+      reconcileExecution({ claim, outcome, reason }) { transaction(() => {
+        const row = ownedExecution(claim, true);
+        if ((outcome === undefined) === (reason === undefined)) invalid('Recovery requires exactly one matching outcome or fixed interruption reason.');
+        if (outcome !== undefined) {
+          const json = boundOutcome(row, outcome);
+          ownedExecution(claim, true);
+          db.prepare("UPDATE execution_intents SET status='completed',outcome_json=?,owner=NULL,expires_at=NULL,reason=NULL,updated_at=? WHERE id=?")
+            .run(json, Date.now(), row.id as string);
+        } else {
+          if (!RECOVERY_REASONS.has(reason!)) invalid('Recovery requires a supported fixed interruption reason.');
+          db.prepare("UPDATE execution_intents SET status='interrupted',owner=NULL,expires_at=NULL,reason=?,updated_at=? WHERE id=?")
+            .run(reason!, Date.now(), row.id as string);
+        }
+      }); },
       close() { if (!closed) { operate(() => db.close()); closed = true; } },
     };
   } catch (error) {

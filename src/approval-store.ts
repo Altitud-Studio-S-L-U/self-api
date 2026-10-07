@@ -194,20 +194,40 @@ export async function issueApproval(options: IssueApprovalOptions): Promise<Appr
   }
 }
 
+async function validatedApproval(options: ConsumeApprovalOptions): Promise<{ receipt: ApprovalReceipt; attemptPath: string }> {
+  const bound = bindings(options);
+  const id = options.receiptId;
+  if (typeof id !== 'string' || !UUID.test(id)) invalid('A canonical approval receipt identifier is required.');
+  const paths = await storage(bound, false);
+  const granted = receipt(await loadLocalJson(join(paths.receipts, `${id}.json`), MAX_RECEIPT_BYTES));
+  if (granted.id !== id || granted.stateRootId !== rootId(paths.state) || granted.consumerRootId !== rootId(paths.consumer)
+    || granted.planId !== bound.planId || granted.executionDigest !== bound.executionDigest || granted.policyDigest !== bound.policyDigest) {
+    invalid('The approval receipt does not match the state, consumer, plan, execution, or policy.');
+  }
+  unexpired(granted);
+  await directoryPath(paths.attempts);
+  return { receipt: granted, attemptPath: join(paths.attempts, id) };
+}
+
+/** Read-only preflight. Consumption still checks all bindings and atomically claims an attempt. */
+export async function inspectApproval(options: ConsumeApprovalOptions): Promise<ApprovalReceipt> {
+  try {
+    const { receipt: granted, attemptPath } = await validatedApproval(options);
+    try { await lstat(attemptPath); }
+    catch (error) {
+      if (code(error) === 'ENOENT') return granted;
+      throw error;
+    }
+    invalid('This approval already has an execution attempt.');
+  } catch (error) {
+    if (error instanceof PlumberError) throw error;
+    invalid('Could not inspect an approval from regular local storage.');
+  }
+}
+
 export async function consumeApproval(options: ConsumeApprovalOptions): Promise<{ receipt: ApprovalReceipt; attemptPath: string }> {
   try {
-    const bound = bindings(options);
-    const id = options.receiptId;
-    if (typeof id !== 'string' || !UUID.test(id)) invalid('A canonical approval receipt identifier is required.');
-    const paths = await storage(bound, false);
-    const granted = receipt(await loadLocalJson(join(paths.receipts, `${id}.json`), MAX_RECEIPT_BYTES));
-    if (granted.id !== id || granted.stateRootId !== rootId(paths.state) || granted.consumerRootId !== rootId(paths.consumer)
-      || granted.planId !== bound.planId || granted.executionDigest !== bound.executionDigest || granted.policyDigest !== bound.policyDigest) {
-      invalid('The approval receipt does not match the state, consumer, plan, execution, or policy.');
-    }
-    unexpired(granted);
-    await directoryPath(paths.attempts);
-    const attemptPath = join(paths.attempts, id);
+    const { receipt: granted, attemptPath } = await validatedApproval(options);
     // Claim before any executor can start. Never remove this directory after failure or a process crash.
     try { await mkdir(attemptPath, { mode: 0o700 }); }
     catch (error) {
@@ -218,7 +238,7 @@ export async function consumeApproval(options: ConsumeApprovalOptions): Promise<
     unexpired(granted);
     await writeExclusive(join(attemptPath, 'marker.json'), {
       schemaVersion: 1,
-      receiptId: id,
+      receiptId: granted.id,
       planId: granted.planId,
       executionDigest: granted.executionDigest,
       consumedAt: new Date().toISOString(),

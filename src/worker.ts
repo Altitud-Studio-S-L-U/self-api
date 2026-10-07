@@ -58,7 +58,7 @@ function outsideConsumer(statePath: string, consumerRoot: string): void {
   }
 }
 
-async function existingStore(statePath: string) {
+export async function openExistingWorkerStore(statePath: string) {
   try {
     const attributes = await lstat(join(statePath, 'worker.sqlite3'));
     if (!attributes.isFile() || attributes.isSymbolicLink()) invalid('Worker state must be an existing regular local database.');
@@ -69,7 +69,7 @@ async function existingStore(statePath: string) {
   return openWorkerStore(statePath);
 }
 
-async function contractCopies<T>(statePath: string, base: Uint8Array, revision: Uint8Array,
+export async function withContractCopies<T>(statePath: string, base: Uint8Array, revision: Uint8Array,
   action: (paths: { basePath: string; revisionPath: string }) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(join(statePath, '.observe-'));
   try {
@@ -104,7 +104,7 @@ export async function registerLocalSubscription(options: LocalSubscriptionOption
   const store = await openWorkerStore(options.statePath);
   try {
     outsideConsumer(store.statePath, consumerRoot);
-    return await contractCopies(store.statePath, baselineBytes, baselineBytes, async paths => {
+    return await withContractCopies(store.statePath, baselineBytes, baselineBytes, async paths => {
       const comparison = await compareOpenApi({ ...paths, enginePath: options.enginePath });
       const base = await loadOpenApi(paths.basePath);
       const report = analyzeCapturedImpact({ comparison, inventory, base, providerBaseUrl: options.providerBaseUrl });
@@ -123,7 +123,7 @@ export async function observeOnce(options: {
   readonly enginePath: string;
   readonly subscriptionId?: string;
 }): Promise<ObservationCycle> {
-  const store = await existingStore(options.statePath);
+  const store = await openExistingWorkerStore(options.statePath);
   const results: ObservationCycle['results'][number][] = [];
   try {
     const subscriptions = store.listSubscriptions().filter(item => options.subscriptionId === undefined || item.id === options.subscriptionId);
@@ -136,7 +136,7 @@ export async function observeOnce(options: {
         outsideConsumer(store.statePath, subscription.consumerRoot);
         const revisionBytes = await readLocalBytes(subscription.sourcePath, 4 * 1024 * 1024);
         const baseline = store.getBaseline(subscription.id);
-        const observed = await contractCopies(store.statePath, baseline.bytes, revisionBytes, async paths => {
+        const observed = await withContractCopies(store.statePath, baseline.bytes, revisionBytes, async paths => {
           phase = 'contract';
           const base = await loadOpenApi(paths.basePath);
           const revision = await loadOpenApi(paths.revisionPath);
@@ -166,11 +166,11 @@ export async function observeOnce(options: {
 }
 
 export async function listLocalSubscriptions(options: { readonly statePath: string }): Promise<WorkerSubscription[]> {
-  const store = await existingStore(options.statePath);
+  const store = await openExistingWorkerStore(options.statePath);
   try { return store.listSubscriptions(); } finally { store.close(); }
 }
 
 export async function listMaintenanceJobs(options: { readonly statePath: string }): Promise<WorkerJob[]> {
-  const store = await existingStore(options.statePath);
+  const store = await openExistingWorkerStore(options.statePath);
   try { return store.listJobs(); } finally { store.close(); }
 }

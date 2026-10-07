@@ -157,6 +157,13 @@ function sha256(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
+/** Persist validated data, never caller-provided accessors or serialization hooks. */
+export function serializeMigrationRecipe(input: unknown): string {
+  const json = JSON.stringify(normalizeRecipe(input));
+  if (Buffer.byteLength(json, 'utf8') > MAX_RECIPE_BYTES) invalid('Recipe exceeds the 1 MiB limit.');
+  return json;
+}
+
 function checkSyntax(text: string, path: string): void {
   const extension = extname(path).toLowerCase();
   const plugins: ParserPlugin[] = [];
