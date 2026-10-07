@@ -1,0 +1,66 @@
+name: plumber-sdk-local
+
+services:
+  payments-provider:
+    image: node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd
+    platform: linux/amd64
+    command: [node, /app/provider.mjs]
+    environment:
+      PLUMBER_FICTIONAL_DEV: 'true'
+      PLUMBER_PROVIDER_STATE: /data
+    ports:
+      - '127.0.0.1:43227:43127'
+      - '127.0.0.1:43228:43128'
+    volumes:
+      - ./dev/local:/app:ro
+      - ./work/local-dev/provider:/data:ro
+    read_only: true
+    user: '65534:65534'
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    healthcheck:
+      test: [CMD, node, /app/healthcheck.mjs, 'http://127.0.0.1:43127/health']
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    logging:
+      driver: json-file
+      options: {max-size: 1m, max-file: '2'}
+
+  consumer:
+    image: node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd
+    platform: linux/amd64
+    command: [node, /app/consumer.mjs]
+    environment:
+      PLUMBER_FICTIONAL_DEV: 'true'
+      PLUMBER_CONSUMER_ROOT: /consumer
+    # The existing consumer deliberately calls loopback. Sharing this development
+    # network namespace preserves its exact source and independently tested recipe.
+    network_mode: service:payments-provider
+    depends_on:
+      payments-provider: {condition: service_healthy}
+    volumes:
+      - ./dev/local:/app:ro
+      - ./work/local-dev/consumer:/consumer:ro
+    read_only: true
+    user: '65534:65534'
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    healthcheck:
+      test: [CMD, node, /app/healthcheck.mjs, 'http://127.0.0.1:43128/health']
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    logging:
+      driver: json-file
+      options: {max-size: 1m, max-file: '2'}

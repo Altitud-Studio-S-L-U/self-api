@@ -328,6 +328,69 @@ The consent is bound to the exact in-memory request, lasts at most 15 minutes an
 
 The output must pass the existing exact-edit recipe and syntax checks. It cannot select new files, edit selected tests, answer business decisions, execute commands or grant approval. The harness adds an unresolved `model-semantics` decision so the proposal requires human review before the separate validation flow. Validation remains `not-run`. The adapter is trusted customer code: its declared location does not prove its actual networking, and a timeout/AbortSignal cannot preempt CPU or stop a noncooperating callback. Run untrusted adapters in customer-controlled isolation.
 
+## Persistent local development with Compose
+
+This development environment runs a **fictional, read-only payments provider** and a separate consumer application. The SDK worker runs on the developer's host and persists subscriptions, review jobs, approvals and outcomes in SQLite. It uses the existing public SDK APIs; importing Plumber does not launch these services. No real payment account, Cloud account, model or GitHub credential is required.
+
+Use **one Linux x64 host** for the complete workflow, including the worker and its state. On Windows, run the commands inside a Docker-integrated WSL distribution, from a checkout in that distribution's Linux filesystem. Windows drive mounts without POSIX permission metadata cannot preserve the worker's required private state permissions. Keep Node, pnpm and `node_modules` for that operating system; do not share dependency installations or the generated state between Windows and Linux. Inspection-only development remains available on Windows, but approval/validation uses the supported Linux profile.
+
+With Node 24, pnpm 11.19.0, Docker Engine and Compose available in that shell:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build
+pnpm engine:setup
+pnpm dev:local seed
+docker compose up -d --wait
+```
+
+The first Compose start downloads the pinned Node image if it is absent. Both services run as an unprivileged user with read-only mounts/filesystems, resource limits and health checks. Only loopback host ports are published. No Docker socket, host home directory or credentials enter the application containers. The consumer shares the provider's development network namespace so its unchanged fixture code can call `127.0.0.1:43127`. The host ports are deliberately different from test-suite ports:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `http://127.0.0.1:43227/health` | Provider health and active API version |
+| `http://127.0.0.1:43227/openapi.json` | Current fictional provider contract |
+| `http://127.0.0.1:43228/health` | Consumer process health |
+| `http://127.0.0.1:43228/payments/demo-eur?currency=EUR` | Application result for the seeded EUR payment |
+| `http://127.0.0.1:43228/payments/demo-usd?currency=USD` | Application result for the seeded USD payment |
+
+`work/local-dev/provider/payments.json` contains editable fictional seed data. `work/local-dev/consumer` contains the editable consumer and its unchanged tests. `work/local-dev/state` contains private worker state outside that consumer. `seed` creates missing fixture files once and preserves current versions, data, source edits and existing state. A marker rejects accidental reuse from a different OS/path. Everything under `work/` stays out of Git. Restart the consumer after editing its source; development does not rewrite application files automatically.
+
+Start observation explicitly in another terminal:
+
+```sh
+pnpm dev:local worker
+```
+
+This development supervisor uses finite SDK loops, checks every three seconds, prints each ten-cycle result and stops cleanly on Ctrl+C or an observation failure limit. It grants no approval and processes no execution queue. `pnpm dev:local observe` performs one cycle instead. The observer subscribes to the provider's exact local `current.json`; it does not weaken the production HTTPS observer's prohibition on private addresses to access Compose.
+
+Try a provider retirement while the services remain running:
+
+```sh
+pnpm dev:local version v2
+pnpm dev:local observe
+pnpm dev:local jobs
+```
+
+The old consumer now returns HTTP **502**, with `upstreamStatus: 410`. The provider's contract and behavior switch together because both read the same atomically replaced contract. The worker retains the v1 configured baseline and creates a review job for the changed evidence; repeated observations deduplicate it. Use the job identifier for `version: "2026-02"`:
+
+```sh
+pnpm dev:local plan <job-id>
+```
+
+Inspect the source changes, currency/amount decisions, test selection, isolation profile and request `id`. Planning does not execute or approve anything. To authorize that exact fictional request and validate it:
+
+```sh
+pnpm dev:local validate <job-id> <reviewed-request-id>
+pnpm dev:local executions
+```
+
+`validate` rejects stale request IDs, creates an explicit single-use SDK approval, queues that request and invokes the existing isolated Docker runner from Linux. Its child containers have no network, secrets or Docker socket. Their selected tests start their own real HTTP fixture internally. The separate long-running Compose provider remains available for manual development; successful isolated validation does not certify every behavior of that live process.
+
+Expect the original v2 tests to fail, the candidate's **25 cases** to pass, and the outcome to be `improved`. The returned `attemptDirectory` holds separate baseline/candidate copies and private evidence. The running consumer remains broken until you deliberately adopt the reviewed edit. For this fictional development checkout only, review the candidate file, copy its `payments.mjs` over `work/local-dev/consumer/payments.mjs`, and run `docker compose restart consumer`. The same application endpoint should again return `{ "reference": "demo-eur", "amountMinor": 2599, "currency": "EUR" }`. This explicit manual adoption is not a general SDK apply or GitHub-publication feature.
+
+`docker compose down` stops/removes the services while retaining the host seed and SQLite data. `docker compose up -d --wait` resumes them. Use `docker compose logs --tail 50` and `docker compose ps` for service diagnostics. There is no automatic reset/deletion command: use a separate clean checkout for a fresh scenario or restore only the fictional files you intentionally edited. Do not point this development setup at real customer data or deploy it as a production application.
+
 ## Run the worker explicitly
 
 ```sh
