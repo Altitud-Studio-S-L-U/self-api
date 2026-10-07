@@ -1,0 +1,33 @@
+{
+  "name": "plumber",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local API contract observation for Plumber",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24.11.1 <25"
+  },
+  "packageManager": "pnpm@11.19.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "plumber": "./dist/cli.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "engine:setup": "node tooling/setup-oasdiff.mjs",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node --test test/*.test.mjs",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
+  }
+}

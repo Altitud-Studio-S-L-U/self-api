@@ -1,0 +1,32 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Fictional Orders API", "version": "2026-02-01" },
+  "paths": {
+    "/orders/{id}": {
+      "get": {
+        "operationId": "getOrder",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "region", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "A fictional order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["id", "amount"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "amount": { "type": "number", "description": "Amount in fictional currency units" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

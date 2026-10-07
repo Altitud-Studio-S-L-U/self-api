@@ -1,6 +1,6 @@
 # Plumber implementation plan
 
-Status: planning baseline. This document describes intended behavior and acceptance criteria; it does not report implemented features or successful tests.
+Status: development plan. This document describes intended behavior and acceptance criteria. See the [README](../README.md) for the implemented scope and current limitations; later phases below are not claims of shipped features.
 
 ## 1. Product boundary
 

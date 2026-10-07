@@ -1,0 +1,2 @@
+# Do not execute dependency lifecycle scripts during installation.
+allowBuilds: {}
