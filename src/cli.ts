@@ -7,11 +7,15 @@ import { scanConsumer } from './scan.js';
 import { analyzeImpact } from './impact.js';
 import type { ImpactReport } from './impact.js';
 import type { ConsumerInventory } from './consumer-contracts.js';
+import { createMigrationPlan } from './migration-plan.js';
+import type { MigrationPlan } from './migration-plan.js';
+import { loadLocalJson } from './local-file.js';
 
 interface CliOptions {
   readonly compare?: typeof compareOpenApi;
   readonly scan?: typeof scanConsumer;
   readonly impact?: typeof analyzeImpact;
+  readonly plan?: typeof createMigrationPlan;
   readonly stdout?: (text: string) => void;
   readonly stderr?: (text: string) => void;
 }
@@ -19,6 +23,7 @@ interface CliOptions {
 const help = `Usage: plumber compare <base.json> <revision.json> --engine <path> [--json]
        plumber scan <consumer-directory> [--json]
        plumber impact <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> [--json]
+       plumber plan <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> --recipe <recipe.json> [--json]
 
 Compare local OpenAPI JSON contracts using an explicitly selected oasdiff executable.
 
@@ -26,6 +31,7 @@ Options:
   --engine <path>  Path to the local oasdiff executable (required).
   --consumer <directory>  Consumer repository to inspect without executing code.
   --provider-base-url <url>  Explicit HTTP(S) provider origin and optional base path.
+  --recipe <path>  Explicit local migration decisions and exact edits (plan only).
   --json           Write the comparison report as JSON to stdout.
   -h, --help       Show this help.
 
@@ -36,6 +42,8 @@ Coverage is structural only; consumer impact is not analyzed.
 Use impact to associate potential native-fetch usages; every impact report requires review.
 scan exits 1 for unresolved calls or inspection issues; impact exits 1 for contract breaking changes,
 including changes with no observed consumer match. No command executes consumer scripts.
+plan exits 0 for a syntax-checked proposal, 1 for pending decisions, or 2 for invalid input.
+Planning never grants authorization or modifies consumer files; JSON plans contain local source previews.
 `;
 
 function escapeTerminal(text: string): string {
@@ -98,6 +106,22 @@ function renderImpact(report: ImpactReport): string {
   return `${renderReport(report.comparison, true)}${renderInventory(report.inventory)}Potentially affected changes: ${report.matches.length}\n${links.length ? `${links.join('\n')}\n` : ''}Unmapped changes: ${report.unmappedChangeIndexes.length}\nConclusion: review required; no migration or consumer compatibility has been validated.\n`;
 }
 
+function renderPlan(plan: MigrationPlan): string {
+  const lines = [
+    `Migration proposal: ${plan.id}`,
+    escapeTerminal(plan.summary),
+    `Status: ${plan.status}`,
+    `Authorization: ${plan.authorization}`,
+    `Validation: ${plan.validation}; consumer tests have not run.`,
+    'Consumer files modified: no. Consumer code executed: no.',
+  ];
+  for (const decision of plan.decisions) lines.push(`- ${escapeTerminal(decision.question)} ${escapeTerminal(decision.answer?.trim() || '(pending)')}`);
+  for (const requirement of plan.requirements) lines.push(`- Decision ${escapeTerminal(requirement.id)}: ${escapeTerminal(requirement.question)}`);
+  for (const file of plan.files) lines.push(`- Proposed file: ${escapeTerminal(file.path)} (${file.beforeSha256} -> ${file.afterSha256})`);
+  lines.push('Use --json for the exact local before/after previews. They contain source code and must remain local.');
+  return `${lines.join('\n')}\n`;
+}
+
 export async function runCli(args: string[], options: CliOptions = {}): Promise<number> {
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });
@@ -111,6 +135,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         engine: { type: 'string' },
         consumer: { type: 'string' },
         'provider-base-url': { type: 'string' },
+        recipe: { type: 'string' },
         json: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
@@ -132,18 +157,26 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const enginePath = parsed.values.engine;
   const consumerRoot = parsed.values.consumer;
   const providerBaseUrl = parsed.values['provider-base-url'];
-  const validCompare = command === 'compare' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && !consumerRoot && !providerBaseUrl;
-  const validScan = command === 'scan' && parsed.positionals.length === 2 && basePath && !enginePath && !consumerRoot && !providerBaseUrl;
-  const validImpact = command === 'impact' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && consumerRoot && providerBaseUrl;
-  if (!validCompare && !validScan && !validImpact) {
+  const recipePath = parsed.values.recipe;
+  const validCompare = command === 'compare' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && !consumerRoot && !providerBaseUrl && !recipePath;
+  const validScan = command === 'scan' && parsed.positionals.length === 2 && basePath && !enginePath && !consumerRoot && !providerBaseUrl && !recipePath;
+  const validImpact = command === 'impact' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && consumerRoot && providerBaseUrl && !recipePath;
+  const validPlan = command === 'plan' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && consumerRoot && providerBaseUrl && recipePath;
+  if (!validCompare && !validScan && !validImpact && !validPlan) {
     stderr(jsonLine({ error: {
       code: 'INVALID_INPUT',
-      message: 'Invalid compare, scan, or impact arguments. Use --help for the required options.',
+      message: 'Invalid compare, scan, impact, or plan arguments. Use --help for the required options.',
     } }));
     return 2;
   }
 
   try {
+    if (validPlan) {
+      const recipe = await loadLocalJson(recipePath!, 1024 * 1024);
+      const plan = await (options.plan ?? createMigrationPlan)({ basePath: basePath!, revisionPath: revisionPath!, enginePath: enginePath!, consumerRoot: consumerRoot!, providerBaseUrl: providerBaseUrl!, recipe });
+      stdout(parsed.values.json ? jsonLine(plan) : renderPlan(plan));
+      return plan.status === 'ready-for-review' ? 0 : 1;
+    }
     if (validScan) {
       const inventory = await (options.scan ?? scanConsumer)(basePath!);
       stdout(parsed.values.json ? jsonLine(inventory) : renderInventory(inventory));

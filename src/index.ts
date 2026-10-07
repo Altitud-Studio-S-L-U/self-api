@@ -7,3 +7,6 @@ export { scanConsumer } from './scan.js';
 export { analyzeImpact } from './impact.js';
 export type { ImpactOptions, ImpactReport } from './impact.js';
 export type { ConsumerCall, ConsumerInventory, SourceLocation } from './consumer-contracts.js';
+export { createMigrationPlan } from './migration-plan.js';
+export type { MigrationPlan, MigrationPlanOptions } from './migration-plan.js';
+export type { MigrationRecipe } from './migration-recipe.js';

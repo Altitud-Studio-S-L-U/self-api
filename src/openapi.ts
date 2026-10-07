@@ -1,9 +1,7 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { lstat, open } from 'node:fs/promises';
-import { join, parse, resolve, sep } from 'node:path';
 import type { LocalSnapshot } from './contracts.js';
 import { PlumberError } from './errors.js';
+import { readLocalBytes } from './local-file.js';
 
 const MAXIMUM_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_DEPTH = 128;
@@ -25,71 +23,6 @@ function unsupported(message: string): never {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function localPath(filePath: string): string {
-  if (typeof filePath !== 'string' || filePath.trim().length === 0 || filePath === '-' || filePath.includes('\0')) {
-    invalid('Provide a local JSON file path; stdin is not supported.');
-  }
-  if (/^[\\/]{2}/.test(filePath)) {
-    invalid('UNC, device, and pipe paths are not supported.');
-  }
-  const withoutDrive = process.platform === 'win32' && /^[a-z]:[\\/]/i.test(filePath)
-    ? filePath.slice(2)
-    : filePath;
-  if (withoutDrive.includes(':')) {
-    invalid('URLs, Git references, drive-relative paths, and alternate data streams are not supported.');
-  }
-  if (/(?:^|[\\/])(?:con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:[. ]|$)/i.test(filePath)) {
-    invalid('Windows device names are not supported.');
-  }
-  return resolve(filePath);
-}
-
-async function readLocalFile(filePath: string): Promise<Buffer> {
-  const absolutePath = localPath(filePath);
-  try {
-    const root = parse(absolutePath).root;
-    const segments = absolutePath.slice(root.length).split(sep).filter(Boolean);
-    let current = root;
-    for (let index = 0; index < segments.length; index += 1) {
-      current = join(current, segments[index]!);
-      const attributes = await lstat(current);
-      if (attributes.isSymbolicLink()) {
-        invalid('Symbolic links and directory junctions are not supported.');
-      }
-      const isLast = index === segments.length - 1;
-      if (isLast ? !attributes.isFile() : !attributes.isDirectory()) {
-        invalid('The input must be a regular local file.');
-      }
-    }
-
-    // A replacement FIFO must not block open; these flags are not portable to Windows.
-    const flags = constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const handle = await open(absolutePath, flags);
-    try {
-      const attributes = await handle.stat();
-      if (!attributes.isFile()) invalid('The input must be a regular local file.');
-      if (attributes.size > MAXIMUM_BYTES) invalid('OpenAPI input exceeds the 4 MiB limit.');
-
-      const chunks: Buffer[] = [];
-      let length = 0;
-      for (;;) {
-        const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, MAXIMUM_BYTES + 1 - length));
-        const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
-        if (bytesRead === 0) break;
-        length += bytesRead;
-        if (length > MAXIMUM_BYTES) invalid('OpenAPI input exceeds the 4 MiB limit.');
-        chunks.push(chunk.subarray(0, bytesRead));
-      }
-      return Buffer.concat(chunks, length);
-    } finally {
-      await handle.close();
-    }
-  } catch (error) {
-    if (error instanceof PlumberError) throw error;
-    invalid('Could not read the input as a regular local JSON file.');
-  }
 }
 
 function checkDepth(json: string): void {
@@ -148,7 +81,7 @@ function checkReferences(value: unknown, isMap = false): void {
 }
 
 export async function loadOpenApi(filePath: string): Promise<LocalSnapshot> {
-  const bytes = await readLocalFile(filePath);
+  const bytes = await readLocalBytes(filePath, MAXIMUM_BYTES);
   let json: string;
   try {
     json = new TextDecoder('utf-8', { fatal: true }).decode(bytes);

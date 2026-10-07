@@ -1,6 +1,6 @@
 # Plumber
 
-**Early development: local contract comparison and potential consumer impact.** The worker, migrations, approvals, and Cloud connection are planned, not implemented.
+**Early development: local comparison, potential impact, and migration proposals.** The worker, migration execution, approvals, and Cloud connection are planned, not implemented.
 
 Plumber is a TypeScript SDK and CLI being developed to maintain integrations with external APIs and MCP servers. The intended product will observe subscribed sources, identify affected consumer code, present an impact assessment and migration plan, and prepare validated changes after authorization.
 
@@ -71,6 +71,22 @@ Capture is limited to 500 source/manifest files, 2,000 directory entries, 1 MiB 
 
 `scan` exits 1 when calls are unresolved or inspection issues exist. `impact` exits 1 whenever the contract has breaking findings, including findings with no observed consumer match. Every impact report requires review and distinguishes potentially matched operations, unmapped changes, and unresolved calls. It does not claim a migration is necessary, sufficient, or validated.
 
+## Preview an explicit migration
+
+```sh
+node dist/cli.js plan fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/migration-consumer --provider-base-url https://orders.example.invalid --engine work/tools/oasdiff/oasdiff.exe --recipe fixtures/orders-migration.json --json
+```
+
+The SDK exposes `createMigrationPlan({ ...impactOptions, recipe })`. A recipe supplies its summary, explicit business decisions, source paths and expected hashes, and exact unique replacements. Recipes are supplied by the caller at this stage; they are not inferred automatically from a schema diff. The fictional guide in `fixtures/migration-guide.md` explains both the `total`/`amount` equivalence and the existing source of `region`.
+
+Planning captures current evidence, rejects stale or ambiguous edits, builds before/after previews in memory, and checks their syntax. The plan includes the decisions, contract/consumer/recipe hashes, target-directory identity, and a content digest. A digest identifies the proposed content; it does not authenticate an approver. Edits are matched against original positions, cannot overlap, and cannot cascade through earlier replacements. Unknown fields, traversal, edits to package manifests, and unsupported source syntax are rejected.
+
+Recipes are bounded to 1 MiB, 50 source files, 100 edits, and 100 decisions. A missing decision produces `requires-decision` with no proposed files. A `ready-for-review` plan still has `authorization: not-granted`: syntax parsing does not establish type correctness, business equivalence, test success, or permission to execute. No approval, apply, install, test-execution, or publication command is implemented.
+
+JSON plans contain exact source previews and private local evidence. Keep them in the customer's environment; they are not Cloud messages. Text mode shows the proposal identity, decisions, and file hashes without dumping source. Exit codes are 0 for a syntax-checked proposal, 1 for pending decisions, and 2 for invalid input or analysis failure.
+
+Controlled tests execute only this repository's fictional fixture with a mocked provider: the old call passes against A, fails against B, and the proposed call plus parser preserves the internal model against B. This proves that fixture transformation, not a general consumer execution sandbox. The planner itself does not import, run, or modify consumer code.
+
 ## Development and dependencies
 
 `pnpm check` type-checks, builds, and runs Node's test runner, including comparisons against the real pinned engine. Install the engine first; engine absence fails tests rather than skipping integration coverage. CI defines the same checks on Windows, Linux, and macOS. No checks can demonstrate behavior for source types or product phases not implemented here.
@@ -79,6 +95,6 @@ Capture is limited to 500 source/manifest files, 2,000 directory entries, 1 MiB 
 
 Runtime dependencies are Node built-ins and `@babel/parser` 8.0.6 (MIT), with its resolved Babel dependencies. Development dependencies are pinned in `pnpm-lock.yaml`: TypeScript (Apache-2.0), Node type definitions (MIT), and their resolved dependencies. pnpm is MIT; [oasdiff](https://github.com/oasdiff/oasdiff/tree/v1.33.0) is Apache-2.0 and its LICENSE is preserved alongside the installed binary. Dependency lifecycle scripts are not authorized by the checked-in pnpm configuration.
 
-Read the [implementation plan](docs/implementation-plan.md) for the remaining architecture and acceptance criteria. The next slice builds an explicit, evidence-bound migration proposal and authorization flow; persistence and the resident worker follow demonstrated needs. The Cloud product follows the local workflow.
+Read the [implementation plan](docs/implementation-plan.md) for the remaining architecture and acceptance criteria. The next slice adds explicit authorization and an isolated execution path with current-evidence checks; persistence and the resident worker follow demonstrated needs. The Cloud product follows the local workflow.
 
 The package is private and unpublished. Do not install an unrelated package from npm using this development name. Package scope and distribution require availability checks. Public distribution under Apache-2.0 remains a proposal, not a license grant for this private repository.

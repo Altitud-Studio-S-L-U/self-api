@@ -17,11 +17,23 @@
       "id": "consumer-impact",
       "title": "Locate TypeScript consumers affected by contract changes",
       "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/3",
       "acceptance": [
         "Associate supported native HTTP call syntax with changed operations and local file/line evidence.",
         "Report dynamic, ambiguous, or unsupported call forms as unresolved; do not imply exhaustive discovery.",
         "Inspect consumer source without executing imports, installing its dependencies, or changing its files.",
         "Exercise affected, unaffected, and unresolved usages with a fictional TypeScript consumer and its parser."
+      ]
+    },
+    {
+      "id": "migration-proposal",
+      "title": "Preview explicit migrations against captured evidence",
+      "status": "in-review",
+      "acceptance": [
+        "Bind exact unique source edits to the consumer, contracts, recipe, and explicit business decisions.",
+        "Keep the consumer unchanged and unexecuted while showing reviewable before/after content.",
+        "Reject stale, ambiguous, overlapping, malformed, or out-of-scope recipes and expose missing decisions.",
+        "Prove the controlled call and parser transformation preserves the fictional consumer's internal model."
       ]
     },
     {
