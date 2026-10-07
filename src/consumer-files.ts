@@ -16,6 +16,20 @@ const EXCLUDED_DIRECTORIES = new Set([
 const SOURCE_EXTENSION = /\.(?:tsx?|jsx?|mts|cts|mjs|cjs)$/i;
 const DECLARATION_EXTENSION = /\.d\.(?:ts|mts|cts)$/i;
 
+function capturedFilename(name: string): boolean {
+  return !name.startsWith('.') && !DECLARATION_EXTENSION.test(name)
+    && (name === 'package.json' || SOURCE_EXTENSION.test(name));
+}
+
+/** Shared inspection profile for regular Git tree paths; filesystem safety is checked separately. */
+export function isCapturedConsumerPath(path: string): boolean {
+  if (typeof path !== 'string' || /[\\\u0000]/u.test(path)) return false;
+  const parts = path.split('/');
+  if (parts.length - 1 > MAXIMUM_DEPTH || parts.some(part => !part || part === '.' || part === '..')) return false;
+  return parts.slice(0, -1).every(part => !part.startsWith('.') && !EXCLUDED_DIRECTORIES.has(part.toLowerCase()))
+    && capturedFilename(parts.at(-1)!);
+}
+
 export interface ConsumerFile {
   readonly path: string;
   readonly sha256: string;
@@ -161,7 +175,7 @@ export async function captureConsumer(rootPath: string): Promise<ConsumerCapture
         } else if (!attributes.isFile()) reason = 'non-regular-file';
         else if (name.startsWith('.')) reason = 'hidden-file';
         else if (DECLARATION_EXTENSION.test(name)) reason = 'declaration-file';
-        else if (name !== 'package.json' && !SOURCE_EXTENSION.test(name)) reason = 'unsupported-extension';
+        else if (!capturedFilename(name)) reason = 'unsupported-extension';
         else {
           if (candidates.length >= MAXIMUM_FILES) invalid('Consumer source and manifest files exceed the limit of 500.');
           candidates.push({ absolutePath: absoluteEntry, path, manifest: name === 'package.json', attributes });

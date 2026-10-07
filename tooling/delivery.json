@@ -4,7 +4,7 @@
     {
       "id": "contract-comparison",
       "title": "Compare local OpenAPI contracts",
-      "status": "in-review",
+      "status": "completed",
       "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/2",
       "acceptance": [
         "Capture bounded local JSON snapshots and compare them with the pinned real engine without changing source files.",
@@ -16,7 +16,7 @@
     {
       "id": "consumer-impact",
       "title": "Locate TypeScript consumers affected by contract changes",
-      "status": "in-review",
+      "status": "completed",
       "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/3",
       "acceptance": [
         "Associate supported native HTTP call syntax with changed operations and local file/line evidence.",
@@ -28,7 +28,7 @@
     {
       "id": "migration-proposal",
       "title": "Preview explicit migrations against captured evidence",
-      "status": "in-review",
+      "status": "completed",
       "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/4",
       "acceptance": [
         "Bind exact unique source edits to the consumer, contracts, recipe, and explicit business decisions.",
@@ -40,7 +40,7 @@
     {
       "id": "authorized-migration",
       "title": "Propose and validate an authorized call and parser migration",
-      "status": "in-review",
+      "status": "completed",
       "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/5",
       "acceptance": [
         "Bind a reviewable plan to source evidence, consumer revision, permitted files, and validation commands.",
@@ -52,7 +52,7 @@
     {
       "id": "local-observation",
       "title": "Persist local subscriptions and review jobs",
-      "status": "in-review",
+      "status": "completed",
       "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/6",
       "acceptance": [
         "Persist exact bounded OpenAPI bytes and an explicit configured baseline without claiming adoption or deployment.",
@@ -64,7 +64,7 @@
     {
       "id": "local-worker",
       "title": "Resume authorized maintenance jobs",
-      "status": "in-review",
+      "status": "completed",
       "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/7",
       "acceptance": [
         "Persist subscriptions, observed evidence, authorized jobs, and attempts without starting a worker on SDK import.",
@@ -76,7 +76,7 @@
     {
       "id": "local-publication",
       "title": "Publish an explicitly authorized migration from the customer environment",
-      "status": "planned",
+      "status": "in-progress",
       "acceptance": [
         "Bind publication to a reviewed repository, base commit, remote destination, permitted files and validation evidence.",
         "Require separate publication scope, isolate credentials from consumer execution and preserve human commits.",

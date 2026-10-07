@@ -20,3 +20,5 @@ export { prepareJobValidation, approveJobValidation, queueJobValidation, runAppr
 export type { JobValidationOptions, JobExecutionCycle } from './job-validation.js';
 export type { ExecutionIntent } from './worker-store.js';
 export type { ValidationOutcome } from './validation-outcome.js';
+export { prepareJobPublicationCandidate } from './publication-plan.js';
+export type { JobPublicationOptions, PublicationCandidate } from './publication-plan.js';

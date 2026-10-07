@@ -1,6 +1,6 @@
 # Plumber
 
-**Early development: local observation, potential impact, migration proposals, and explicitly approved isolated validation.** Explicit worker cycles persist subscriptions, review jobs, authorized execution and recovery evidence. Resident scheduling, live checkout adoption, Git publication, and Cloud connection remain planned.
+**Early development: local observation, potential impact, migration proposals, and explicitly approved isolated validation.** Explicit worker cycles persist subscriptions, review jobs, authorized execution and recovery evidence. A local publication preflight binds validated changes to Git evidence; remote verification and publication, resident scheduling, live checkout adoption, and Cloud connection remain planned.
 
 Plumber is a TypeScript SDK and CLI being developed to maintain integrations with external APIs and MCP servers. The intended product will observe subscribed sources, identify affected consumer code, present an impact assessment and migration plan, and prepare validated changes after authorization.
 
@@ -166,6 +166,24 @@ The v2 Docker profile persists an exclusive, synchronized intent before containe
 SQLite, filesystem writes and the Docker daemon are not one atomic transaction. Guards and retained evidence fence stale commits and prevent approval reuse, but do not establish exactly-once external effects or guarantee zero orphaned containers after every host failure. Do not move/import a state directory between hosts as a recovery mechanism. A compromised process under the same OS account remains outside the trust boundary. Retain uncertain attempts for operator inspection rather than deleting evidence.
 
 Execution passes exit 0 for no work or all outcomes `passed`, 1 for completed failures/improvement, and 2 for blocked/interrupted/lost-ownership cases. A completed queue entry means its validation outcome was recorded; that outcome can be `blocked`. It does not mean compatibility, adoption, merge or deployment. Text listings omit recipes; `--json` includes private local records and must remain in the customer's environment.
+
+## Prepare a local publication candidate
+
+After an execution intent completes with a passing candidate, prepare a private proposal against a committed consumer repository:
+
+```sh
+node dist/cli.js publication-plan INTENT_ID --state /private/plumber-state --git /usr/bin/git --engine work/tools/oasdiff/oasdiff --repository OWNER/REPO --base main --json
+```
+
+Replace the identifiers and paths with the reviewed destination and trusted local executables. On Windows, supply the absolute path to `git.exe`. The SDK equivalent is `prepareJobPublicationCandidate({ statePath, intentId, gitPath, enginePath, repository, baseBranch })`. Git must support `--no-lazy-fetch`; an unsupported executable fails explicitly. Neither Git nor oasdiff is installed automatically.
+
+The preflight reconstructs the validated request from the worker's immutable evidence, checks current provider and consumer evidence, and compares the durable result with the completed intent. Only `passed` or `improved` outcomes with a passing candidate and confirmed cleanup qualify. `improved` preserves the failing baseline in the proposed PR. Selected test success does not establish compatibility beyond those tests.
+
+The first Git profile requires the exact root of a non-bare SHA-1 repository with a local `.git` directory. Every captured source and manifest must match the index and raw HEAD blobs in both directions; uncommitted additions, changes and deletions in that profile are rejected. Git filters and line-ending normalization are not applied. Other omitted files are not validated by this comparison. Linked worktrees, configuration includes, external object stores, Git symlinks, submodules, unsupported repository extensions, missing local objects, ambiguous paths and changing evidence are rejected. Git reads have bounded output and runtime and use a filtered environment with hooks, fsmonitor, lazy fetching and network protocols disabled. No staging, checkout, commit, branch creation or index refresh is performed.
+
+The trusted executable and repository metadata are controlled by the local user. These checks do not isolate against a malicious process with the same OS account or provide an atomic filesystem snapshot. Consumer execution remains a separate, containerized action.
+
+The deterministic candidate binds exact before/after content, Git blob identities/modes, the local HEAD/tree, validation/request/policy digests and an **unverified** `github.com` destination. It proposes a `feat/api-…` branch and draft PR, with `authorization: not-granted` and `publication: not-started`. Text output omits code and the PR body; JSON contains private source previews and must remain in the customer's environment. This command has no GitHub credentials, network client or publication permission. Remote repository identity/base verification, a distinct publication approval and durable write reconciliation are subsequent gates.
 
 ## Development and dependencies
 
