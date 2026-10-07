@@ -1,6 +1,6 @@
 # Plumber
 
-**Early development: local comparison, potential impact, and migration proposals.** The worker, migration execution, approvals, and Cloud connection are planned, not implemented.
+**Early development: local comparison, potential impact, migration proposals, and explicitly approved isolated validation.** The resident worker, live checkout adoption, Git publication, and Cloud connection are planned, not implemented.
 
 Plumber is a TypeScript SDK and CLI being developed to maintain integrations with external APIs and MCP servers. The intended product will observe subscribed sources, identify affected consumer code, present an impact assessment and migration plan, and prepare validated changes after authorization.
 
@@ -47,10 +47,10 @@ console.log(report.status, report.changes);
 
 ## Current boundary
 
-- Local OpenAPI 3.0.x/3.1.x JSON files only, at most 4 MiB and 128 nesting levels. External references, custom dialects, `$id`, dynamic references/anchors, reusable `components.pathItems`, and root webhooks are rejected. Inputs must be regular files without symlinked ancestors; URLs, UNC/device paths, stdin, Git refs, and alternate data streams are not supported. No remote fetching, YAML, SDK call mapping, MCP observation, or code changes yet.
+- Local OpenAPI 3.0.x/3.1.x JSON files only, at most 4 MiB and 128 nesting levels. External references, custom dialects, `$id`, dynamic references/anchors, reusable `components.pathItems`, and root webhooks are rejected. Inputs must be regular files without symlinked ancestors; URLs, UNC/device paths, stdin, Git refs, and alternate data streams are not supported. No remote fetching, YAML, SDK call mapping, or MCP observation yet. Authorized validation changes only an isolated captured copy.
 - Captured input digests and API/specification versions identify the compared evidence. The local engine validates both contracts before comparing immutable temporary copies.
 - Structural breaking-change findings only. `no-breaking-changes` does not prove consumer compatibility or unchanged business semantics; every report says `consumerImpact: not-analyzed`. Additive and prose-only changes can set `contentChanged` without producing breaking findings.
-- The runner disables external references, passes its own empty engine configuration, and filters the child environment. It does not run consumer scripts. Process timeout and output limits are applied; this process is not a container sandbox or a hard memory limit.
+- The comparison engine disables external references, uses its own empty configuration, and receives a filtered environment. Comparison does not run consumer scripts. Engine process timeout and output limits are applied; this engine process is not a container sandbox or a hard memory limit. Consumer execution uses the separate Docker profile described below.
 - The executable path is explicitly authorized by the caller. Runtime version checking is not proof of binary authenticity: protect the installed binary and use the checksum-verifying setup command or your own trusted distribution process.
 - Reports remain local and may contain private operation names or schema descriptions. They are not the future Cloud transmission contract. No AI provider, Cloud client, telemetry, or runtime API proxy is included.
 
@@ -81,20 +81,52 @@ The SDK exposes `createMigrationPlan({ ...impactOptions, recipe })`. A recipe su
 
 Planning captures current evidence, rejects stale or ambiguous edits, builds before/after previews in memory, and checks their syntax. The plan includes the decisions, contract/consumer/recipe hashes, target-directory identity, and a content digest. A digest identifies the proposed content; it does not authenticate an approver. Edits are matched against original positions, cannot overlap, and cannot cascade through earlier replacements. Unknown fields, traversal, edits to package manifests, and unsupported source syntax are rejected.
 
-Recipes are bounded to 1 MiB, 50 source files, 100 edits, and 100 decisions. A missing decision produces `requires-decision` with no proposed files. A `ready-for-review` plan still has `authorization: not-granted`: syntax parsing does not establish type correctness, business equivalence, test success, or permission to execute. No approval, apply, install, test-execution, or publication command is implemented.
+Recipes are bounded to 1 MiB, 50 source files, 100 edits, and 100 decisions. A missing decision produces `requires-decision` with no proposed files. A `ready-for-review` plan still has `authorization: not-granted`: syntax parsing does not establish type correctness, business equivalence, test success, or permission to execute. Approval and isolated validation are separate explicit actions below; installation, live adoption, and publication are not implemented.
 
 JSON plans contain exact source previews and private local evidence. Keep them in the customer's environment; they are not Cloud messages. Text mode shows the proposal identity, decisions, and file hashes without dumping source. Exit codes are 0 for a syntax-checked proposal, 1 for pending decisions, and 2 for invalid input or analysis failure.
 
 Controlled tests execute only this repository's fictional fixture with a mocked provider: the old call passes against A, fails against B, and the proposed call plus parser preserves the internal model against B. This proves that fixture transformation, not a general consumer execution sandbox. The planner itself does not import, run, or modify consumer code.
 
+## Approve and validate captured copies
+
+The first execution profile supports a **Linux x64 host** with `/usr/bin/docker`, a local daemon at `/var/run/docker.sock`, and the pinned official Node image already available. Docker Desktop, remote contexts, rootless socket discovery, dependency installation, application services, and arbitrary package scripts are outside this profile. Windows/macOS can inspect and propose; execution returns `blocked` there. It never falls back to executing the consumer on the host.
+
+Provision the image explicitly on the Linux validation host. This is a network operation separate from approval:
+
+```sh
+docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd
+```
+
+Use `validation-plan`, `approve`, then `validate` with identical source, recipe and selected tests. For the fictional fixture:
+
+```sh
+node dist/cli.js validation-plan fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine work/tools/oasdiff/oasdiff --recipe fixtures/validation-recipe.json --test orders.test.mjs --json
+node dist/cli.js approve fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine work/tools/oasdiff/oasdiff --recipe fixtures/validation-recipe.json --test orders.test.mjs --state "$HOME/.plumber-local-state"
+node dist/cli.js validate fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine work/tools/oasdiff/oasdiff --recipe fixtures/validation-recipe.json --test orders.test.mjs --state "$HOME/.plumber-local-state" --approval RECEIPT_ID
+```
+
+Replace `RECEIPT_ID` with the returned local approval ID. `approve` shows the before/after content, selected commands, profile and limits, then requires typing the exact request ID in an interactive terminal. There is no `--yes`, piped approval, implicit authorization, or execution during approval. A changed request must be reviewed again. The SDK exposes `prepareMigrationValidation(options)`, `approveMigrationValidation({ options, expectedRequestId, statePath, origin: 'explicit-sdk-caller' })`, and `executeMigrationValidation({ options, statePath, receiptId })`. An SDK approval represents the trusted caller's explicit intent; it does not prove a human reviewed the change.
+
+Approvals expire after 15 minutes and bind the plan, consumer, contracts, recipe, selected tests, exact profile, and local state directory. Execution re-creates the request from current inputs and verifies those bindings. It claims the attempt exclusively before staging or execution, so parallel requests, failure, or a process crash cannot reuse the receipt. A failed attempt needs a new explicit approval. Changing the local clock or tampering with state under the same OS account is outside this trust boundary; no cryptographic identity claim is made.
+
+Only captured source and package manifests are staged, from captured bytes. Dependencies, JSON test data, environment files, generated outputs, and omitted entries are unavailable. Select 1–20 Node test files explicitly; recipes cannot edit those selected tests. The same tests run on an original snapshot and a separate proposed snapshot. A missing import, service, or fixture is a real validation failure, never a fabricated successful result. This profile is currently useful for dependency-free contract tests; it does not replace a project's full CI. Tests that require transpilers, credentials, dependencies or network need a future separately approved execution profile.
+
+The fixed container uses the image digest above, `--pull=never`, no network, a read-only root and snapshot, a numeric non-root user, no Linux capabilities, no-new-privileges, Docker's built-in seccomp profile, a 1 CPU / 512 MiB / 128 PID limit, and bounded temporary storage. No home directory, host environment, source checkout, credentials or Docker socket is mounted. Each baseline/candidate run has a 30-second total deadline, 1 MiB output budget and an additional bounded cleanup window. Daemon prerequisites and container removal are checked; failed cleanup prevents a successful result. See Docker's [run options](https://docs.docker.com/reference/cli/docker/container/run/), [bind-mount behavior](https://docs.docker.com/engine/storage/bind-mounts/) and [security model](https://docs.docker.com/engine/security/). A privileged local daemon and shared kernel remain part of the trust boundary; this is not a hostile multitenant execution service.
+
+Results preserve both test outcomes: `passed` means both passed, `improved` means the baseline failed and the candidate passed, `regression` means only the candidate failed, and `failed` means both failed. Incomplete execution, unavailable infrastructure, exhausted budgets or unverified cleanup produce `blocked`. Passing selected tests does not establish provider compatibility beyond those assertions. The fictional B fixture is expected to return `improved` after fixing both call and parser. CLI exit 0 requires both passing, exit 1 preserves completed failures/improvement for review, and exit 2 indicates invalid input/authorization or blocked execution.
+
+Use a private state directory outside the consumer; neither directory may contain the other. New state directories/files use restrictive POSIX modes; Windows relies on inherited account ACLs. `receipts/` holds approvals; `attempts/<id>/` holds the consumed marker, exact request, snapshots and result including bounded raw output. These contain private source and must remain local. Artifacts are retained for inspection; deleting a consumed marker could permit replay while a receipt remains valid, so do not remove attempt markers to retry. No state cleanup daemon, recovery of interrupted containers, Git publication, Cloud transmission, or live checkout mutation is implemented in this slice.
+
 ## Development and dependencies
 
 `pnpm check` type-checks, builds, and runs Node's test runner, including comparisons against the real pinned engine. Install the engine first; engine absence fails tests rather than skipping integration coverage. CI defines the same checks on Windows, Linux, and macOS. No checks can demonstrate behavior for source types or product phases not implemented here.
+
+`pnpm test:isolated` runs the real Docker integration suite on a prepared Linux x64 host. It is a separate CI job with explicit image provisioning; an absent daemon/image fails that suite instead of skipping it. The ordinary cross-platform suite tests authorization and the Docker process boundary without needing a daemon.
 
 `pnpm dev` shows the delivery queue, pending reviews, and the next implementation milestone with its acceptance criteria. `pnpm dev:check` runs the existing project checks and propagates failures; it never changes delivery status, merges a PR, or starts background work. Resume instructions are in section 12 of the implementation plan.
 
 Runtime dependencies are Node built-ins and `@babel/parser` 8.0.6 (MIT), with its resolved Babel dependencies. Development dependencies are pinned in `pnpm-lock.yaml`: TypeScript (Apache-2.0), Node type definitions (MIT), and their resolved dependencies. pnpm is MIT; [oasdiff](https://github.com/oasdiff/oasdiff/tree/v1.33.0) is Apache-2.0 and its LICENSE is preserved alongside the installed binary. Dependency lifecycle scripts are not authorized by the checked-in pnpm configuration.
 
-Read the [implementation plan](docs/implementation-plan.md) for the remaining architecture and acceptance criteria. The next slice adds explicit authorization and an isolated execution path with current-evidence checks; persistence and the resident worker follow demonstrated needs. The Cloud product follows the local workflow.
+Read the [implementation plan](docs/implementation-plan.md) for the remaining architecture and acceptance criteria. The next slice adds durable local subscriptions and worker reconciliation around these explicit plan/approval/attempt boundaries. The Cloud product follows the local workflow.
 
 The package is private and unpublished. Do not install an unrelated package from npm using this development name. Package scope and distribution require availability checks. Public distribution under Apache-2.0 remains a proposal, not a license grant for this private repository.

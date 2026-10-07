@@ -10,3 +10,6 @@ export type { ConsumerCall, ConsumerInventory, SourceLocation } from './consumer
 export { createMigrationPlan } from './migration-plan.js';
 export type { MigrationPlan, MigrationPlanOptions } from './migration-plan.js';
 export type { MigrationRecipe } from './migration-recipe.js';
+export { prepareMigrationValidation, approveMigrationValidation, executeMigrationValidation } from './migration-validation.js';
+export type { MigrationValidationOptions, MigrationValidationRequest, MigrationValidationResult } from './migration-validation.js';
+export type { ApprovalReceipt } from './approval-store.js';

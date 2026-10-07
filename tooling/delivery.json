@@ -29,6 +29,7 @@
       "id": "migration-proposal",
       "title": "Preview explicit migrations against captured evidence",
       "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/4",
       "acceptance": [
         "Bind exact unique source edits to the consumer, contracts, recipe, and explicit business decisions.",
         "Keep the consumer unchanged and unexecuted while showing reviewable before/after content.",
@@ -39,7 +40,7 @@
     {
       "id": "authorized-migration",
       "title": "Propose and validate an authorized call and parser migration",
-      "status": "planned",
+      "status": "in-review",
       "acceptance": [
         "Bind a reviewable plan to source evidence, consumer revision, permitted files, and validation commands.",
         "Require applicable authorization before mutation or consumer execution and use an isolated execution environment.",

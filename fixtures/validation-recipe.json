@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "summary": "Controlled fictional API B validation: forward the existing region and preserve Order.total",
+  "decisions": [
+    {
+      "id": "amount-meaning",
+      "question": "Does the replacement amount retain the meaning and units of total?",
+      "answer": "The controlled fictional fixture explicitly defines API A total and API B amount as the same finite numeric value in the same units. This equivalence is not inferred from names."
+    },
+    {
+      "id": "region-source",
+      "question": "Where does the newly required region come from?",
+      "answer": "The existing application context.region contains the applicable caller-supplied region. Forward it without adding a default or changing the application's input contract."
+    }
+  ],
+  "files": [
+    {
+      "path": "orders.mjs",
+      "sha256": "d8224d45cf2d924f15057c51f48406f8990409919fed157c1dc66c945abc2b19",
+      "edits": [
+        {
+          "before": "`https://orders.example.invalid/orders/${encodeURIComponent(id)}`",
+          "after": "`https://orders.example.invalid/orders/${encodeURIComponent(id)}?region=${encodeURIComponent(context.region)}`"
+        },
+        {
+          "before": "if (typeof order.id !== 'string' || typeof order.total !== 'number' || !Number.isFinite(order.total)) {",
+          "after": "if (typeof order.id !== 'string' || typeof order.amount !== 'number' || !Number.isFinite(order.amount)) {"
+        },
+        {
+          "before": "return { reference: order.id, total: order.total };",
+          "after": "return { reference: order.id, total: order.amount };"
+        }
+      ]
+    }
+  ]
+}
