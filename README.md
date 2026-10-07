@@ -28,7 +28,7 @@ Code, patches, private schemas and raw logs are excluded from the Cloud status p
 - Node.js **24.x**, minimum **24.11.1**, and pnpm **11.19.0**.
 - Project dependencies available in the local pnpm store for offline installation.
 - The pinned **oasdiff 1.33.0** binary for contract comparison and the test suite.
-- Git supporting `--no-lazy-fetch` for publication preparation and the ordinary test suite.
+- Git supporting `--no-lazy-fetch` for publication preparation and the ordinary test suite. Verify the selected executable with `git --no-lazy-fetch --version`; older system Git installations can lack this capability. Plumber fails before repository plumbing and never removes this protection as a fallback.
 - A prepared Linux x64 Docker host for consumer test execution only. Windows/macOS support inspection and planning; execution there returns `blocked`.
 
 ## Quick start from this checkout
@@ -133,6 +133,8 @@ The MCP fixture changes both an input and a parsed output. Expect comparison exi
 
 ## Development and checks
 
+For a persistent local development environment, use the [Compose development guide](docs/local-workflow.md#persistent-local-development-with-compose). It starts a fictional payments provider and a separate consumer, seeds editable data once, and keeps the SDK worker's SQLite state between restarts. You can retire the provider version, inspect the resulting job, review its exact plan and authorize validation separately. This environment is distinct from the disposable integration test suite.
+
 | Command | Purpose |
 | --- | --- |
 | `pnpm build` | Compile the SDK, CLI and type declarations |
@@ -142,6 +144,7 @@ The MCP fixture changes both an input and a parsed output. Expect comparison exi
 | `pnpm check` | Run type checks, the ordinary suite and the package check in order |
 | `pnpm test:isolated` | Run real Docker integrations on the prepared Linux x64 host |
 | `pnpm dev` | Show the delivery queue and active milestone |
+| `pnpm dev:local --help` | Seed and operate the persistent fictional Compose development environment |
 | `pnpm dev:check` | Run project checks without changing delivery status |
 
 The comparison engine must be installed before checks; missing infrastructure fails explicitly rather than skipping coverage. The package check reuses the cached dependency versions and performs no registry publication. The Docker suite requires its pinned image to be provisioned separately; see the [execution prerequisites](docs/local-workflow.md#approve-and-validate-captured-copies).

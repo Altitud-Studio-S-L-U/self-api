@@ -87,7 +87,8 @@
     {
       "id": "local-source-profiles",
       "title": "Observe local MCP, schema, example and documentation evidence",
-      "status": "in-review",
+      "status": "completed",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/9",
       "acceptance": [
         "Compare the declared MCP and JSON Schema profiles with correct input/output direction; incomplete context cannot establish removal.",
         "Persist immutable configured baselines, bounded snapshots and rollback transitions with transactional ownership and failure recovery.",
@@ -98,7 +99,8 @@
     {
       "id": "integration-evidence",
       "title": "Track version, boundary and dependency evidence locally",
-      "status": "in-review",
+      "status": "completed",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/9",
       "acceptance": [
         "Keep API, SDK, webhook and MCP versions separate, with source provenance, evidence for dates and unknown effective versions.",
         "Register optional function metadata without wrapping or changing application behavior.",
@@ -108,7 +110,8 @@
     {
       "id": "optional-model-harness",
       "title": "Constrain customer-selected model proposals",
-      "status": "in-review",
+      "status": "completed",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/9",
       "acceptance": [
         "Bind selected context and adapter destination to explicit one-use consent; remote context requires an additional opt-in.",
         "Enforce input/output/deadline limits and validate exact-edit recipes without editing selected tests or answering business decisions.",
@@ -118,7 +121,8 @@
     {
       "id": "worker-and-status-protocol",
       "title": "Expose bounded scheduling and a private-data-free status contract",
-      "status": "in-review",
+      "status": "completed",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/9",
       "acceptance": [
         "Run finite explicit worker cycles with cooperative cancellation, no overlap and no automatic replay of failed execution.",
         "Validate exact status wire shapes through plumber/protocol, rejecting code, logs, prompts, schemas, commands and arbitrary labels.",
@@ -128,7 +132,8 @@
     {
       "id": "https-source-observation",
       "title": "Observe explicit HTTPS sources and inspect MCP consumer impact",
-      "status": "in-review",
+      "status": "completed",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/9",
       "acceptance": [
         "Capture explicitly allowed HTTPS URLs using scoped credentials, verified public addresses, pinned TLS connections and bounded responses.",
         "Persist conditional cache, exact snapshots and successful observations atomically under ownership claims, preserving prior evidence on failure.",

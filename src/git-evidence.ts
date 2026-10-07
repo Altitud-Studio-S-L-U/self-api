@@ -40,6 +40,7 @@ const MAX_OUTPUT = 20 * 1024 * 1024;
 const MAX_BLOBS = 16 * 1024 * 1024 + 64 * 1024;
 const MAX_TREE = 1024 * 1024;
 const MAX_METADATA = 64 * 1024;
+const REQUIRED_GIT_OPTIONS = 'The trusted Git executable must support --no-lazy-fetch and the required read-only options. Install a compatible Git and pass its absolute path.';
 
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
 function order(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
@@ -223,7 +224,8 @@ export function createGitEvidenceCapture(dependencies: Dependencies = {}): (opti
       const fixed = ['--no-pager', '--no-replace-objects', '--no-lazy-fetch', '--no-optional-locks',
         '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.commitGraph=false',
         '-c', 'protocol.allow=never', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0'];
-      const run = async (args: string[], maxBytes: number, input?: string): Promise<Buffer> => {
+      const run = async (args: string[], maxBytes: number, input?: string,
+        exitFailure = 'Git could not inspect the supported local repository profile.'): Promise<Buffer> => {
         const remaining = deadline - Date.now();
         if (remaining <= 0) invalid('Git evidence inspection exceeded its time limit.');
         return new Promise<Buffer>((accept, reject) => {
@@ -260,7 +262,7 @@ export function createGitEvidenceCapture(dependencies: Dependencies = {}): (opti
           });
           child.stderr!.on('data', (chunk: Buffer) => { count(chunk); });
           child.once('error', () => finish('The trusted Git executable could not inspect local evidence.'));
-          child.once('close', code => finish(failure ?? (code === 0 ? undefined : 'Git could not inspect the supported local repository profile.')));
+          child.once('close', code => finish(failure ?? (code === 0 ? undefined : exitFailure)));
           if (input !== undefined) {
             child.stdin!.on('error', () => { fail('Git rejected the local evidence request.'); });
             child.stdin!.end(input);
@@ -268,7 +270,8 @@ export function createGitEvidenceCapture(dependencies: Dependencies = {}): (opti
         });
       };
       const text = async (args: string[]): Promise<string> => decode(await run(args, MAX_METADATA)).trimEnd();
-      if (!/^git version \d+\.\d+/u.test(await text(['--version']))) invalid('Git did not confirm support for the required read-only options.');
+      const version = decode(await run(['--version'], MAX_METADATA, undefined, REQUIRED_GIT_OPTIONS)).trimEnd();
+      if (!/^git version \d+\.\d+/u.test(version)) invalid(REQUIRED_GIT_OPTIONS);
       const configValues = decode(await run(['config', '--file', join(root, '.git/config'), '--no-includes', '--null', '--list'], MAX_METADATA));
       for (const record of configValues.split('\0').filter(Boolean)) {
         const separator = record.indexOf('\n');

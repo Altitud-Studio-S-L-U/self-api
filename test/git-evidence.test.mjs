@@ -250,6 +250,28 @@ test('the process boundary uses no shell, ambient credentials, lazy fetch, repla
   assert(commands.every(args => !args.some(arg => ['status', 'checkout', 'diff', 'fetch', 'push', 'add', '--filters', '--textconv', '--follow-symlinks'].includes(arg))));
 });
 
+test('unsupported Git read-only flags report an actionable prerequisite before any repository plumbing', async t => {
+  const { options } = await fixture(t);
+  let starts = 0;
+  const inspect = createGitEvidenceCapture({ spawn: (_binary, args) => {
+    starts += 1;
+    assert.ok(args.includes('--version'));
+    assert.ok(args.includes('--no-lazy-fetch'));
+    return fakeProcess(child => {
+      child.stderr.end('unknown option: --no-lazy-fetch\nPRIVATE_CONFIGURATION_FIXTURE');
+      child.emit('close', 129);
+    });
+  } });
+  await assert.rejects(inspect(options), error => {
+    assert.equal(error.code, 'INVALID_INPUT');
+    assert.match(error.message, /support --no-lazy-fetch/u);
+    assert.match(error.message, /compatible Git/u);
+    assert.doesNotMatch(error.message, /PRIVATE_CONFIGURATION_FIXTURE/u);
+    return true;
+  });
+  assert.equal(starts, 1);
+});
+
 test('HEAD moving after raw blob reads invalidates evidence even when source bytes stay unchanged', async t => {
   const { directory, options } = await fixture(t);
   const inspect = createGitEvidenceCapture({ spawn: (binary, args, processOptions) => {
