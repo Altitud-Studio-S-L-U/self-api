@@ -158,6 +158,12 @@ An end-to-end pilot must create a real PR in an authorized test repository, repo
 
 ## 12. Delivery phases and release gates
 
+Use `pnpm dev` to resume implementation. It reads the ordered milestones in [`tooling/delivery.json`](../tooling/delivery.json), lists pending reviews separately, and shows the next implementation milestone with its acceptance criteria. `pnpm dev:check` runs the existing repository checks and preserves their exit status. These commands do not launch a resident agent, modify consumer repositories, create commits, or mark milestones complete.
+
+At the start of a development session, inspect the current branch, local changes, pending reviews, and the active milestone. Continue the smallest change that addresses an unmet criterion, preserving the product and authorization boundaries above. Run the appropriate focused checks while editing, then `pnpm dev:check` before requesting review. The first setup still requires `pnpm install --frozen-lockfile` and `pnpm engine:setup` as described in the README.
+
+Update the manifest in the same reviewed change when scope or milestone status changes. `in-progress` identifies the single implementation focus; `in-review` means code is awaiting review and does not block displaying the next implementation item. A passing test run does not change either state. Use `completed` only after the acceptance criteria and associated review are satisfied; it does not claim release or production deployment. The manifest is a short delivery index, while the phases below retain the wider release gates. Do not store session logs or repeated test transcripts in either file.
+
 | Phase | Deliverable | Exit criterion |
 | --- | --- | --- |
 | 0. Foundation | Clean repository structure, dependency/license review, shared protocol ownership, privacy contract, supported-platform matrix | Dependency and identity spikes resolve distribution and DPoP integration risks; contracts have agreed fixtures |

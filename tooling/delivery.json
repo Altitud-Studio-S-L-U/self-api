@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "id": "contract-comparison",
+      "title": "Compare local OpenAPI contracts",
+      "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/2",
+      "acceptance": [
+        "Capture bounded local JSON snapshots and compare them with the pinned real engine without changing source files.",
+        "Reject invalid or unsupported input instead of reporting an empty successful comparison.",
+        "Expose structural findings through SDK and CLI while marking consumer impact as not analyzed.",
+        "Verify the supported Windows, Linux, and macOS workflow and review the pull request."
+      ]
+    },
+    {
+      "id": "consumer-impact",
+      "title": "Locate TypeScript consumers affected by contract changes",
+      "status": "in-review",
+      "acceptance": [
+        "Associate supported native HTTP call syntax with changed operations and local file/line evidence.",
+        "Report dynamic, ambiguous, or unsupported call forms as unresolved; do not imply exhaustive discovery.",
+        "Inspect consumer source without executing imports, installing its dependencies, or changing its files.",
+        "Exercise affected, unaffected, and unresolved usages with a fictional TypeScript consumer and its parser."
+      ]
+    },
+    {
+      "id": "authorized-migration",
+      "title": "Propose and validate an authorized call and parser migration",
+      "status": "planned",
+      "acceptance": [
+        "Bind a reviewable plan to source evidence, consumer revision, permitted files, and validation commands.",
+        "Require applicable authorization before mutation or consumer execution and use an isolated execution environment.",
+        "Demonstrate the consumer passing against version A, failing against B, and passing against B after the migration while preserving its internal contract.",
+        "Stop on ambiguous semantics or expanded scope and distinguish baseline failures from new regressions."
+      ]
+    },
+    {
+      "id": "local-worker",
+      "title": "Resume local subscriptions and maintenance jobs",
+      "status": "planned",
+      "acceptance": [
+        "Persist subscriptions, observed evidence, authorized jobs, and attempts without starting a worker on SDK import.",
+        "Recover interrupted work and reconcile duplicate events without losing pending migrations or duplicating publication.",
+        "Respect changed bases, human commits, stale observations, and authorization limits.",
+        "Keep observed, validated, adopted, and deployed state distinct."
+      ]
+    },
+    {
+      "id": "connected-cloud",
+      "title": "Connect the local workflow to Plumber Cloud",
+      "status": "planned",
+      "acceptance": [
+        "Consume a versioned shared protocol in the separate cloud repository, including runner enrollment and revocation.",
+        "Provide the landing page, account onboarding, subscriptions, and dashboard with explicit runner availability.",
+        "Publish an authorized test PR directly from the customer environment and send permitted status updates to Cloud and Slack.",
+        "Demonstrate API and MCP scenarios without sending customer source, patches, raw logs, or private schema bodies to the SaaS."
+      ]
+    }
+  ]
+}
