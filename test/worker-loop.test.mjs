@@ -50,6 +50,23 @@ test('the default loop observes once without execution or scheduling another cyc
   assert.equal(result.cycles[0].execution.status, 'not-enabled');
 });
 
+test('HTTP policy callbacks and cancellation are forwarded to observation without granting execution', async () => {
+  const controller = new AbortController();
+  const httpCredentials = () => undefined;
+  const httpDependencies = { resolve: async () => [{ address: '8.8.8.8', family: 4 }] };
+  const input = options({ allowHttp: true, httpCredentials, httpDependencies, signal: controller.signal });
+  const result = await runWorkerLoop(input, adapters({ observe: async received => {
+    assert.equal(received.allowHttp, true);
+    assert.equal(received.httpCredentials, httpCredentials);
+    assert.equal(received.httpDependencies, httpDependencies);
+    assert.equal(received.signal, controller.signal);
+    controller.abort();
+    return { schemaVersion: 1, results: [], aborted: true };
+  }, runApproved: async () => { assert.fail('Cancellation does not grant execution'); } }));
+  assert.equal(result.stopReason, 'aborted');
+  assert.equal(result.abortRequested, true);
+});
+
 test('explicit approved-job passes run after observation and obey the configured limit and subscription', async () => {
   const trace = [];
   const input = options({ processApprovedJobs: true, executionLimit: 2, subscriptionId: 'a'.repeat(64), maxCycles: 3 });

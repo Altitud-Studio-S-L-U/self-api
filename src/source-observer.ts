@@ -3,16 +3,18 @@ import { closeSync, lstatSync, openSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { isProxy } from 'node:util/types';
 import { PlumberError } from './errors.js';
 import { readLocalBytes } from './local-file.js';
 import { compareMcpCatalogs, type McpComparisonReport } from './mcp-catalog.js';
 import { compareJsonExamples, compareJsonSchemas, type JsonExampleComparison, type JsonSchemaComparison } from './json-schema.js';
 import { openWorkerStore } from './worker-store.js';
 import { withContractCopies } from './worker.js';
+import { captureHttpSource, prepareHttpSource, validateHttpSourceSnapshot, type HttpSourcePolicy, type HttpSourceSnapshot, type HttpSourceCredentials, type HttpSourceDependencies } from './http-source.js';
 
 export type ObservableSourceKind = 'mcp' | 'json-schema' | 'json-example' | 'documentation';
 export type SourceObservationFailure = 'source-unavailable' | 'invalid-source' | 'unsupported-source' | 'comparison-failed' |
-  'state-limit' | 'lease-lost' | 'state-unavailable';
+  'state-limit' | 'lease-lost' | 'state-unavailable' | 'http-not-enabled';
 export interface SourceSubscriptionOptions {
   readonly statePath: string;
   readonly kind: ObservableSourceKind;
@@ -28,6 +30,7 @@ export interface SourceSubscription {
   readonly kind: ObservableSourceKind;
   readonly label: string;
   readonly sourcePath: string;
+  readonly httpSource: HttpSourcePolicy | null;
   readonly consumerRoot: string | null;
   readonly direction: 'input' | 'output' | null;
   readonly normalizeLineEndings: boolean;
@@ -41,6 +44,17 @@ export interface SourceSubscription {
   readonly consumerImpact: 'not-analyzed';
   readonly adopted: 'unknown';
   readonly deployed: 'unknown';
+}
+export interface HttpSourceSubscriptionOptions extends Omit<SourceSubscriptionOptions, 'sourcePath'> {
+  readonly source: HttpSourcePolicy;
+}
+export interface ObserveSourcesOptions {
+  readonly statePath: string;
+  readonly subscriptionId?: string;
+  readonly allowHttp?: boolean;
+  readonly httpCredentials?: (source: HttpSourcePolicy) => HttpSourceCredentials | undefined;
+  readonly httpDependencies?: HttpSourceDependencies;
+  readonly signal?: AbortSignal;
 }
 export interface DocumentationComparison {
   readonly schemaVersion: 1;
@@ -71,6 +85,7 @@ export interface SourceObservation {
 }
 export interface SourceObservationCycle {
   readonly schemaVersion: 1;
+  readonly aborted?: true;
   readonly results: readonly {
     readonly subscriptionId: string;
     readonly status: 'observed' | 'unchanged' | 'busy' | 'failed';
@@ -92,6 +107,7 @@ const SCHEMA = `
 CREATE TABLE source_snapshots (sha TEXT PRIMARY KEY, bytes BLOB NOT NULL) STRICT;
 CREATE TABLE source_subscriptions (
  id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT NOT NULL, source_path TEXT NOT NULL, consumer_root TEXT,
+ http_policy_json TEXT, http_cache_json TEXT,
  direction TEXT, normalize_lines INTEGER NOT NULL, baseline_sha TEXT NOT NULL REFERENCES source_snapshots(sha),
  observed_sha TEXT REFERENCES source_snapshots(sha), last_observation_id TEXT, sequence INTEGER NOT NULL DEFAULT 0,
  created_at INTEGER NOT NULL, last_checked_at INTEGER, last_succeeded_at INTEGER, last_error TEXT,
@@ -103,7 +119,7 @@ CREATE TABLE source_observations (
  to_sha TEXT NOT NULL REFERENCES source_snapshots(sha), observed_at INTEGER NOT NULL, report_json TEXT NOT NULL,
  UNIQUE(subscription_id, sequence)
 ) STRICT;
-PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=1;`;
+PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=2;`;
 
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
 function limit(message: string): never { throw new PlumberError('STATE_LIMIT', message); }
@@ -135,6 +151,7 @@ function identifier(value: unknown): asserts value is string {
 }
 function subscription(row: Row): SourceSubscription {
   return { id: row.id as string, kind: row.kind as ObservableSourceKind, label: row.label as string, sourcePath: row.source_path as string,
+    httpSource: row.http_policy_json === null ? null : prepareHttpSource(JSON.parse(row.http_policy_json as string)),
     consumerRoot: row.consumer_root as string | null, direction: row.direction as SourceSubscription['direction'],
     normalizeLineEndings: row.normalize_lines === 1, configuredBaselineSha: row.baseline_sha as string,
     lastObservedSha: row.observed_sha as string | null, lastObservationId: row.last_observation_id as string | null,
@@ -176,7 +193,7 @@ async function openSourceStore(statePath: string, existing = true) {
     database = db;
     const app = (): number => db.prepare('PRAGMA application_id').get()!.application_id as number;
     const version = (): number => db.prepare('PRAGMA user_version').get()!.user_version as number;
-    if (version() !== 0 && (version() !== 1 || app() !== APPLICATION_ID)) invalid('The source observer database has an unsupported identity or version.');
+    if (version() !== 0 && (![1, 2].includes(version()) || app() !== APPLICATION_ID)) invalid('The source observer database has an unsupported identity or version.');
     if (version() === 0) {
       db.exec('BEGIN IMMEDIATE');
       try {
@@ -185,9 +202,18 @@ async function openSourceStore(statePath: string, existing = true) {
             invalid('An existing foreign database cannot be used as source observer state.');
           }
           db.exec(SCHEMA);
-        } else if (version() !== 1 || app() !== APPLICATION_ID) invalid('The source observer database has an unsupported identity or version.');
+        } else if (![1, 2].includes(version()) || app() !== APPLICATION_ID) invalid('The source observer database has an unsupported identity or version.');
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
+    }
+    if (version() === 1) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (version() === 1 && app() === APPLICATION_ID) {
+          db.exec('ALTER TABLE source_subscriptions ADD COLUMN http_policy_json TEXT; ALTER TABLE source_subscriptions ADD COLUMN http_cache_json TEXT; PRAGMA user_version=2;');
+        } else if (version() !== 2 || app() !== APPLICATION_ID) invalid('The source observer database has an unsupported identity or version.');
+        db.exec('COMMIT');
+      } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
     }
     db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF;');
     const transaction = <T>(action: () => T): T => {
@@ -234,7 +260,7 @@ async function openSourceStore(statePath: string, existing = true) {
           : db.prepare('SELECT * FROM source_observations WHERE subscription_id=? ORDER BY sequence').all(id)).map(observation);
       },
       register(input: { id: string; kind: ObservableSourceKind; label: string; sourcePath: string; consumerRoot: string | null;
-        direction: SourceSubscription['direction']; normalizeLineEndings: boolean; baseline: Uint8Array }) {
+        direction: SourceSubscription['direction']; normalizeLineEndings: boolean; baseline: Uint8Array; httpSource: HttpSourcePolicy | null }) {
         return transaction(() => {
           const existingRow = db.prepare('SELECT * FROM source_subscriptions WHERE id=?').get(input.id);
           if (existingRow) {
@@ -247,9 +273,9 @@ async function openSourceStore(statePath: string, existing = true) {
           if ((db.prepare('SELECT count(*) AS n FROM source_subscriptions').get()!.n as number) >= 100) limit('Source subscriptions exceed the limit of 100.');
           const baseline = saveSnapshot(input.baseline);
           db.prepare(`INSERT INTO source_subscriptions
-            (id,kind,label,source_path,consumer_root,direction,normalize_lines,baseline_sha,created_at) VALUES (?,?,?,?,?,?,?,?,?)`)
+            (id,kind,label,source_path,consumer_root,direction,normalize_lines,baseline_sha,created_at,http_policy_json) VALUES (?,?,?,?,?,?,?,?,?,?)`)
             .run(input.id, input.kind, input.label, input.sourcePath, input.consumerRoot, input.direction,
-              input.normalizeLineEndings ? 1 : 0, baseline, Date.now());
+              input.normalizeLineEndings ? 1 : 0, baseline, Date.now(), input.httpSource === null ? null : JSON.stringify(input.httpSource));
           return subscription(required(input.id));
         });
       },
@@ -273,12 +299,32 @@ async function openSourceStore(statePath: string, existing = true) {
         if (bytes.length > MAXIMUM_BYTES || hash(bytes) !== row.baseline_sha) invalid('The immutable source baseline no longer matches its digest.');
         return bytes;
       },
-      complete(lease: SourceLease, bytes: Uint8Array, report: SourceComparison) {
+      httpCache(lease: SourceLease): HttpSourceSnapshot | undefined {
+        const row = owned(lease);
+        if (row.http_cache_json === null) {
+          if (row.observed_sha !== null) invalid('HTTP source history is missing its conditional capture evidence.');
+          return undefined;
+        }
+        if (row.http_policy_json === null || row.observed_sha === null) invalid('HTTP cache is missing its source or observation.');
+        const snapshot = db.prepare('SELECT bytes FROM source_snapshots WHERE sha=?').get(row.observed_sha as string);
+        if (!snapshot) invalid('HTTP cache bytes are unavailable.');
+        const bytes = Buffer.from(snapshot.bytes as Uint8Array);
+        if (bytes.length > MAXIMUM_BYTES || hash(bytes) !== row.observed_sha) invalid('HTTP cache evidence no longer matches its digest.');
+        const source = subscription(row).httpSource!;
+        if (source.url !== row.source_path) invalid('HTTP cache policy does not match the registered source URL.');
+        return validateHttpSourceSnapshot(source, { ...JSON.parse(row.http_cache_json as string), bytes });
+      },
+      complete(lease: SourceLease, bytes: Uint8Array, report: SourceComparison, httpSnapshot?: HttpSourceSnapshot) {
         const reportJson = JSON.stringify(report);
         if (Buffer.byteLength(reportJson) > MAXIMUM_BYTES) limit('A source comparison report exceeds 4 MiB.');
         return transaction(() => {
           const row = owned(lease);
           const digest = hash(bytes);
+          if ((row.http_policy_json !== null) !== (httpSnapshot !== undefined)) invalid('Observation transport does not match the registered source.');
+          if (httpSnapshot !== undefined) {
+            httpSnapshot = validateHttpSourceSnapshot(subscription(row).httpSource!, httpSnapshot);
+            if (httpSnapshot.sha256 !== digest || !Buffer.from(httpSnapshot.bytes).equals(bytes)) invalid('HTTP cache metadata does not match the compared evidence.');
+          }
           if (report.base.sha256 !== row.baseline_sha || report.revision.sha256 !== digest) invalid('Source comparison evidence does not match its snapshots.');
           const changed = row.observed_sha !== digest;
           let id = row.last_observation_id as string | null;
@@ -295,8 +341,11 @@ async function openSourceStore(statePath: string, existing = true) {
               .run(digest, id, sequence, lease.id);
           }
           const now = Date.now();
+          const cache = httpSnapshot === undefined ? null : JSON.stringify({ ...httpSnapshot, bytes: undefined });
+          if (cache !== null && Buffer.byteLength(cache) > 16 * 1024) limit('HTTP cache metadata exceeds its limit.');
+          owned(lease);
           db.prepare(`UPDATE source_subscriptions SET last_checked_at=?,last_succeeded_at=?,last_error=NULL,
-            lease_owner=NULL,lease_expires_at=NULL WHERE id=?`).run(now, now, lease.id);
+            lease_owner=NULL,lease_expires_at=NULL,http_cache_json=? WHERE id=?`).run(now, now, cache, lease.id);
           return { id: id!, changed };
         });
       },
@@ -348,6 +397,19 @@ async function compareSource(statePath: string, configured: Pick<SourceSubscript
 
 /** Register local evidence. Source paths are read-only; registration neither imports applications nor contacts providers. */
 export async function registerSourceSubscription(options: SourceSubscriptionOptions): Promise<SourceSubscription> {
+  return registerSource(options, null);
+}
+
+/** Register a policy and a local baseline without DNS, credentials or provider requests. */
+export async function registerHttpSourceSubscription(options: HttpSourceSubscriptionOptions): Promise<SourceSubscription> {
+  const source = prepareHttpSource(options.source);
+  if ((options.kind === 'documentation' ? 'text' : 'json') !== source.contentKind || Buffer.byteLength(JSON.stringify(source)) > 16 * 1024) {
+    invalid('HTTP content kind must match the source profile, within the 16 KiB policy budget.');
+  }
+  return registerSource({ ...options, sourcePath: source.url }, source);
+}
+
+async function registerSource(options: SourceSubscriptionOptions, httpSource: HttpSourcePolicy | null): Promise<SourceSubscription> {
   options = { ...options };
   const statePath = localDirectoryInput(options.statePath);
   const consumerInput = options.consumerRoot === undefined ? undefined : localDirectoryInput(options.consumerRoot);
@@ -356,15 +418,15 @@ export async function registerSourceSubscription(options: SourceSubscriptionOpti
     (options.kind !== 'json-schema' && options.direction !== undefined)) invalid('Only JSON schemas require an explicit input or output comparison direction.');
   if ((options.normalizeLineEndings !== undefined && typeof options.normalizeLineEndings !== 'boolean') ||
     (options.kind !== 'documentation' && options.normalizeLineEndings !== undefined)) invalid('Line-ending normalization is an explicit documentation-only option.');
-  if (options.kind === 'documentation' && [options.sourcePath, options.baselinePath].some(path => !['.md', '.txt'].includes(extname(path).toLowerCase()))) {
+  if (options.kind === 'documentation' && (httpSource === null ? [options.sourcePath, options.baselinePath] : [options.baselinePath]).some(path => !['.md', '.txt'].includes(extname(path).toLowerCase()))) {
     invalid('Local documentation sources must be .md or .txt files.');
   }
   outsideConsumer(statePath, consumerInput);
   const label = options.label ?? `${options.kind} source`;
   if (typeof label !== 'string' || !label.trim() || /[\u0000-\u001f\u007f]/u.test(label) || Buffer.byteLength(label) > 200) invalid('Source labels must be nonempty bounded text.');
   const baseline = await readLocalBytes(options.baselinePath, MAXIMUM_BYTES);
-  await readLocalBytes(options.sourcePath, MAXIMUM_BYTES);
-  const sourcePath = await realpath(options.sourcePath);
+  if (httpSource === null) await readLocalBytes(options.sourcePath, MAXIMUM_BYTES);
+  const sourcePath = httpSource === null ? await realpath(options.sourcePath) : httpSource.url;
   let consumerRoot: string | null = null;
   if (consumerInput !== undefined) {
     const attributes = await lstat(consumerInput);
@@ -377,14 +439,19 @@ export async function registerSourceSubscription(options: SourceSubscriptionOpti
     outsideConsumer(store.statePath, consumerRoot);
     const configured = { kind: options.kind, direction: options.direction ?? null, normalizeLineEndings: options.normalizeLineEndings ?? false };
     await compareSource(store.statePath, configured, baseline, baseline);
-    const identity = [sourcePath, consumerRoot].map(path => process.platform === 'win32' ? path?.toLowerCase() ?? null : path);
+    const identity = [httpSource === null ? (process.platform === 'win32' ? sourcePath.toLowerCase() : sourcePath) : httpSource.id,
+      process.platform === 'win32' ? consumerRoot?.toLowerCase() ?? null : consumerRoot];
     const id = hash(JSON.stringify([configured, ...identity]));
-    return store.register({ ...configured, id, label, sourcePath, consumerRoot, baseline });
+    return store.register({ ...configured, id, label, sourcePath, consumerRoot, baseline, httpSource });
   } finally { store.close(); }
 }
 
 /** One explicit observation cycle. No approvals, consumer execution, or automatic compatibility inference from prose/examples. */
-export async function observeSourcesOnce(options: { readonly statePath: string; readonly subscriptionId?: string }): Promise<SourceObservationCycle> {
+export async function observeSourcesOnce(options: ObserveSourcesOptions): Promise<SourceObservationCycle> {
+  options = { ...options };
+  if (options.allowHttp !== undefined && typeof options.allowHttp !== 'boolean') invalid('HTTP observation must be explicitly enabled with a boolean option.');
+  if (options.httpCredentials !== undefined && typeof options.httpCredentials !== 'function') invalid('HTTP credentials require an explicit trusted callback.');
+  if (options.signal !== undefined && (isProxy(options.signal) || !(options.signal instanceof AbortSignal))) invalid('Source cancellation requires an AbortSignal.');
   if (options.subscriptionId !== undefined) identifier(options.subscriptionId);
   const store = await openSourceStore(options.statePath);
   const results: SourceObservationCycle['results'][number][] = [];
@@ -392,18 +459,39 @@ export async function observeSourcesOnce(options: { readonly statePath: string; 
     const subscriptions = store.list().filter(value => options.subscriptionId === undefined || value.id === options.subscriptionId);
     if (options.subscriptionId !== undefined && subscriptions.length === 0) invalid('The selected source subscription does not exist.');
     for (const configured of subscriptions) {
+      if (options.signal?.aborted) break;
       const lease = store.claim(configured.id);
       if (!lease) { results.push({ subscriptionId: configured.id, status: 'busy' }); continue; }
       let phase: 'source' | 'comparison' | 'state' = 'source';
       try {
+        if (configured.httpSource !== null && options.allowHttp !== true) {
+          store.fail(lease, 'http-not-enabled');
+          results.push({ subscriptionId: configured.id, status: 'failed', reason: 'http-not-enabled' });
+          continue;
+        }
         outsideConsumer(store.statePath, configured.consumerRoot);
-        const revision = await readLocalBytes(configured.sourcePath, MAXIMUM_BYTES);
+        let httpSnapshot: HttpSourceSnapshot | undefined;
+        let revision: Uint8Array;
+        if (configured.httpSource !== null) {
+          phase = 'state';
+          const previous = store.httpCache(lease);
+          phase = 'source';
+          if (options.signal?.aborted) {
+            store.fail(lease, 'source-unavailable');
+            break;
+          }
+          const credentials = options.httpCredentials?.(configured.httpSource);
+          const captured = await captureHttpSource({ source: configured.httpSource, ...(previous === undefined ? {} : { previous }),
+            ...(credentials === undefined ? {} : { credentials }), ...(options.signal === undefined ? {} : { signal: options.signal }) }, options.httpDependencies);
+          httpSnapshot = captured.snapshot;
+          revision = Buffer.from(httpSnapshot.bytes);
+        } else revision = await readLocalBytes(configured.sourcePath, MAXIMUM_BYTES);
         phase = 'state';
         const baseline = store.baseline(configured.id);
         phase = 'comparison';
         const report = await compareSource(store.statePath, configured, baseline, revision);
         phase = 'state';
-        const completed = store.complete(lease, revision, report);
+        const completed = store.complete(lease, revision, report, httpSnapshot);
         results.push({ subscriptionId: configured.id, status: completed.changed ? 'observed' : 'unchanged',
           observationId: completed.id, created: completed.changed });
       } catch (error) {
@@ -419,7 +507,7 @@ export async function observeSourcesOnce(options: { readonly statePath: string; 
         results.push({ subscriptionId: configured.id, status: 'failed', reason });
       }
     }
-    return { schemaVersion: 1, results };
+    return { schemaVersion: 1, results, ...(options.signal?.aborted ? { aborted: true as const } : {}) };
   } finally { store.close(); }
 }
 

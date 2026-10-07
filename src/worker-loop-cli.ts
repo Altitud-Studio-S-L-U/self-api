@@ -15,7 +15,7 @@ export async function runWorkerLoopCli(args: string[], options: {
   try {
     const parsed = parseArgs({ args, strict: true, allowPositionals: true, tokens: true, options: {
       state: { type: 'string' }, engine: { type: 'string' }, subscription: { type: 'string' },
-      cycles: { type: 'string' }, 'interval-ms': { type: 'string' }, 'run-approved': { type: 'boolean' }, json: { type: 'boolean' },
+      cycles: { type: 'string' }, 'interval-ms': { type: 'string' }, 'run-approved': { type: 'boolean' }, http: { type: 'boolean' }, json: { type: 'boolean' },
     } });
     const seen = new Set<string>();
     for (const token of parsed.tokens) if (token.kind === 'option') {
@@ -31,6 +31,7 @@ export async function runWorkerLoopCli(args: string[], options: {
       ...(parsed.values.subscription === undefined ? {} : { subscriptionId: parsed.values.subscription }),
       ...(parsed.values.cycles === undefined ? {} : { maxCycles: Number(parsed.values.cycles) }),
       ...(parsed.values['interval-ms'] === undefined ? {} : { intervalMs: Number(parsed.values['interval-ms']) }),
+      ...(parsed.values.http === undefined ? {} : { allowHttp: parsed.values.http }),
       processApprovedJobs: parsed.values['run-approved'] ?? false });
     stdout(parsed.values.json ? jsonLine(result) : `Worker stopped: ${result.stopReason}\nCompleted cycles: ${result.cycles.length}\nNo new approval was granted.\n`);
     if (result.stopReason === 'aborted') return 130;

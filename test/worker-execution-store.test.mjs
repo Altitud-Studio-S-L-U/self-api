@@ -333,7 +333,7 @@ test('v1 migration preserves snapshots, jobs, observations and an outstanding ob
   const lease = store.claim(subscription.id);
   const expectedSubscription = store.listSubscriptions()[0];
   store.close();
-  editState(statePath, db => db.exec('DROP TABLE execution_intents; PRAGMA user_version=1;'));
+  editState(statePath, db => db.exec('DROP TABLE execution_intents; ALTER TABLE subscriptions DROP COLUMN http_source_json; ALTER TABLE subscriptions DROP COLUMN http_cache_json; PRAGMA user_version=1;'));
   const reopened = await openWorkerStore(statePath);
   t.after(() => reopened.close());
   assert.deepEqual(reopened.listSubscriptions(), [expectedSubscription]);
@@ -342,7 +342,7 @@ test('v1 migration preserves snapshots, jobs, observations and an outstanding ob
   assert.equal(reopened.claim(subscription.id), null);
   assert.deepEqual(reopened.listExecutionIntents(), []);
   editState(statePath, db => {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
     assert.equal(db.prepare('SELECT count(*) AS n FROM observations').get().n, 1);
   });
   reopened.failObservation({ lease, reason: 'analysis-failed' });
@@ -352,7 +352,7 @@ test('v1 migration preserves snapshots, jobs, observations and an outstanding ob
 test('a migration error rolls back the new table and preserves v1 data and version', async t => {
   const { store, statePath, job } = await fixture(t);
   store.close();
-  editState(statePath, db => db.exec(`DROP TABLE execution_intents; PRAGMA user_version=1;
+  editState(statePath, db => db.exec(`DROP TABLE execution_intents; ALTER TABLE subscriptions DROP COLUMN http_source_json; ALTER TABLE subscriptions DROP COLUMN http_cache_json; PRAGMA user_version=1;
     CREATE INDEX execution_intents_status ON jobs(created_at);`));
   await assert.rejects(openWorkerStore(statePath), invalid);
   editState(statePath, db => {
@@ -367,13 +367,13 @@ test('a migration error rolls back the new table and preserves v1 data and versi
 test('concurrent processes can open and migrate the same v1 database without losing retained work', async t => {
   const { store, statePath, job } = await fixture(t);
   store.close();
-  editState(statePath, db => db.exec('DROP TABLE execution_intents; PRAGMA user_version=1;'));
+  editState(statePath, db => db.exec('DROP TABLE execution_intents; ALTER TABLE subscriptions DROP COLUMN http_source_json; ALTER TABLE subscriptions DROP COLUMN http_cache_json; PRAGMA user_version=1;'));
   const moduleUrl = new URL('../dist/worker-store.js', import.meta.url).href;
   const script = `import { openWorkerStore } from ${JSON.stringify(moduleUrl)}; const s=await openWorkerStore(process.argv[1]); try { process.stdout.write(JSON.stringify({jobs:s.listJobs().map(j=>j.id),intents:s.listExecutionIntents()})); } finally { s.close(); }`;
   const children = await Promise.all(Array.from({ length: 2 }, () => execute(process.execPath,
     ['--input-type=module', '-e', script, statePath], { timeout: 15_000 })));
   for (const child of children) assert.deepEqual(JSON.parse(child.stdout), { jobs: [job.id], intents: [] });
-  editState(statePath, db => assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2));
+  editState(statePath, db => assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3));
 });
 
 test('intent count limits preserve all pending work and leave existing enqueue idempotent', async t => {

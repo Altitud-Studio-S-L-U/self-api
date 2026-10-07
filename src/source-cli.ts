@@ -5,6 +5,7 @@ import { loadLocalJson } from './local-file.js';
 import { normalizeIntegrationManifest } from './integration-registry.js';
 import { compareMcpCatalogs, loadMcpCatalog } from './mcp-catalog.js';
 import { compareJsonSchemas, compareJsonExamples } from './json-schema.js';
+import { analyzeMcpImpact, type McpClientBinding } from './mcp-impact.js';
 
 export async function runSourceCli(args: string[], options: {
   readonly stdout?: (text: string) => void;
@@ -13,16 +14,29 @@ export async function runSourceCli(args: string[], options: {
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });
   try {
-    const parsed = parseArgs({ args, strict: true, allowPositionals: true, tokens: true, options: { json: { type: 'boolean' }, direction: { type: 'string' } } });
+    const parsed = parseArgs({ args, strict: true, allowPositionals: true, tokens: true, options: {
+      json: { type: 'boolean' }, direction: { type: 'string' }, consumer: { type: 'string' }, bindings: { type: 'string' },
+    } });
     const seen = new Set<string>();
     for (const token of parsed.tokens) if (token.kind === 'option') {
       if (seen.has(token.name)) throw new PlumberError('INVALID_INPUT', 'Repeated source options are not supported.');
       seen.add(token.name);
     }
     const [command, basePath, revisionPath] = parsed.positionals;
-    if (!basePath || (['mcp-compare', 'schema-compare', 'example-compare'].includes(command ?? '') ? parsed.positionals.length !== 3 : parsed.positionals.length !== 2)
-      || (command !== 'schema-compare' && parsed.values.direction !== undefined)) {
+    if (!basePath || (['mcp-compare', 'mcp-impact', 'schema-compare', 'example-compare'].includes(command ?? '') ? parsed.positionals.length !== 3 : parsed.positionals.length !== 2)
+      || (command !== 'schema-compare' && parsed.values.direction !== undefined)
+      || (command !== 'mcp-impact' && (parsed.values.consumer !== undefined || parsed.values.bindings !== undefined))) {
       throw new PlumberError('INVALID_INPUT', 'Supply the local source files shown in --help.');
+    }
+    if (command === 'mcp-impact') {
+      if (!parsed.values.consumer) throw new PlumberError('INVALID_INPUT', 'MCP impact requires --consumer with a local checkout.');
+      const bindings = parsed.values.bindings === undefined ? undefined : await loadLocalJson(parsed.values.bindings, 256 * 1024);
+      if (bindings !== undefined && !Array.isArray(bindings)) throw new PlumberError('INVALID_INPUT', 'MCP bindings must be a local JSON array.');
+      const report = await analyzeMcpImpact({ basePath, revisionPath: revisionPath!, consumerRoot: parsed.values.consumer,
+        ...(bindings === undefined ? {} : { bindings: bindings as McpClientBinding[] }) });
+      stdout(parsed.values.json ? jsonLine(report) : `MCP impact: review required\nContext: ${report.context}\nCalls: ${report.inventory.calls.length}\nUnresolved calls: ${report.unresolvedCallIds.length}\nUnmapped changes: ${report.unmappedChangeIndexes.length}\n${report.inventory.calls.map(call => `- ${escapeTerminal(call.location.file)}:${call.location.line}:${call.location.column} ${escapeTerminal(call.toolName ?? '?')} (${call.resolution})`).join('\n')}\nNo consumer code executed; no execution or publication authorized.\n`);
+      return report.comparison.status !== 'no-breaking-changes' || report.context === 'inconclusive' ||
+        report.unresolvedCallIds.length > 0 || report.inventory.issues.length > 0 || report.unmappedChangeIndexes.length > 0 ? 1 : 0;
     }
     if (command === 'schema-compare') {
       const direction = parsed.values.direction;

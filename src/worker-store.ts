@@ -7,12 +7,16 @@ import type { SnapshotMetadata } from './contracts.js';
 import type { ImpactReport } from './impact.js';
 import { PlumberError } from './errors.js';
 import { validateValidationOutcome, type ValidationOutcome } from './validation-outcome.js';
+import { prepareHttpSource, validateHttpSourceSnapshot } from './http-source.js';
+import type { HttpSourcePolicy, HttpSourceSnapshot } from './http-source.js';
 
 export interface WorkerSnapshot { readonly bytes: Uint8Array; readonly metadata: SnapshotMetadata }
 export interface WorkerSubscription {
   readonly id: string;
   readonly label: string;
   readonly sourcePath: string;
+  /** Null for local files; HTTPS subscriptions use sourcePath as a URL, never as a mirror path. */
+  readonly httpSource: HttpSourcePolicy | null;
   readonly consumerRoot: string;
   readonly providerBaseUrl: string;
   readonly configuredBaselineSha: string;
@@ -82,11 +86,13 @@ export interface WorkerStore {
   readonly statePath: string;
   register(input: {
     id: string; label: string; sourcePath: string; consumerRoot: string; providerBaseUrl: string; baseline: WorkerSnapshot;
+    httpSource?: HttpSourcePolicy;
   }): WorkerSubscription;
   listSubscriptions(): WorkerSubscription[];
   getBaseline(subscriptionId: string): WorkerSnapshot;
+  getHttpSnapshot(subscriptionId: string, lease?: WorkerLease): HttpSourceSnapshot | undefined;
   claim(subscriptionId: string): WorkerLease | null;
-  completeObservation(input: { lease: WorkerLease; snapshot: WorkerSnapshot; report: ImpactReport }): { job: WorkerJob | null; created: boolean; transition: boolean };
+  completeObservation(input: { lease: WorkerLease; snapshot: WorkerSnapshot; report: ImpactReport; httpSnapshot?: HttpSourceSnapshot }): { job: WorkerJob | null; created: boolean; transition: boolean };
   failObservation(input: { lease: WorkerLease; reason: string }): void;
   listJobs(): WorkerJob[];
   getJobEvidence(jobId: string): { job: WorkerJob; subscription: WorkerSubscription; baseline: WorkerSnapshot; revision: WorkerSnapshot };
@@ -117,7 +123,10 @@ const SNAPSHOT_LIMIT = 4 * 1024 * 1024;
 const TOTAL_SNAPSHOT_LIMIT = 64 * 1024 * 1024;
 const REPORT_LIMIT = 4 * 1024 * 1024;
 const TOTAL_REPORT_LIMIT = 64 * 1024 * 1024;
-const REASONS = new Set(['source-unavailable', 'consumer-unavailable', 'invalid-contract', 'unsupported-contract', 'analysis-failed', 'consumer-changed', 'state-limit']);
+const REASONS = new Set(['source-unavailable', 'consumer-unavailable', 'invalid-contract', 'unsupported-contract', 'analysis-failed', 'consumer-changed', 'state-limit',
+  'http-not-enabled', 'http-invalid-policy', 'http-authorization-required', 'http-cache-mismatch', 'http-address-denied', 'http-dns-failed',
+  'http-request-failed', 'http-deadline-exceeded', 'http-aborted', 'http-redirect-denied', 'http-http-status', 'http-compressed-response',
+  'http-response-too-large', 'http-invalid-response', 'http-invalid-content']);
 type Row = Record<string, unknown>;
 
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
@@ -185,6 +194,7 @@ function iso(value: unknown): string | null { return value === null ? null : new
 function subscription(row: Row): WorkerSubscription {
   return {
     id: row.id as string, label: row.label as string, sourcePath: row.source_path as string,
+    httpSource: row.http_source_json === null ? null : prepareHttpSource(JSON.parse(row.http_source_json as string)),
     consumerRoot: row.consumer_root as string, providerBaseUrl: row.provider_base_url as string,
     configuredBaselineSha: row.baseline_sha as string, lastObservedSha: row.observed_sha as string | null,
     createdAt: iso(row.created_at)!, lastCheckedAt: iso(row.last_checked_at), lastSucceededAt: iso(row.last_succeeded_at),
@@ -266,7 +276,8 @@ CREATE TABLE subscriptions (
   id TEXT PRIMARY KEY, label TEXT NOT NULL, source_path TEXT NOT NULL, consumer_root TEXT NOT NULL,
   provider_base_url TEXT NOT NULL, baseline_sha TEXT NOT NULL REFERENCES snapshots(sha), observed_sha TEXT REFERENCES snapshots(sha),
   created_at INTEGER NOT NULL, last_checked_at INTEGER, last_succeeded_at INTEGER, last_error TEXT,
-  lease_owner TEXT, lease_generation INTEGER NOT NULL DEFAULT 0, lease_expires_at INTEGER
+  lease_owner TEXT, lease_generation INTEGER NOT NULL DEFAULT 0, lease_expires_at INTEGER,
+  http_source_json TEXT, http_cache_json TEXT
 ) STRICT;
 CREATE TABLE observations (
   id INTEGER PRIMARY KEY, subscription_id TEXT NOT NULL REFERENCES subscriptions(id),
@@ -279,7 +290,7 @@ CREATE TABLE jobs (
   UNIQUE(subscription_id, baseline_sha, revision_sha, consumer_digest, engine_version)
 ) STRICT;
 ${EXECUTION_SCHEMA}
-PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=2;`;
+PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=3;`;
 
 /** Opens customer-owned local state explicitly. Importing this module starts no worker and opens no database. */
 export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
@@ -308,8 +319,8 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
     database = db;
     const application = (): number => db.prepare('PRAGMA application_id').get()!.application_id as number;
     const version = (): number => db.prepare('PRAGMA user_version').get()!.user_version as number;
-    if (version() !== 0 && (![1, 2].includes(version()) || application() !== APPLICATION_ID)) invalid('The worker database version or identity is unsupported.');
-    if (version() < 2) {
+    if (version() !== 0 && (![1, 2, 3].includes(version()) || application() !== APPLICATION_ID)) invalid('The worker database version or identity is unsupported.');
+    if (version() < 3) {
       db.exec('BEGIN IMMEDIATE');
       try {
         if (version() === 0) {
@@ -317,10 +328,13 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
             invalid('An existing foreign database cannot be imported as worker state.');
           }
           db.exec(SCHEMA);
-        } else if (![1, 2].includes(version()) || application() !== APPLICATION_ID) invalid('The worker database version or identity is unsupported.');
+        } else if (![1, 2, 3].includes(version()) || application() !== APPLICATION_ID) invalid('The worker database version or identity is unsupported.');
         if (version() === 1) {
           db.exec(EXECUTION_SCHEMA);
           db.exec('PRAGMA user_version=2');
+        }
+        if (version() === 2) {
+          db.exec('ALTER TABLE subscriptions ADD COLUMN http_source_json TEXT; ALTER TABLE subscriptions ADD COLUMN http_cache_json TEXT; PRAGMA user_version=3;');
         }
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
@@ -427,7 +441,11 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
         if (!input || typeof input.id !== 'string' || !HASH.test(input.id) || typeof input.label !== 'string' || !input.label.trim()
           || Buffer.byteLength(input.label) > 200) invalid('Subscriptions require an identifier and a bounded nonempty label.');
         const baseline = snapshot(input.baseline);
-        const sourcePath = localPath(input.sourcePath);
+        const httpSource = input.httpSource === undefined ? null : prepareHttpSource(input.httpSource);
+        if (httpSource && (httpSource.contentKind !== 'json' || httpSource.url !== input.sourcePath)) invalid('HTTP worker sources must be JSON policies bound to their exact URL.');
+        const httpSourceJson = httpSource === null ? null : JSON.stringify(httpSource);
+        if (httpSourceJson !== null && Buffer.byteLength(httpSourceJson) > 16 * 1024) invalid('HTTP source policy exceeds the durable 16 KiB metadata budget.');
+        const sourcePath = httpSource === null ? localPath(input.sourcePath) : httpSource.url;
         const consumerRoot = directoryPath(localPath(input.consumerRoot));
         if (nested(state, consumerRoot) || nested(consumerRoot, state)) invalid('Worker state must be outside the consumer directory and cannot contain it.');
         let provider: URL;
@@ -437,14 +455,15 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
         const existing = db.prepare('SELECT * FROM subscriptions WHERE id=?').get(input.id);
         if (existing) {
           if (existing.label !== input.label || existing.source_path !== sourcePath || existing.consumer_root !== consumerRoot
-            || existing.provider_base_url !== providerBaseUrl || existing.baseline_sha !== baseline.metadata.sha256) invalid('An existing subscription configuration is immutable.');
+            || existing.provider_base_url !== providerBaseUrl || existing.baseline_sha !== baseline.metadata.sha256
+            || existing.http_source_json !== httpSourceJson) invalid('An existing subscription configuration is immutable.');
           saveSnapshot(baseline);
           return subscription(existing);
         }
         if ((db.prepare('SELECT count(*) AS n FROM subscriptions').get()!.n as number) >= 100) limit('Worker subscriptions exceed the limit of 100.');
         saveSnapshot(baseline);
-        db.prepare('INSERT INTO subscriptions (id,label,source_path,consumer_root,provider_base_url,baseline_sha,created_at) VALUES (?,?,?,?,?,?,?)')
-          .run(input.id, input.label, sourcePath, consumerRoot, providerBaseUrl, baseline.metadata.sha256, Date.now());
+        db.prepare('INSERT INTO subscriptions (id,label,source_path,consumer_root,provider_base_url,baseline_sha,created_at,http_source_json) VALUES (?,?,?,?,?,?,?,?)')
+          .run(input.id, input.label, sourcePath, consumerRoot, providerBaseUrl, baseline.metadata.sha256, Date.now(), httpSourceJson);
         return subscription(required(input.id));
       }); },
       listSubscriptions() { return operate(() => db.prepare('SELECT * FROM subscriptions ORDER BY id').all().map(subscription)); },
@@ -453,6 +472,23 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
         const value = db.prepare('SELECT bytes, metadata_json FROM snapshots WHERE sha=?').get(current.baseline_sha as string)!;
         const checked = snapshot({ bytes: value.bytes as Uint8Array, metadata: JSON.parse(value.metadata_json as string) as SnapshotMetadata });
         return { bytes: Uint8Array.from(checked.bytes), metadata: checked.metadata };
+      }); },
+      getHttpSnapshot(subscriptionId, lease) { return operate(() => {
+        if (lease && lease.subscriptionId !== subscriptionId) invalid('HTTP cache lookup requires the matching subscription lease.');
+        const current = lease ? owned(lease) : required(subscriptionId);
+        if (current.http_source_json === null) invalid('This subscription has no HTTP capture policy.');
+        const source = prepareHttpSource(JSON.parse(current.http_source_json as string));
+        if (source.url !== current.source_path) invalid('HTTP cache policy no longer matches the registered source URL.');
+        if (current.http_cache_json === null) {
+          if (current.observed_sha !== null) invalid('HTTP source history is missing its conditional capture evidence.');
+          return undefined;
+        }
+        const cache: unknown = JSON.parse(current.http_cache_json as string);
+        if (!cache || typeof cache !== 'object' || Array.isArray(cache) || !('sha256' in cache) || cache.sha256 !== current.observed_sha) {
+          invalid('HTTP cache evidence does not match the last successfully observed source.');
+        }
+        const captured = capturedSnapshot(current.observed_sha as string);
+        return validateHttpSourceSnapshot(source, { ...cache, bytes: captured.bytes });
       }); },
       claim(subscriptionId) { return transaction(() => {
         const current = required(subscriptionId);
@@ -464,9 +500,20 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
         db.prepare('UPDATE subscriptions SET lease_owner=?,lease_generation=?,lease_expires_at=? WHERE id=?').run(owner, generation, expires, subscriptionId);
         return { subscriptionId, owner, generation, expiresAt: new Date(expires).toISOString() };
       }); },
-      completeObservation({ lease, snapshot: observed, report }) { return transaction(() => {
+      completeObservation({ lease, snapshot: observed, report, httpSnapshot }) { return transaction(() => {
         const current = owned(lease);
         const value = snapshot(observed);
+        let httpCacheJson: string | null = null;
+        if (current.http_source_json !== null) {
+          const source = prepareHttpSource(JSON.parse(current.http_source_json as string));
+          const capture = validateHttpSourceSnapshot(source, httpSnapshot);
+          if (source.url !== current.source_path || capture.sha256 !== value.metadata.sha256 || !Buffer.from(capture.bytes).equals(value.bytes)) {
+            invalid('HTTP capture metadata does not match the exact compared snapshot.');
+          }
+          const { bytes: _bytes, ...cache } = capture;
+          httpCacheJson = JSON.stringify(cache);
+          if (Buffer.byteLength(httpCacheJson) > 16 * 1024) invalid('HTTP capture metadata exceeds the durable cache budget.');
+        } else if (httpSnapshot !== undefined) invalid('Local subscriptions cannot import HTTP capture metadata.');
         const baseline = db.prepare('SELECT metadata_json FROM snapshots WHERE sha=?').get(current.baseline_sha as string)!;
         if (!report || report.schemaVersion !== 1 || report.conclusion !== 'review-required' || !HASH.test(report.inventory?.digest)
           || report.comparison?.engine?.name !== 'oasdiff' || typeof report.comparison.engine.version !== 'string'
@@ -501,8 +548,8 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
         if (transition) db.prepare('INSERT INTO observations (subscription_id,from_sha,to_sha,observed_at) VALUES (?,?,?,?)')
           .run(lease.subscriptionId, current.observed_sha as string | null, value.metadata.sha256, now);
         owned(lease);
-        db.prepare('UPDATE subscriptions SET observed_sha=?,last_checked_at=?,last_succeeded_at=?,last_error=NULL,lease_owner=NULL,lease_expires_at=NULL WHERE id=?')
-          .run(value.metadata.sha256, now, now, lease.subscriptionId);
+        db.prepare('UPDATE subscriptions SET observed_sha=?,last_checked_at=?,last_succeeded_at=?,last_error=NULL,lease_owner=NULL,lease_expires_at=NULL,http_cache_json=? WHERE id=?')
+          .run(value.metadata.sha256, now, now, httpCacheJson, lease.subscriptionId);
         return { job: output, created, transition };
       }); },
       failObservation({ lease, reason }) { transaction(() => {

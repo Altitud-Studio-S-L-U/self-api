@@ -108,7 +108,7 @@ pnpm --silent plumber jobs --state "$PLUMBER_STATE" --json
 
 Use `.exe` for the engine on Windows. `registerLocalSubscription(options)`, `observeOnce({ statePath, enginePath, subscriptionId? })`, `listLocalSubscriptions({ statePath })`, and `listMaintenanceJobs({ statePath })` provide the SDK equivalents. Importing the SDK does not load SQLite, open a database, create state, start polling, or execute a consumer. The engine executable remains an explicit argument each cycle rather than a command loaded from the database.
 
-A subscription fixes a local JSON source, consumer directory, provider binding and **configured baseline**. That baseline is captured once; later edits or deletion of its original file do not change it. It is not proof of an adopted or deployed API version. Configuration is immutable in this slice; repeating the same registration is idempotent, while changing the binding/baseline of an existing subscription requires a future explicit reconfiguration flow. Labels are limited to 200 UTF-8 bytes. Only local OpenAPI JSON sources are supported; no HTTP/documentation crawler, webhook, MCP adapter, resident daemon or scheduler is started.
+A subscription fixes a local JSON source, consumer directory, provider binding and **configured baseline**. That baseline is captured once; later edits or deletion of its original file do not change it. It is not proof of an adopted or deployed API version. Configuration is immutable in this slice; repeating the same registration is idempotent, while changing the binding/baseline of an existing subscription requires a future explicit reconfiguration flow. Labels are limited to 200 UTF-8 bytes. `http-subscribe` adds an explicitly configured HTTPS source as described below. Registration starts no crawler, webhook, MCP connection, resident daemon or scheduler.
 
 Each explicit `--once` cycle captures the source bytes, including any UTF-8 BOM, writes owned private comparison copies, and inspects one consumer capture without executing it. Structurally invalid or incomplete inputs are failures; absence of findings does not prove compatibility. Changed bytes produce a review job even when the engine finds no structural breaking change. Jobs are keyed by subscription, baseline/revision digests, consumer digest and engine version: repeated evidence is deduplicated, a changed consumer gets new review evidence, and provider rollback preserves earlier jobs and transition history. Observing B never silently makes B the configured baseline. Adoption and deployment remain `unknown`.
 
@@ -232,9 +232,46 @@ pnpm --silent plumber source-history --state "$PLUMBER_STATE" --json
 
 `source-subscribe` also supports `json-schema` with a required `--direction`, `json-example`, and `documentation` for `.md`/`.txt` files. Documentation can explicitly enable `--normalize-line-endings`; no other presentation filtering is implied. Text is never rendered, links are not fetched, and examples are never executed. Changed prose is review evidence, not proof of a deployed breaking change.
 
-The SDK exposes `registerSourceSubscription`, `observeSourcesOnce`, `listSourceSubscriptions` and `listSourceObservations`. Pass `consumerRoot` when binding evidence to a checkout so state placement can be checked; state must remain outside and cannot contain that checkout. These source observations do not yet map MCP/JSON/prose changes to consumer usages or queue migrations. The existing OpenAPI worker has the separate impact and approved execution workflow described above.
+The SDK exposes `registerSourceSubscription`, `observeSourcesOnce`, `listSourceSubscriptions` and `listSourceObservations`. Pass `consumerRoot` when binding evidence to a checkout so state placement can be checked; state must remain outside and cannot contain that checkout. These observations preserve source evidence without queuing migrations. The OpenAPI worker has the separate impact and approved execution workflow described above; MCP consumer impact is an explicit analysis step below.
 
 Local source state uses `source-observations.sqlite3` alongside the core worker database in the validated private state directory. Baselines remain immutable, snapshots retain exact bytes, and sequential transitions retain rollbacks such as A→B→A→B. Identical repeated evidence is deduplicated. Transactions and five-minute ownership claims prevent stale observations from committing. Failures preserve the last successful observation. Limits are 100 subscriptions, 1,000 transitions and 64 MiB of snapshots/reports. Adoption and deployment remain unknown. No automatic pruning removes pending evidence.
+
+To inspect a consumer's MCP calls, supply a local JSON array of explicit bindings. For a checkout containing the fictional `consumer-before.mjs` example:
+
+```json
+[{"file":"consumer-before.mjs","receiver":"client","serverId":"fictional-commerce-tools","authContextId":"fixture-team-reader"}]
+```
+
+```sh
+pnpm --silent plumber mcp-impact fixtures/mcp/catalog-before.json fixtures/mcp/catalog-after.json --consumer /projects/mcp-consumer --bindings /private/mcp-bindings.json --json
+```
+
+`analyzeMcpImpact({basePath, revisionPath, consumerRoot, bindings})` returns captured file digests, calls, input field names, direct reads below `response.structuredContent`, and associations to changed tools. A binding is an operator declaration, not proof of a live connection. Each binding names one exact relative file and receiver. Unbound clients, shadowing, reassignment, dynamic tool names/arguments, aliases and indirect parser flows remain unresolved. Inconsistent server/protocol/authorization/capability context or incomplete catalogs prevent confident associations. No consumer imports or MCP tools execute, no recipe is generated, and the result always requires review. CLI exit `1` includes breaking/inconclusive contracts, unresolved calls, inspection issues and unmapped changes; `0` does not establish application compatibility.
+
+## Observe an explicit HTTPS source
+
+Create a private local policy file using the provider's actual URL and exact permitted origin. This **fictional** example is not a reachable provider:
+
+```json
+{"url":"https://provider.example.invalid/openapi.json","allowedOrigins":["https://provider.example.invalid"],"contentKind":"json"}
+```
+
+```sh
+pnpm plumber http-subscribe /private/source-policy.json --baseline /contracts/base.json --consumer /projects/consumer --provider-base-url https://provider.example.invalid --engine "$PLUMBER_ENGINE" --state "$PLUMBER_STATE"
+pnpm plumber worker --once --state "$PLUMBER_STATE" --engine "$PLUMBER_ENGINE" --http
+```
+
+For normalized MCP catalogs, JSON schemas/examples or raw documentation, use `source-http-subscribe /private/source-policy.json --kind KIND --baseline LOCAL_FILE --state "$PLUMBER_STATE"`, then `source-observe --once --state "$PLUMBER_STATE" --http`. JSON schemas also require `--direction input|output`; documentation requires `contentKind: "text"` and a local `.md`/`.txt` baseline. Text and HTML are retained as text without rendering, links or execution. Fetching a JSON catalog is not an MCP transport connection or automatic `tools/list` pagination.
+
+The SDK equivalents are `prepareHttpSource`, `registerHttpSubscription` for OpenAPI, `registerHttpSourceSubscription` for the other profiles, and observation with `allowHttp: true`. Registration is offline. A registered remote source observed without explicit HTTP enablement fails with `http-not-enabled`; it cannot be mistaken for a fresh check. `captureHttpSource` is also available for a single bounded capture without persistence.
+
+The built-in transport accepts HTTPS on port 443, credential/query/fragment-free URLs and explicit origin allowlists. It validates resolved addresses against its public-network profile and pins the chosen address for the TLS connection; private/reserved addresses, redirects and compression are rejected. TLS verification remains enabled. There is no proxy, cookie jar, automatic retry, crawl or environment-based credential discovery. Captures allow up to 4 MiB and 30 seconds, with smaller configurable limits. Trusted resolver/transport overrides are useful for customer integrations and tests, but are not networking sandboxes.
+
+Private sources require a non-public opaque `authContextId` in the policy and an SDK `httpCredentials(source)` callback returning `{origin, authContextId, getAuthorization(context)}`. The callback obtains credentials from the customer's chosen store; Plumber does not serialize the callback or token. Authorization is sent only to that configured origin. Change the context ID when permission scope changes; token rotation within the same scope need not invalidate the cache. The CLI currently observes public sources only and does not accept tokens in arguments or policy files.
+
+Snapshots preserve exact bytes. ETag/Last-Modified and the authorization context are retained locally; a `304` reuses only a verified matching snapshot with a previously sent validator. Observers acquire ownership before capture and commit the bytes, conditional cache, history and any OpenAPI review job in the same SQLite transaction after successful comparison. Failed downloads, unsupported contracts, lost ownership and persistence errors preserve the last successful evidence. No shared filesystem mirror sits between download and comparison. Existing core state migrates from schema 1/2 to 3; source-observer state migrates from schema 1 to 2 without resetting history.
+
+OpenAPI job planning/validation uses the last successfully observed HTTPS snapshot and rejects jobs superseded by newer successful captures. Those steps do not silently contact the provider. Cached evidence is not proof of present-time provider behavior: explicitly observe again before reviewing a migration, and inspect its observation timestamp. Provider capture, customer adoption and production deployment remain distinct states.
 
 ## Integration versions and function boundaries
 
@@ -273,7 +310,7 @@ The output must pass the existing exact-edit recipe and syntax checks. It cannot
 pnpm plumber worker-loop --state "$PLUMBER_STATE" --engine "$PLUMBER_ENGINE" --cycles 10 --interval-ms 60000
 ```
 
-The finite loop defaults to one cycle and a 60-second interval, allows 1–1,000 cycles and 1-second–1-hour delays, and never starts on import. It observes the OpenAPI job workflow. Add `--run-approved` only to process already queued, authorized validation jobs; it grants no new approval. Non-OpenAPI source observations use their explicit `source-observe --once` command or SDK function and can be scheduled by the customer's own service.
+The finite loop defaults to one cycle and a 60-second interval, allows 1–1,000 cycles and 1-second–1-hour delays, and never starts on import. It observes the OpenAPI job workflow. Add `--http` to enable registered public HTTPS sources, or pass explicit credentials through the SDK. Add `--run-approved` only to process already queued, authorized validation jobs; it grants no new approval. Non-OpenAPI source observations use their explicit `source-observe --once` command or SDK function and can be scheduled by the customer's own service.
 
 `runWorkerLoop(options)` accepts an AbortSignal. SIGINT/SIGTERM in the CLI prevents another phase/cycle and waits for the current operation to finish safely. It does not abandon a running validation container. Observations are sequential, with bounded backoff only for observation failures; execution failures/interruption stop the loop without replay. It does not install a service, resume uncertain publication or run recovery automatically. Cross-process ownership remains enforced by the existing database leases.
 

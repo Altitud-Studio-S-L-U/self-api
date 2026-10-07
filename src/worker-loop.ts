@@ -1,10 +1,10 @@
 import { resolve } from 'node:path';
 import { isProxy } from 'node:util/types';
 import { PlumberError } from './errors.js';
-import { observeOnce } from './worker.js';
+import { observeOnce, type HttpObservationOptions } from './worker.js';
 import { runApprovedJobsOnce } from './job-validation.js';
 
-export interface WorkerLoopOptions {
+export interface WorkerLoopOptions extends HttpObservationOptions {
   readonly statePath: string;
   readonly enginePath: string;
   readonly subscriptionId?: string;
@@ -168,6 +168,13 @@ export async function runWorkerLoop(options: WorkerLoopOptions, dependencies: Wo
     invalid('Approved-job processing requires an explicit boolean option.');
   }
   const processApprovedJobs = options.processApprovedJobs === true;
+  if (options.allowHttp !== undefined && typeof options.allowHttp !== 'boolean') invalid('HTTP observation requires an explicit boolean option.');
+  const httpOptions: HttpObservationOptions = {
+    ...(options.allowHttp === undefined ? {} : { allowHttp: options.allowHttp }),
+    ...(options.httpCredentials === undefined ? {} : { httpCredentials: options.httpCredentials }),
+    ...(options.httpDependencies === undefined ? {} : { httpDependencies: options.httpDependencies }),
+    ...(signal === undefined ? {} : { signal }),
+  };
   const executionLimit = integer(options.executionLimit, 1, 1, 10, 'Execution pass limit');
   const observe = dependencies.observe ?? observeOnce;
   const runApproved = dependencies.runApproved ?? runApprovedJobsOnce;
@@ -189,7 +196,7 @@ export async function runWorkerLoop(options: WorkerLoopOptions, dependencies: Wo
       if (signal?.aborted) return finish('aborted');
       let observation: WorkerLoopCycle['observation'];
       try {
-        const result = await observe({ statePath, enginePath, ...(subscriptionId === undefined ? {} : { subscriptionId }) });
+        const result = await observe({ statePath, enginePath, ...(subscriptionId === undefined ? {} : { subscriptionId }), ...httpOptions });
         try { observation = observationSummary(result); }
         catch { observation = { status: 'failed', counts: { observed: 0, unchanged: 0, busy: 0, failed: 0 }, reason: 'invalid-result' }; }
       } catch {

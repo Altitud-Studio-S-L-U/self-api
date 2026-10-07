@@ -10,10 +10,10 @@ Local tools for maintaining integrations with external APIs. Plumber compares AP
 | --- | --- |
 | Contract comparison | Local OpenAPI 3.0.x/3.1.x JSON, using a pinned oasdiff executable |
 | MCP and JSON Schema | Complete local MCP catalog captures and an explicit JSON Schema structural profile, with input/output compatibility direction |
-| Evidence sources | Persistent subscriptions for local MCP, schemas, JSON examples and Markdown/text documentation; examples and prose never establish compatibility |
+| Evidence sources | Persistent local and explicit HTTPS subscriptions for contracts, MCP catalogs, schemas, JSON examples and text documentation; examples and prose never establish compatibility |
 | Integration catalog | Separate API/SDK/webhook/MCP versions, source provenance, retirement evidence and optional function boundary metadata |
 | Dependency evidence | npm lockfile v2/v3 inventory and correlation against supplied advisories listing exact versions |
-| Consumer inspection | Bounded TS/JS syntax analysis of supported native `fetch` calls; unresolved usages remain explicit |
+| Consumer inspection | Bounded TS/JS analysis of native `fetch` and explicitly bound MCP `callTool` calls, including direct structured-output reads; unresolved usages remain explicit |
 | Migration proposals | Caller-supplied recipes with exact edits, hashes and business decisions |
 | Validation | Explicit approval, baseline/candidate tests and recovery on a fixed Linux x64 Docker profile |
 | Local worker | SQLite subscriptions, review jobs, approved execution queues, one-shot observation and a finite cancellable loop |
@@ -129,7 +129,7 @@ pnpm --silent plumber mcp-compare fixtures/mcp/catalog-before.json fixtures/mcp/
 pnpm --silent plumber integration-check fixtures/integration-manifest.json --json
 ```
 
-The MCP fixture changes both an input and a parsed output. Expect comparison exit code **1**. Its files and the integration manifest are fictional examples, not maintained provider catalogs. Source observation accepts customer-supplied local exports; automatic remote documentation retrieval and framework/DB export execution are not part of this profile.
+The MCP fixture changes both an input and a parsed output. Expect comparison exit code **1**. Its files and the integration manifest are fictional examples, not maintained provider catalogs. `mcp-impact` can associate these changes with explicitly bound calls and direct parser reads. HTTPS observation requires an explicit source policy and `--http`; it fetches only the selected URL, without crawling documentation or discovering versions. Framework/DB export execution remains outside this profile. See the [source and impact instructions](docs/local-workflow.md#mcp-schemas-examples-and-documentation).
 
 ## Development and checks
 

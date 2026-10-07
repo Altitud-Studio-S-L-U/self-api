@@ -126,6 +126,18 @@
       ]
     },
     {
+      "id": "https-source-observation",
+      "title": "Observe explicit HTTPS sources and inspect MCP consumer impact",
+      "status": "in-review",
+      "acceptance": [
+        "Capture explicitly allowed HTTPS URLs using scoped credentials, verified public addresses, pinned TLS connections and bounded responses.",
+        "Persist conditional cache, exact snapshots and successful observations atomically under ownership claims, preserving prior evidence on failure.",
+        "Migrate existing local databases without resetting baselines, pending jobs or execution history.",
+        "Associate declared MCP changes with explicitly bound calls and direct parser reads without executing customer code or granting permission.",
+        "Expose SDK and CLI flows with explicit network opt-in, cancellation and controlled local transport tests."
+      ]
+    },
+    {
       "id": "connected-cloud",
       "title": "Connect the local workflow to Plumber Cloud",
       "status": "planned",

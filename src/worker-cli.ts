@@ -1,9 +1,12 @@
 import { parseArgs } from 'node:util';
 import { PlumberError } from './errors.js';
-import { listLocalSubscriptions, listMaintenanceJobs, observeOnce, registerLocalSubscription } from './worker.js';
+import { listLocalSubscriptions, listMaintenanceJobs, observeOnce, registerLocalSubscription, registerHttpSubscription } from './worker.js';
+import { loadLocalJson } from './local-file.js';
+import { prepareHttpSource } from './http-source.js';
 
 export interface WorkerCliOptions {
   readonly register?: typeof registerLocalSubscription;
+  readonly registerHttp?: typeof registerHttpSubscription;
   readonly observe?: typeof observeOnce;
   readonly subscriptions?: typeof listLocalSubscriptions;
   readonly jobs?: typeof listMaintenanceJobs;
@@ -17,7 +20,8 @@ type Observation = Awaited<ReturnType<typeof observeOnce>>;
 
 const commandOptions = new Map<string, ReadonlySet<string>>([
   ['subscribe', new Set(['baseline', 'consumer', 'provider-base-url', 'engine', 'state', 'label', 'json'])],
-  ['worker', new Set(['once', 'engine', 'state', 'subscription', 'json'])],
+  ['http-subscribe', new Set(['baseline', 'consumer', 'provider-base-url', 'engine', 'state', 'label', 'json'])],
+  ['worker', new Set(['once', 'engine', 'state', 'subscription', 'http', 'json'])],
   ['subscriptions', new Set(['state', 'json'])],
   ['jobs', new Set(['state', 'json'])],
 ]);
@@ -85,6 +89,7 @@ export async function runWorkerCli(args: string[], options: WorkerCliOptions = {
           state: { type: 'string' },
           label: { type: 'string' },
           once: { type: 'boolean' },
+          http: { type: 'boolean' },
           subscription: { type: 'string' },
           json: { type: 'boolean' },
         },
@@ -102,9 +107,9 @@ export async function runWorkerCli(args: string[], options: WorkerCliOptions = {
     const allowed = commandOptions.get(command ?? '');
     const statePath = parsed.values.state;
     if (!allowed || Object.keys(parsed.values).some(option => !allowed.has(option)) || !statePath?.trim()
-      || parsed.positionals.length !== (command === 'subscribe' ? 2 : 1)) invalid();
+      || parsed.positionals.length !== (command === 'subscribe' || command === 'http-subscribe' ? 2 : 1)) invalid();
 
-    if (command === 'subscribe') {
+    if (command === 'subscribe' || command === 'http-subscribe') {
       const baselinePath = parsed.values.baseline;
       const consumerRoot = parsed.values.consumer;
       const providerBaseUrl = parsed.values['provider-base-url'];
@@ -112,10 +117,13 @@ export async function runWorkerCli(args: string[], options: WorkerCliOptions = {
       const label = parsed.values.label;
       if (!sourcePath?.trim() || !baselinePath?.trim() || !consumerRoot?.trim() || !providerBaseUrl?.trim()
         || !enginePath?.trim() || (label !== undefined && !label.trim())) invalid();
-      const subscription = await (options.register ?? registerLocalSubscription)({
-        statePath, sourcePath, baselinePath, consumerRoot, providerBaseUrl, enginePath,
+      const configuration = {
+        statePath, baselinePath, consumerRoot, providerBaseUrl, enginePath,
         ...(label !== undefined ? { label } : {}),
-      });
+      };
+      const subscription = command === 'http-subscribe'
+        ? await (options.registerHttp ?? registerHttpSubscription)({ ...configuration, source: prepareHttpSource(await loadLocalJson(sourcePath, 16 * 1024)) })
+        : await (options.register ?? registerLocalSubscription)({ ...configuration, sourcePath });
       stdout(parsed.values.json ? jsonLine(subscription) : renderSubscriptions([subscription], true));
       return 0;
     }
@@ -125,8 +133,10 @@ export async function runWorkerCli(args: string[], options: WorkerCliOptions = {
       if (parsed.values.once !== true || !enginePath?.trim() || (subscriptionId !== undefined && !subscriptionId.trim())) invalid();
       const observation = await (options.observe ?? observeOnce)({
         statePath, enginePath, ...(subscriptionId !== undefined ? { subscriptionId } : {}),
+        ...(parsed.values.http === undefined ? {} : { allowHttp: parsed.values.http }),
       });
       stdout(parsed.values.json ? jsonLine(observation) : renderObservation(observation));
+      if (observation.aborted) return 130;
       if (observation.results.some(result => result.status === 'failed' || result.status === 'busy')) return 2;
       return observation.results.some(result => result.jobId) ? 1 : 0;
     }

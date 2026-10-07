@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { mkdir, mkdtemp, readFile, writeFile, realpath, rm } from 'node:fs/promises';
 import { resolve, join, relative, isAbsolute, sep } from 'node:path';
 import { runCli } from '../dist/cli.js';
+import { runSourceObserverCli } from '../dist/source-observer-cli.js';
 
 async function invoke(args) {
   let stdout = '', stderr = '';
@@ -48,4 +49,29 @@ test('source CLI rejects unsupported flags, kinds, repeated options and implicit
     const result = await invoke(args); assert.equal(result.code, 2); assert.equal(result.stdout, '');
     assert.equal(JSON.parse(result.stderr).error.code, 'INVALID_INPUT');
   }
+});
+
+test('HTTP source CLI stores a policy without fetching, and forwards only an explicit HTTP flag', async t => {
+  const work = resolve('work'); await mkdir(work, { recursive: true });
+  const directory = await mkdtemp(join(work, 'http-source-cli-'));
+  t.after(async () => {
+    const actual = await realpath(directory), owned = relative(await realpath(work), actual);
+    assert(!isAbsolute(owned) && owned.startsWith('http-source-cli-') && !owned.includes(sep));
+    await rm(actual, { recursive: true, force: true });
+  });
+  const state = join(directory, 'state'), policy = join(directory, 'policy.json');
+  await writeFile(policy, JSON.stringify({ url: 'https://provider.example.invalid/catalog.json',
+    allowedOrigins: ['https://provider.example.invalid'], contentKind: 'json' }));
+  const registered = await invoke(['source-http-subscribe', policy, '--baseline', resolve('fixtures/mcp/catalog-before.json'),
+    '--kind', 'mcp', '--state', state, '--json']);
+  assert.equal(registered.code, 0, registered.stderr);
+  assert.equal(JSON.parse(registered.stdout).httpSource.origin, 'https://provider.example.invalid');
+  const blocked = await invoke(['source-observe', '--once', '--state', state, '--json']);
+  assert.equal(blocked.code, 2);
+  assert.equal(JSON.parse(blocked.stdout).results[0].reason, 'http-not-enabled');
+  const exit = await runSourceObserverCli(['source-observe', '--once', '--state', state, '--http'], {
+    observe: async input => { assert.equal(input.allowHttp, true); return { schemaVersion: 1, results: [] }; },
+    stdout() {}, stderr() { assert.fail('No CLI error expected'); },
+  });
+  assert.equal(exit, 0);
 });
