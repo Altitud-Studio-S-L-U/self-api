@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "summary": "Fictional payments 2026-02: forward caller currency, select the new version and preserve exact minor units",
+  "decisions": [
+    {
+      "id": "amount-units",
+      "question": "Do v1 totalCents and v2 amount.value denote equivalent values, and how are minor units preserved?",
+      "answer": "The fictional payments contracts explicitly define EUR and USD amounts: v1 totalCents is integer minor units; v2 amount.value is a canonical nonnegative major-unit decimal with exactly two fractional digits. There are exactly 100 minor units per major unit. Parse with BigInt, reject unsupported precision or values above Number.MAX_SAFE_INTEGER, and convert only the validated integer. This equivalence is fixture evidence, not an inference from field names."
+    },
+    {
+      "id": "currency-source",
+      "question": "Where does the newly required currency come from, and what if the response differs?",
+      "answer": "The existing application context.currency explicitly contains EUR or USD. Forward that caller value without a default, require the response currency to match, and preserve the existing internal {reference, amountMinor, currency} model. Missing, unsupported or mismatched currencies are errors."
+    },
+    {
+      "id": "api-version",
+      "question": "Which explicit API version is authorized, and does a new SDK revive the old version?",
+      "answer": "The fictional provider retires header version 2026-01 with HTTP 410 and defines 2026-02 as its replacement. Change X-Api-Version to 2026-02. Preserve the existing caller token and reject HTTP errors without automatic retries or converting error payloads into payments."
+    }
+  ],
+  "files": [
+    {
+      "path": "payments.mjs",
+      "sha256": "2e76968bce4ff670401cd50af9af221401cb18b3b67547e2b51aefc7ca058f6c",
+      "edits": [
+        {
+          "before": "export function parsePayment(payment, expectedCurrency) {\n  if (!payment || typeof payment !== 'object' || Array.isArray(payment)\n    || typeof payment.id !== 'string' || payment.id.length === 0\n    || !['EUR', 'USD'].includes(expectedCurrency) || payment.currency !== expectedCurrency\n    || !Number.isSafeInteger(payment.totalCents) || payment.totalCents < 0) {\n    throw new Error('Invalid payment response.');\n  }\n  return { reference: payment.id, amountMinor: payment.totalCents, currency: payment.currency };\n}",
+          "after": "export function parsePayment(payment, expectedCurrency) {\n  const amount = payment?.amount;\n  if (!payment || typeof payment !== 'object' || Array.isArray(payment)\n    || typeof payment.id !== 'string' || payment.id.length === 0\n    || !['EUR', 'USD'].includes(expectedCurrency)\n    || !amount || typeof amount !== 'object' || Array.isArray(amount)\n    || amount.currency_code !== expectedCurrency || typeof amount.value !== 'string'\n    || amount.value.length > 32 || !/^(?:0|[1-9][0-9]*)\\.[0-9]{2}$/u.test(amount.value)) {\n    throw new Error('Invalid payment response.');\n  }\n  // The fictional EUR/USD contract explicitly defines two decimal places; no floating-point rounding is permitted.\n  const amountMinor = BigInt(amount.value.replace('.', ''));\n  if (amountMinor > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Invalid payment response.');\n  return { reference: payment.id, amountMinor: Number(amountMinor), currency: amount.currency_code };\n}"
+        },
+        {
+          "before": "`http://127.0.0.1:43127/payments/${encodeURIComponent(id)}`",
+          "after": "`http://127.0.0.1:43127/payments/${encodeURIComponent(id)}?currency=${encodeURIComponent(context.currency)}`"
+        },
+        {
+          "before": "'X-Api-Version': '2026-01'",
+          "after": "'X-Api-Version': '2026-02'"
+        }
+      ]
+    }
+  ]
+}

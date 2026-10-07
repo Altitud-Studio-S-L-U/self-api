@@ -82,6 +82,14 @@ test('worker requires an explicit once action and never invokes a second workflo
   assert.deepEqual(missingOnce.calls, []);
 });
 
+test('HTTP observation is explicit and an aborted cycle cannot return success', async () => {
+  const allowed = await capture([...workerArgs, '--http']);
+  assert.equal(allowed.code, 0);
+  assert.equal(allowed.calls[0].input.allowHttp, true);
+  const cancelled = await capture(workerArgs, { observe: async () => ({ schemaVersion: 1, results: [], aborted: true }) });
+  assert.equal(cancelled.code, 130);
+});
+
 test('worker exit codes distinguish pending review from incomplete observations', async () => {
   for (const [results, expected] of [
     [[], 0],

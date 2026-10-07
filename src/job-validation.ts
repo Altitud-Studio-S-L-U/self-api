@@ -54,7 +54,17 @@ async function withFreshJob<T>(store: WorkerStore, input: JobValidationOptions,
   action: (options: MigrationValidationOptions, request: MigrationValidationRequest) => Promise<T>): Promise<T> {
   const { job, subscription, baseline, revision } = store.getJobEvidence(input.jobId);
   const { recipeJson, testPaths } = copiedInputs(input);
-  const current = await readLocalBytes(subscription.sourcePath, 4 * 1024 * 1024).catch(() => stale());
+  const currentSource = async (): Promise<Uint8Array> => {
+    if (!subscription.httpSource) return readLocalBytes(subscription.sourcePath, 4 * 1024 * 1024).catch(() => stale());
+    // This verifies the last successful explicit capture, not present-time remote behavior. No implicit network access.
+    try {
+      const current = store.getHttpSnapshot(subscription.id);
+      if (!current || current.sourceId !== subscription.httpSource.id || current.origin !== subscription.httpSource.origin
+        || current.authContextId !== subscription.httpSource.authContextId || current.sha256 !== job.revisionSha) stale();
+      return current.bytes;
+    } catch { stale(); }
+  };
+  const current = await currentSource();
   const consumer = await captureConsumer(subscription.consumerRoot).catch(() => stale());
   if (createHash('sha256').update(current).digest('hex') !== job.revisionSha || consumer.digest !== job.consumerDigest) stale();
   return withContractCopies(store.statePath, baseline.bytes, revision.bytes, async paths => {
@@ -65,6 +75,7 @@ async function withFreshJob<T>(store: WorkerStore, input: JobValidationOptions,
     if (request.plan.evidence.consumerDigest !== job.consumerDigest
       || request.plan.evidence.baseSha256 !== job.baselineSha || request.plan.evidence.revisionSha256 !== job.revisionSha
       || request.plan.impact.comparison.engine.version !== job.engineVersion) stale();
+    if (subscription.httpSource) await currentSource();
     return action(options, request);
   });
 }

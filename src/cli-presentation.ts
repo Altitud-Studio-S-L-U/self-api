@@ -53,7 +53,7 @@ export async function confirmLocalRequest(requestId: string): Promise<boolean> {
   }
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const answer = await terminal.question(`Type the exact validation request ID to authorize one attempt (anything else cancels):\n${requestId}\n> `);
+    const answer = await terminal.question(`Type the exact request ID to authorize one attempt (anything else cancels):\n${requestId}\n> `);
     return answer.trim() === requestId;
   } finally { terminal.close(); }
 }
