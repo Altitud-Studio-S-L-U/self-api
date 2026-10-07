@@ -68,6 +68,7 @@ const unresolvedCases = [
   ['loop assignment', 'for (fetch of methods) {} fetch("https://api.example.invalid/orders");'],
   ['global fetch assignment', 'globalThis.fetch = replacement; fetch("https://api.example.invalid/orders");'],
   ['encoder parameter', 'function request(encodeURIComponent) { return fetch(`https://api.example.invalid/orders/${encodeURIComponent(id)}`); }'],
+  ['global encoder assignment', 'globalThis.encodeURIComponent = replacement; fetch(`https://api.example.invalid/orders/${encodeURIComponent(id)}`);'],
   ['optional fetch', 'fetch?.("https://api.example.invalid/orders");'],
   ['computed fetch', 'globalThis["fetch"]("https://api.example.invalid/orders");'],
   ['direct eval', 'eval(program); fetch("https://api.example.invalid/orders");'],

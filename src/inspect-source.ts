@@ -207,6 +207,7 @@ export function inspectSource(file: SourceFile): SourceInspection {
   const declarations = new Map<string, number>();
   const writes = new Set<string>();
   let globalFetchWritten = false;
+  let globalEncoderWritten = false;
   let dynamicScope = false;
   for (const current of nodes) {
     if (current.type === 'WithStatement' || (current.type === 'CallExpression' && name(current.callee) === 'eval')) dynamicScope = true;
@@ -225,8 +226,10 @@ export function inspectSource(file: SourceFile): SourceInspection {
       const base = baseName(target);
       if (base) writes.add(base);
       const assignment = unwrap(target);
-      if (assignment && member(assignment) && name(assignment.object) === 'globalThis'
-        && (property(assignment) === 'fetch' || assignment.computed)) globalFetchWritten = true;
+      if (assignment && member(assignment) && name(assignment.object) === 'globalThis') {
+        if (property(assignment) === 'fetch' || assignment.computed) globalFetchWritten = true;
+        if (property(assignment) === 'encodeURIComponent' || assignment.computed) globalEncoderWritten = true;
+      }
     }
     if (['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(current.type)) {
       const imported = packageName(current.source);
@@ -326,7 +329,7 @@ export function inspectSource(file: SourceFile): SourceInspection {
     if (!direct && !global) continue;
     const shadowed = dynamicScope || globalFetchWritten || !outsideName(global ? 'globalThis' : 'fetch');
     const method = methodOf(current);
-    const url = urlOf(list(current.arguments)[0], outsideName('encodeURIComponent'));
+    const url = urlOf(list(current.arguments)[0], !globalEncoderWritten && outsideName('encodeURIComponent'));
     const reason = shadowed ? 'shadowed-fetch' : current.type === 'OptionalCallExpression' || callee?.type === 'OptionalMemberExpression' || callee?.computed ? 'optional-or-computed-fetch'
       : method.reason ?? url.reason;
     const traced = reason ? { responseFields: [], parserLocations: [] } : trace(current);
