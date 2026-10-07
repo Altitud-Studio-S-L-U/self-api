@@ -126,6 +126,8 @@ Automatic change generation and test execution require a container or ephemeral 
 
 ## 10. Scheduling, idempotency, and failure recovery
 
+The first durable slice implements explicit observation cycles for local OpenAPI JSON sources. It uses Node's built-in SQLite adapter with local transactions, bounded snapshot/report payloads and fenced expiring claims; SQLite avoids custom multi-file commit/recovery logic and an additional native dependency. Its API is experimental at the minimum supported Node patch and must remain an explicitly documented alpha dependency. Source bytes are stored exactly, not reconstructed from parsed JSON. The configured baseline is immutable and separate from observed state; adoption and deployment remain unknown until an implemented reconciliation flow proves them. Observation jobs carry no execution authorization.
+
 The worker uses outbound connections; no permanent public listener is required. Desktop execution is available only while the machine runs. CI/self-hosted runners provide continuity according to customer infrastructure. When disconnected, private observations become stale; public cloud observations may continue and queue work.
 
 Use transactions and durable identifiers for source transitions and consumer attempts. Distinguish deduplication from ownership: prevent concurrent writers, record a job lease, and confirm current ownership before publication. After a crash, reconcile existing branches/PRs before retrying. A cloud timeout does not prove publication failed.

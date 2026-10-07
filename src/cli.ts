@@ -13,6 +13,7 @@ import { loadLocalJson } from './local-file.js';
 import { createInterface } from 'node:readline/promises';
 import { prepareMigrationValidation, approveMigrationValidation, executeMigrationValidation } from './migration-validation.js';
 import type { MigrationValidationRequest } from './migration-validation.js';
+import { runWorkerCli } from './worker-cli.js';
 
 interface CliOptions {
   readonly compare?: typeof compareOpenApi;
@@ -34,6 +35,10 @@ const help = `Usage: plumber compare <base.json> <revision.json> --engine <path>
        plumber validation-plan <base.json> <revision.json> <plan-options> --test <relative-test-file> [--json]
        plumber approve <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory>
        plumber validate <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory> --approval <receipt-id> [--json]
+       plumber subscribe <source.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
+       plumber worker --once --state <directory> --engine <path> [--subscription <id>] [--json]
+       plumber subscriptions --state <directory> [--json]
+       plumber jobs --state <directory> [--json]
 
 Compare local OpenAPI JSON contracts using an explicitly selected oasdiff executable.
 
@@ -41,7 +46,7 @@ Options:
   --engine <path>  Path to the local oasdiff executable (required).
   --consumer <directory>  Consumer repository to inspect without executing code.
   --provider-base-url <url>  Explicit HTTP(S) provider origin and optional base path.
-  --recipe <path>  Explicit local migration decisions and exact edits (plan only).
+  --recipe <path>  Explicit local migration decisions and exact edits.
   --test <path>    Captured Node test file; repeat to select multiple tests.
   --state <path>   Private local state outside the consumer checkout.
   --approval <id>  Single-use approval from an explicit approve action.
@@ -170,6 +175,13 @@ async function confirmLocalRequest(requestId: string): Promise<boolean> {
 }
 
 export async function runCli(args: string[], options: CliOptions = {}): Promise<number> {
+  if (args.includes('--help') || args.includes('-h')) {
+    (options.stdout ?? ((text: string) => { process.stdout.write(text); }))(help);
+    return 0;
+  }
+  if (['subscribe', 'worker', 'subscriptions', 'jobs'].includes(args[0] ?? '')) {
+    return runWorkerCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });
   let parsed;

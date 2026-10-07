@@ -1,6 +1,6 @@
 # Plumber
 
-**Early development: local comparison, potential impact, migration proposals, and explicitly approved isolated validation.** The resident worker, live checkout adoption, Git publication, and Cloud connection are planned, not implemented.
+**Early development: local observation, potential impact, migration proposals, and explicitly approved isolated validation.** Explicit worker cycles persist subscriptions and review jobs. Resident scheduling, automatic job execution, live checkout adoption, Git publication, and Cloud connection remain planned.
 
 Plumber is a TypeScript SDK and CLI being developed to maintain integrations with external APIs and MCP servers. The intended product will observe subscribed sources, identify affected consumer code, present an impact assessment and migration plan, and prepare validated changes after authorization.
 
@@ -117,6 +117,29 @@ Results preserve both test outcomes: `passed` means both passed, `improved` mean
 
 Use a private state directory outside the consumer; neither directory may contain the other. New state directories/files use restrictive POSIX modes; Windows relies on inherited account ACLs. `receipts/` holds approvals; `attempts/<id>/` holds the consumed marker, exact request, snapshots and result including bounded raw output. These contain private source and must remain local. Artifacts are retained for inspection; deleting a consumed marker could permit replay while a receipt remains valid, so do not remove attempt markers to retry. No state cleanup daemon, recovery of interrupted containers, Git publication, Cloud transmission, or live checkout mutation is implemented in this slice.
 
+## Persist local subscriptions and observe once
+
+```sh
+node dist/cli.js subscribe fixtures/orders-v2.json --baseline fixtures/orders-v1.json --consumer fixtures/consumer --provider-base-url https://orders.example.invalid --engine work/tools/oasdiff/oasdiff --state "$HOME/.plumber-local-state" --label "Fictional orders API"
+node dist/cli.js worker --once --state "$HOME/.plumber-local-state" --engine work/tools/oasdiff/oasdiff --json
+node dist/cli.js subscriptions --state "$HOME/.plumber-local-state" --json
+node dist/cli.js jobs --state "$HOME/.plumber-local-state" --json
+```
+
+Use `.exe` for the engine on Windows. `registerLocalSubscription(options)`, `observeOnce({ statePath, enginePath, subscriptionId? })`, `listLocalSubscriptions({ statePath })`, and `listMaintenanceJobs({ statePath })` provide the SDK equivalents. Importing the SDK does not load SQLite, open a database, create state, start polling, or execute a consumer. The engine executable remains an explicit argument each cycle rather than a command loaded from the database.
+
+A subscription fixes a local JSON source, consumer directory, provider binding and **configured baseline**. That baseline is captured once; later edits or deletion of its original file do not change it. It is not proof of an adopted or deployed API version. Configuration is immutable in this slice; repeating the same registration is idempotent, while changing the binding/baseline of an existing subscription requires a future explicit reconfiguration flow. Labels are limited to 200 UTF-8 bytes. Only local OpenAPI JSON sources are supported; no HTTP/documentation crawler, webhook, MCP adapter, resident daemon or scheduler is started.
+
+Each explicit `--once` cycle captures the source bytes, including any UTF-8 BOM, writes owned private comparison copies, and inspects one consumer capture without executing it. Structurally invalid or incomplete inputs are failures; absence of findings does not prove compatibility. Changed bytes produce a review job even when the engine finds no structural breaking change. Jobs are keyed by subscription, baseline/revision digests, consumer digest and engine version: repeated evidence is deduplicated, a changed consumer gets new review evidence, and provider rollback preserves earlier jobs and transition history. Observing B never silently makes B the configured baseline. Adoption and deployment remain `unknown`.
+
+State lives in `worker.sqlite3` beside the separate approval state. SQLite transactions atomically persist immutable snapshot BLOBs, subscriptions, observation transitions, review jobs and expiring ownership claims. A five-minute claim coordinates concurrent observers; its owner and generation must still match and remain unexpired at commit. An interrupted observer may be replaced after expiry, but the old observer cannot commit over its successor. Source/consumer/engine failures preserve the last successful observation and pending jobs, record a fixed reason, and release ownership for a later explicit retry. Repeating the same source after a failed analysis is allowed. This recovery covers read-only observation; it never replays a consumed execution approval or recovers interrupted Docker containers.
+
+The store uses Node's built-in `node:sqlite`, avoiding an additional native installation step. At the minimum Node 24.11.1 runtime this API is experimental and emits its standard warning when first opened; Node documents it as a release candidate from 24.15.0. Use a current Node 24 LTS patch and retain backups of customer-owned state. See the [Node 24 SQLite API](https://nodejs.org/download/release/latest-v24.x/docs/api/sqlite.html). The implementation uses transactions with full synchronization and the rollback journal on a regular local filesystem; network/shared filesystem coordination and remote database import are unsupported. Unknown database identities or future schema versions are rejected.
+
+Limits are 100 subscriptions, 1,000 jobs and 1,000 observed transitions; individual contracts/reports are at most 4 MiB, with separate 64 MiB totals for snapshot bytes and report JSON. These bound stored payloads, not exact database disk usage. Exceeding a limit returns an explicit failure without pruning pending evidence or advancing freshness. No automatic retention/deletion policy is implemented. New directories/files use private modes; existing POSIX state/database paths with group/other access are rejected without changing their permissions. Windows uses inherited account ACLs. Keep the state directory private, outside the consumer, on customer-controlled storage; reports and snapshots are not Cloud messages.
+
+`worker --once` exits 0 when the cycle completes without a current review job, 1 when a current job needs review, and 2 if any subscription is busy or fails. An unchanged current source does not close historical jobs. Use `jobs` to inspect retained evidence. Observation does not create a recipe, grant approval, execute tests, mutate source, publish to GitHub or contact Cloud. The explicit proposal/approval/validation flow remains separate until the next worker milestone connects it through current-evidence and recovery checks.
+
 ## Development and dependencies
 
 `pnpm check` type-checks, builds, and runs Node's test runner, including comparisons against the real pinned engine. Install the engine first; engine absence fails tests rather than skipping integration coverage. CI defines the same checks on Windows, Linux, and macOS. No checks can demonstrate behavior for source types or product phases not implemented here.
@@ -127,6 +150,6 @@ Use a private state directory outside the consumer; neither directory may contai
 
 Runtime dependencies are Node built-ins and `@babel/parser` 8.0.6 (MIT), with its resolved Babel dependencies. Development dependencies are pinned in `pnpm-lock.yaml`: TypeScript (Apache-2.0), Node type definitions (MIT), and their resolved dependencies. pnpm is MIT; [oasdiff](https://github.com/oasdiff/oasdiff/tree/v1.33.0) is Apache-2.0 and its LICENSE is preserved alongside the installed binary. Dependency lifecycle scripts are not authorized by the checked-in pnpm configuration.
 
-Read the [implementation plan](docs/implementation-plan.md) for the remaining architecture and acceptance criteria. The next slice adds durable local subscriptions and worker reconciliation around these explicit plan/approval/attempt boundaries. The Cloud product follows the local workflow.
+Read the [implementation plan](docs/implementation-plan.md) for the remaining architecture and acceptance criteria. The next worker slice connects review jobs to explicitly approved validation attempts and reconciles interrupted execution without reusing approval or overwriting human changes. The Cloud product follows the local workflow.
 
 The package is private and unpublished. Do not install an unrelated package from npm using this development name. Package scope and distribution require availability checks. Public distribution under Apache-2.0 remains a proposal, not a license grant for this private repository.

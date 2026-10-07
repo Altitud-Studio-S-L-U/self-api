@@ -41,6 +41,7 @@
       "id": "authorized-migration",
       "title": "Propose and validate an authorized call and parser migration",
       "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/5",
       "acceptance": [
         "Bind a reviewable plan to source evidence, consumer revision, permitted files, and validation commands.",
         "Require applicable authorization before mutation or consumer execution and use an isolated execution environment.",
@@ -49,8 +50,19 @@
       ]
     },
     {
+      "id": "local-observation",
+      "title": "Persist local subscriptions and review jobs",
+      "status": "in-review",
+      "acceptance": [
+        "Persist exact bounded OpenAPI bytes and an explicit configured baseline without claiming adoption or deployment.",
+        "Observe local file subscriptions once, identify potential consumer impact, and retain pending review jobs across restarts.",
+        "Deduplicate identical evidence while preserving provider rollback transitions and changed consumer evidence.",
+        "Use expiring ownership claims and transactions so stale observers cannot commit; never grant approval or execute consumer code."
+      ]
+    },
+    {
       "id": "local-worker",
-      "title": "Resume local subscriptions and maintenance jobs",
+      "title": "Resume authorized maintenance jobs",
       "status": "planned",
       "acceptance": [
         "Persist subscriptions, observed evidence, authorized jobs, and attempts without starting a worker on SDK import.",

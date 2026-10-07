@@ -13,3 +13,6 @@ export type { MigrationRecipe } from './migration-recipe.js';
 export { prepareMigrationValidation, approveMigrationValidation, executeMigrationValidation } from './migration-validation.js';
 export type { MigrationValidationOptions, MigrationValidationRequest, MigrationValidationResult } from './migration-validation.js';
 export type { ApprovalReceipt } from './approval-store.js';
+export { registerLocalSubscription, observeOnce, listLocalSubscriptions, listMaintenanceJobs } from './worker.js';
+export type { LocalSubscriptionOptions, ObservationCycle } from './worker.js';
+export type { WorkerSubscription, WorkerJob } from './worker-store.js';
