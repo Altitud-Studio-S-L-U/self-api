@@ -14,6 +14,11 @@ import { runWorkerCli } from './worker-cli.js';
 import { escapeTerminal, jsonLine, renderPlan, renderValidation, confirmLocalRequest } from './cli-presentation.js';
 import { runJobCli } from './job-cli.js';
 import { runPublicationCli } from './publication-cli.js';
+import { runSourceCli } from './source-cli.js';
+import { runWorkerLoopCli } from './worker-loop-cli.js';
+import { runSourceObserverCli } from './source-observer-cli.js';
+import { runDependencyCli } from './dependency-cli.js';
+import { runPublicationCommandCli } from './publication-command-cli.js';
 
 interface CliOptions {
   readonly compare?: typeof compareOpenApi;
@@ -29,6 +34,17 @@ interface CliOptions {
 }
 
 const help = `Usage: plumber compare <base.json> <revision.json> --engine <path> [--json]
+       plumber mcp-compare <base.json> <revision.json> [--json]
+       plumber mcp-snapshot <catalog.json> [--json]
+       plumber integration-check <manifest.json> [--json]
+       plumber schema-compare <base.json> <revision.json> --direction input|output [--json]
+       plumber example-compare <base.json> <revision.json> [--json]
+       plumber source-subscribe <source-file> --kind mcp|json-schema|json-example|documentation --baseline <file> --state <directory> [--consumer <directory>] [--direction input|output] [--normalize-line-endings] [--json]
+       plumber source-observe --once --state <directory> [--subscription <id>] [--json]
+       plumber source-subscriptions --state <directory> [--json]
+       plumber source-history --state <directory> [--subscription <id>] [--json]
+       plumber deps-scan <package-lock.json> [--json]
+       plumber deps-audit <package-lock.json> --advisories <local-file> [--json]
        plumber scan <consumer-directory> [--json]
        plumber impact <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> [--json]
        plumber plan <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> --recipe <recipe.json> [--json]
@@ -37,6 +53,7 @@ const help = `Usage: plumber compare <base.json> <revision.json> --engine <path>
        plumber validate <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory> --approval <receipt-id> [--json]
        plumber subscribe <source.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
        plumber worker --once --state <directory> --engine <path> [--subscription <id>] [--json]
+       plumber worker-loop --state <directory> --engine <path> [--cycles <1-1000>] [--interval-ms <1000-3600000>] [--run-approved] [--json]
        plumber subscriptions --state <directory> [--json]
        plumber jobs --state <directory> [--json]
        plumber job-plan <job-id> --state <directory> --engine <path> --recipe <path> --test <file> [--json]
@@ -46,6 +63,10 @@ const help = `Usage: plumber compare <base.json> <revision.json> --engine <path>
        plumber recover-approved --state <directory> [--limit <1-10>] [--json]
        plumber executions --state <directory> [--json]
        plumber publication-plan <intent-id> --state <directory> --git <absolute-executable> --engine <path> --repository OWNER/REPO --base <branch> [--json]
+       plumber publication-review --candidate <local-json> --author-name <name> --author-email <email> --github [--json]
+       plumber publication-approve --request <local-json> --state <directory> --consumer <directory>
+       plumber publication-publish --request <local-json> --state <directory> --consumer <directory> --approval <receipt-id> --github [--json]
+       plumber publication-reconcile --request <local-json> --state <directory> --consumer <directory> --approval <receipt-id> --github [--json]
 
 Compare local OpenAPI JSON contracts using an explicitly selected oasdiff executable.
 
@@ -81,6 +102,13 @@ Execution passes exit 0 for no work or all passing outcomes, 1 for completed fai
 and 2 for blocked, interrupted, or unavailable execution. JSON artifacts are private local data.
 publication-plan exits 0 for a local Git-bound candidate or 2 for unavailable/invalid evidence.
 It does not access GitHub, verify the remote base, grant publication approval, or create a branch/PR.
+publication-review/publish/reconcile require --github and a locally configured GH_TOKEN.
+publication-approve requires terminal confirmation and cannot publish. Its permission is separate from validation.
+Publication exits 0 for verified publication, 1 for conflicts, and 2 for uncertainty or errors. Reconciliation does not retry writes.
+MCP/schema comparison exits 1 for breaking changes or inconclusive evidence. Examples always leave compatibility unestablished.
+Source observation exits 1 for a new evidence transition and 2 for failed/busy observations; it never approves work.
+worker-loop is finite (one cycle by default), stops on execution failures, and exits 130 after cancellation.
+Dependency commands exit 1 for affected or unresolved evidence; no result proves absence of all vulnerabilities.
 `;
 
 function renderReport(report: ComparisonReport, withConsumerEvidence = false): string {
@@ -146,6 +174,21 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   }
   if (args[0] === 'publication-plan') {
     return runPublicationCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (['mcp-compare', 'mcp-snapshot', 'integration-check', 'schema-compare', 'example-compare'].includes(args[0] ?? '')) {
+    return runSourceCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (args[0] === 'worker-loop') {
+    return runWorkerLoopCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (['source-subscribe', 'source-observe', 'source-subscriptions', 'source-history'].includes(args[0] ?? '')) {
+    return runSourceObserverCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (['deps-scan', 'deps-audit'].includes(args[0] ?? '')) {
+    return runDependencyCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (['publication-review', 'publication-approve', 'publication-publish', 'publication-reconcile'].includes(args[0] ?? '')) {
+    return runPublicationCommandCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}), ...(options.confirm ? { confirm: options.confirm } : {}) });
   }
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });

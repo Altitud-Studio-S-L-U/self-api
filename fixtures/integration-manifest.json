@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "provider": "Fictional Orders Provider",
+  "product": "Orders API demonstration",
+  "endpoints": [{ "id": "sandbox", "url": "https://orders.example.test/", "environment": "test" }],
+  "sources": [
+    { "id": "orders-v1", "kind": "openapi", "location": { "type": "local", "path": "fixtures/orders-v1.json" }, "provenance": "declared-contract", "coverage": "complete" },
+    { "id": "orders-v2", "kind": "openapi", "location": { "type": "local", "path": "fixtures/orders-v2.json" }, "provenance": "declared-contract", "coverage": "complete" },
+    { "id": "migration-guide", "kind": "documentation", "location": { "type": "local", "path": "fixtures/migration-guide.md" }, "provenance": "documentation-claim", "coverage": "partial" }
+  ],
+  "knownVersions": [
+    { "id": "v1", "axis": "api", "value": "2026-01-01", "sourceIds": ["orders-v1"], "retirement": { "date": null, "sourceIds": ["migration-guide"], "note": "This fictional fixture does not establish a retirement date." } },
+    { "id": "v2", "axis": "api", "value": "2026-02-01", "sourceIds": ["orders-v2"] }
+  ],
+  "effectiveVersions": [{ "axis": "api", "value": null, "selector": "unknown", "sourceIds": [], "endpointId": "sandbox" }],
+  "boundaries": [{
+    "id": "read-order",
+    "outputContract": { "sourceId": "orders-v1", "pointer": "/paths/~1orders~1{id}/get/responses/200" },
+    "requirements": [{ "id": "preserve-total", "kind": "business-decision", "description": "Review the provider units and preserve the application's internal total field.", "sourceIds": ["migration-guide"] }]
+  }]
+}

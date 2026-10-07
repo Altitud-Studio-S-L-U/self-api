@@ -13,6 +13,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/cloud-protocol.d.ts",
+      "import": "./dist/cloud-protocol.js"
     }
   },
   "bin": {

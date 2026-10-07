@@ -2,20 +2,26 @@
 
 Local tools for maintaining integrations with external APIs. Plumber compares API contracts, locates potentially affected TypeScript/JavaScript calls, prepares explicit migration proposals and validates approved changes in isolated copies.
 
-**Status:** private, unpublished alpha. The SDK and CLI run locally. GitHub publication, MCP observation, AI-assisted recipes and the Cloud application are not implemented yet. This repository requires no hosted Plumber service.
+**Status:** private, unpublished alpha. The SDK and CLI run in the customer's environment. Local observation, optional model proposals and separately authorized GitHub draft publication are implemented. The GitHub transport is tested with controlled responses; a live publication pilot remains a release gate. The Cloud application is a separate, pending product. No hosted Plumber service is required.
 
 ## What works today
 
 | Capability | Current scope |
 | --- | --- |
 | Contract comparison | Local OpenAPI 3.0.x/3.1.x JSON, using a pinned oasdiff executable |
+| MCP and JSON Schema | Complete local MCP catalog captures and an explicit JSON Schema structural profile, with input/output compatibility direction |
+| Evidence sources | Persistent subscriptions for local MCP, schemas, JSON examples and Markdown/text documentation; examples and prose never establish compatibility |
+| Integration catalog | Separate API/SDK/webhook/MCP versions, source provenance, retirement evidence and optional function boundary metadata |
+| Dependency evidence | npm lockfile v2/v3 inventory and correlation against supplied advisories listing exact versions |
 | Consumer inspection | Bounded TS/JS syntax analysis of supported native `fetch` calls; unresolved usages remain explicit |
 | Migration proposals | Caller-supplied recipes with exact edits, hashes and business decisions |
 | Validation | Explicit approval, baseline/candidate tests and recovery on a fixed Linux x64 Docker profile |
-| Local worker | SQLite subscriptions, review jobs, approved execution queues and explicit `--once` cycles |
-| Publication preparation | Local evidence tied to Git HEAD, index and blobs; no branch or PR is created |
+| Local worker | SQLite subscriptions, review jobs, approved execution queues, one-shot observation and a finite cancellable loop |
+| Optional model harness | Selected context, explicit one-use consent, customer-selected adapter, bounded structured proposals and mandatory semantic review |
+| GitHub publication | Separate approval, exact repository/base/file bindings, create-only branch, draft PR and read-only reconciliation of uncertain writes |
+| Cloud protocol | A separately exported, versioned status allowlist; no Cloud account, enrollment or transport is included |
 
-Code, patches, private schemas, raw logs and credentials stay in the customer's environment. Importing the SDK starts no worker, opens no database and executes no consumer code. A future authorized model provider would receive selected context directly from the local runner, never through Plumber Cloud.
+Code, patches, private schemas and raw logs are excluded from the Cloud status protocol. Importing the SDK starts no worker, opens no database and executes no consumer code. An explicitly authorized customer model can receive selected context; authorized publication sends the approved changes directly to the customer's GitHub repository. Neither route passes through Plumber Cloud.
 
 ## Prerequisites
 
@@ -112,9 +118,18 @@ Do not install an unrelated registry package using this development name. The fi
 2. **Propose:** use `plan` with an explicit recipe. Review the call and parser changes and their business assumptions.
 3. **Authorize and validate:** review `validation-plan`, then use `approve` and `validate` on a prepared Linux host. Approval is separate from planning and expires after 15 minutes.
 4. **Repeat locally:** register a `subscribe` source, run `worker --once`, then review jobs. `job-plan`, `job-approve`, `job-queue` and `run-approved` handle approved execution; `recover-approved` reconciles interrupted attempts.
-5. **Prepare publication evidence:** `publication-plan` requires a completed validation and a committed consumer repository. The output remains unapproved and its remote destination unverified.
+5. **Publish separately:** `publication-plan` prepares local evidence. Destination review, explicit publication approval and GitHub publication are separate steps. Uncertain responses require reconciliation; no automatic merge, deployment, branch overwrite or write retry is performed.
 
-Use the [local workflow reference](docs/local-workflow.md) for executable examples, state-directory setup, command outcomes, limits and recovery instructions. Read the [fictional migration guide](fixtures/migration-guide.md) before trying the sample recipe. Approval never grants permission to publish, merge or deploy.
+Use the [local workflow reference](docs/local-workflow.md) for SDK/CLI examples, MCP and schema profiles, model consent, state-directory setup, publication and recovery. Read the [fictional migration guide](fixtures/migration-guide.md) before trying the sample recipe. Validation approval never grants permission to publish, merge or deploy.
+
+Try MCP comparison without an engine or server connection:
+
+```sh
+pnpm --silent plumber mcp-compare fixtures/mcp/catalog-before.json fixtures/mcp/catalog-after.json --json
+pnpm --silent plumber integration-check fixtures/integration-manifest.json --json
+```
+
+The MCP fixture changes both an input and a parsed output. Expect comparison exit code **1**. Its files and the integration manifest are fictional examples, not maintained provider catalogs. Source observation accepts customer-supplied local exports; automatic remote documentation retrieval and framework/DB export execution are not part of this profile.
 
 ## Development and checks
 
@@ -145,6 +160,8 @@ CI is configured for Windows, Linux and macOS, with a separate real Docker job. 
 | Publication preparation rejects a fixture directory | Use the exact root of a separate committed Git repository, selected before observation and validation |
 
 Structural diffs and passing selected tests do not prove full provider compatibility. JSON artifacts may contain source code and private evidence; keep them local. Docker uses a privileged local daemon and shared kernel, and same-account tampering is outside the trust boundary. Detailed restrictions and retained recovery evidence are documented in the [workflow reference](docs/local-workflow.md).
+
+The shared status encoder is imported from `plumber/protocol`. It validates a small allowlist; it does not authenticate installations or prove a reported outcome. Runner enrollment, DPoP/revocation integration, Cloud/Slack delivery, live provider pilots and public package distribution remain separate release gates in the implementation plan. Model and Git adapters are trusted customer code, not sandboxes. Source expansion does not imply automatic migration support for every SDK or MCP call style.
 
 ## Project map and licensing
 

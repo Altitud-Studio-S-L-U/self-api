@@ -65,7 +65,11 @@ import assert from 'node:assert/strict';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compareOpenApi } from 'plumber';
+import { compareOpenApi, compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory } from 'plumber';
+import { negotiateCloudProtocol, encodeCloudStatusEvent } from 'plumber/protocol';
+
+for (const api of [compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, encodeCloudStatusEvent]) assert.equal(typeof api, 'function');
+assert.deepEqual(negotiateCloudProtocol([1]), { status: 'compatible', version: 1 });
 
 const installed = await realpath(join(import.meta.dirname, 'node_modules'));
 const entry = await realpath(fileURLToPath(import.meta.resolve('plumber')));
@@ -85,12 +89,16 @@ for (const path of ['plumber/dist/index.js', 'plumber/dist/compare.js', 'plumber
 }
 `);
   await writeFile(join(consumer, 'use-types.ts'), `
-import { compareOpenApi, type CompareOptions, type ComparisonReport } from 'plumber';
+import { compareOpenApi, type CompareOptions, type ComparisonReport, type GitPublicationAdapter, type ModelProposalAdapter, type SourceSubscriptionOptions } from 'plumber';
+import { validateCloudStatusEvent, type CloudStatusEvent } from 'plumber/protocol';
 
 const compare: (options: CompareOptions) => Promise<ComparisonReport> = compareOpenApi;
 const options: CompareOptions = { basePath: 'base.json', revisionPath: 'revision.json', enginePath: 'oasdiff' };
 void compare;
 void options;
+const validateEvent: (input: unknown) => CloudStatusEvent = validateCloudStatusEvent;
+type CustomerAdapters = { git: GitPublicationAdapter; model: ModelProposalAdapter; source: SourceSubscriptionOptions };
+void validateEvent;
 `);
   await writeFile(join(consumer, 'tsconfig.json'), JSON.stringify({
     compilerOptions: {
