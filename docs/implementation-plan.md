@@ -1,6 +1,6 @@
 # Plumber implementation plan
 
-Status: planning baseline. This document describes intended behavior and acceptance criteria; it does not report implemented features or successful tests.
+Status: development plan. This document describes intended behavior and acceptance criteria. See the [README](../README.md) for the implemented scope and current limitations; later phases below are not claims of shipped features.
 
 ## 1. Product boundary
 
@@ -60,7 +60,7 @@ Resolve package advisories against lockfile versions and relevant transitive dep
 
 Use Node.js 24, TypeScript, and pnpm. Keep responsibilities within one repository: engine, source integrations, code discovery/migration, SDK/CLI/worker entry points, and shared contracts. Split packages only around actual consumers or release boundaries; do not introduce a service framework or generic repository abstraction.
 
-Use SQLite through `better-sqlite3` for local durable state. Verify native-module compatibility and distribution on the supported Node/OS combinations before promising installation support. Use a pinned `oasdiff` executable locally, with verified release provenance/checksum and an explicit platform acquisition strategy. Users must not need an unplanned Go toolchain or an unverified download during a migration.
+Use Node's built-in `node:sqlite` for local durable state, with an explicit supported Node range and cross-platform checks. This avoids an additional native-module installation; the tradeoff is an experimental SQLite API at the minimum Node 24.11.1 patch (release candidate from 24.15.0). Keep this limitation visible until the supported runtime advances. Use a pinned `oasdiff` executable locally, with verified release provenance/checksum and an explicit platform acquisition strategy. Users must not need an unplanned Go toolchain or an unverified download during a migration.
 
 This repository owns the shared protocol as a versioned package. Cloud consumes a declared package version through the chosen registry, never a sibling filesystem import. There is no third repository. Package scope, registry, and distribution permissions remain subject to availability and setup; no unpublished package name is presented as installable.
 
@@ -126,6 +126,10 @@ Automatic change generation and test execution require a container or ephemeral 
 
 ## 10. Scheduling, idempotency, and failure recovery
 
+The first durable slice implements explicit observation cycles for local OpenAPI JSON sources. It uses Node's built-in SQLite adapter with local transactions, bounded snapshot/report payloads and fenced expiring claims; SQLite avoids custom multi-file commit/recovery logic and an additional native dependency. Its API is experimental at the minimum supported Node patch and must remain an explicitly documented alpha dependency. Source bytes are stored exactly, not reconstructed from parsed JSON. The configured baseline is immutable and separate from observed state; adoption and deployment remain unknown until an implemented reconciliation flow proves them. Observation jobs carry no execution authorization.
+
+Authorized validation has its own immutable queue, bound to an existing unexpired single-use receipt, recipe, tests and reviewed evidence. Recheck source and consumer before execution; never retry a running or interrupted intent as queued work. Expired execution ownership permits reconciliation only. Persist container intent before create, confirmed ID before start, verified cleanup, and a strict outcome after the full result. Recovery validates durable outcomes or cleans up by verified container ID without starting commands. Late outcomes can reconcile an interrupted database record; malformed or conflicting evidence cannot establish success. Unknown creation remains pending rather than treating a currently absent container as proof the daemon will never create it. This coordinates process-crash recovery, not an atomic transaction across SQLite, files and Docker or a guarantee of exactly-once external effects.
+
 The worker uses outbound connections; no permanent public listener is required. Desktop execution is available only while the machine runs. CI/self-hosted runners provide continuity according to customer infrastructure. When disconnected, private observations become stale; public cloud observations may continue and queue work.
 
 Use transactions and durable identifiers for source transitions and consumer attempts. Distinguish deduplication from ownership: prevent concurrent writers, record a job lease, and confirm current ownership before publication. After a crash, reconcile existing branches/PRs before retrying. A cloud timeout does not prove publication failed.
@@ -158,6 +162,12 @@ An end-to-end pilot must create a real PR in an authorized test repository, repo
 
 ## 12. Delivery phases and release gates
 
+Use `pnpm dev` to resume implementation. It reads the ordered milestones in [`tooling/delivery.json`](../tooling/delivery.json), lists pending reviews separately, and shows the next implementation milestone with its acceptance criteria. `pnpm dev:check` runs the existing repository checks and preserves their exit status. These commands do not launch a resident agent, modify consumer repositories, create commits, or mark milestones complete.
+
+At the start of a development session, inspect the current branch, local changes, pending reviews, and the active milestone. Continue the smallest change that addresses an unmet criterion, preserving the product and authorization boundaries above. Run the appropriate focused checks while editing, then `pnpm dev:check` before requesting review. The first setup still requires `pnpm install --frozen-lockfile` and `pnpm engine:setup` as described in the README.
+
+Update the manifest in the same reviewed change when scope or milestone status changes. `in-progress` identifies the single implementation focus; `in-review` means code is awaiting review and does not block displaying the next implementation item. A passing test run does not change either state. Use `completed` only after the acceptance criteria and associated review are satisfied; it does not claim release or production deployment. The manifest is a short delivery index, while the phases below retain the wider release gates. Do not store session logs or repeated test transcripts in either file.
+
 | Phase | Deliverable | Exit criterion |
 | --- | --- | --- |
 | 0. Foundation | Clean repository structure, dependency/license review, shared protocol ownership, privacy contract, supported-platform matrix | Dependency and identity spikes resolve distribution and DPoP integration risks; contracts have agreed fixtures |
@@ -168,6 +178,6 @@ An end-to-end pilot must create a real PR in an authorized test repository, repo
 | 5. Source expansion | Docs-driven evidence, read-only DB metadata, framework exports, further SDK patterns | Each addition demonstrates a real consumer workflow and bounded failure behavior |
 | 6. Pilot and distribution | Customer pilots, compatibility policy, measured model economics, package publishing process | Review effort and accepted migrations justify expansion; release claims match verified scope |
 
-Cloud landing/account work can proceed against the versioned contracts in parallel. Public onboarding, a 30-day no-card trial starting with the first runner, and hosting in a US region are cloud decisions; they do not justify exposing repository content or weakening local authorization.
+Prioritize the local SDK/CLI workflow through observation and an approved, validated migration before implementing the Cloud application. Cloud then consumes the versioned contracts; its landing/dashboard frontend and NestJS API remain separate applications within the single `plumber-cloud` repository. Public onboarding, a 30-day no-card trial starting with the first runner, and hosting in a US region are cloud decisions; they do not justify exposing repository content or weakening local authorization.
 
 Keep package names tentative until availability is checked. Both repositories begin private. Apache-2.0 public distribution of the installable is proposed and requires a deliberate licensing/publication step. This document supplies no license grant and claims no production readiness.

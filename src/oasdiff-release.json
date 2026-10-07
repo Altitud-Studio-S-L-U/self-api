@@ -1,0 +1,36 @@
+{
+  "version": "1.33.0",
+  "assets": {
+    "win32-x64": {
+      "fileName": "oasdiff_1.33.0_windows_amd64.tar.gz",
+      "sha256": "22f98c7247075f8a446e783595802d6d38637de1760df264f3d4b3309f766c5b",
+      "binaryName": "oasdiff.exe",
+      "binarySha256": "f450465c0f4bd35ec49ba35b436820730843c5b21b5499e618963803bd8da919"
+    },
+    "linux-x64": {
+      "fileName": "oasdiff_1.33.0_linux_amd64.tar.gz",
+      "sha256": "43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247",
+      "binaryName": "oasdiff"
+    },
+    "linux-arm64": {
+      "fileName": "oasdiff_1.33.0_linux_arm64.tar.gz",
+      "sha256": "4ae3c362d6074d919aada2dea82d0ee84366591600384455d0bdc658ddf8f7ae",
+      "binaryName": "oasdiff"
+    },
+    "win32-arm64": {
+      "fileName": "oasdiff_1.33.0_windows_arm64.tar.gz",
+      "sha256": "d51bd1ea4b05ff9b314245d1e97f84c222b22ce34a930e8e305c68c32edbe951",
+      "binaryName": "oasdiff.exe"
+    },
+    "darwin-x64": {
+      "fileName": "oasdiff_1.33.0_darwin_all.tar.gz",
+      "sha256": "2a479337c15afdcbf0b1e89c0b4d0cf0176472dbc11483358fed1f831d1e46c5",
+      "binaryName": "oasdiff"
+    },
+    "darwin-arm64": {
+      "fileName": "oasdiff_1.33.0_darwin_all.tar.gz",
+      "sha256": "2a479337c15afdcbf0b1e89c0b4d0cf0176472dbc11483358fed1f831d1e46c5",
+      "binaryName": "oasdiff"
+    }
+  }
+}

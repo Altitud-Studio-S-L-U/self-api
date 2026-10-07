@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "summary": "Fictional Orders v2: forward the existing region and preserve the internal total",
+  "decisions": [
+    {
+      "id": "amount-meaning",
+      "question": "Does amount preserve the meaning and units of total?",
+      "answer": "The controlled fixtures/migration-guide.md explicitly guarantees identical meaning, units, and value."
+    },
+    {
+      "id": "region-source",
+      "question": "Where does the required region come from?",
+      "answer": "The existing context.region argument contains the applicable region; no default is introduced."
+    }
+  ],
+  "files": [
+    {
+      "path": "orders.ts",
+      "sha256": "a6c44120f57ea4d043f52a63f5000debfee549ff8df1e9aee0a926492d6fe9d5",
+      "edits": [
+        {
+          "before": "type ProviderOrder = { id: string; total: number };",
+          "after": "type ProviderOrder = { id: string; amount: number };"
+        },
+        {
+          "before": "`https://orders.example.invalid/orders/${encodeURIComponent(id)}`",
+          "after": "`https://orders.example.invalid/orders/${encodeURIComponent(id)}?region=${encodeURIComponent(context.region)}`"
+        },
+        {
+          "before": "total: order.total",
+          "after": "total: order.amount"
+        }
+      ]
+    }
+  ]
+}
