@@ -292,6 +292,50 @@ test('missing promisor blobs fail locally without invoking a remote helper', asy
   await assert.rejects(captureGitEvidence(options), /unavailable locally|supported local repository/);
 });
 
+function earlyInputClose(output = '') {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new PassThrough();
+  child.stdin.end = () => {
+    queueMicrotask(() => child.stdin.emit('error', Object.assign(new Error('The child closed its input.'), { code: 'EPIPE' })));
+    return child.stdin;
+  };
+  child.kill = () => { queueMicrotask(() => child.emit('close', null)); return true; };
+  queueMicrotask(() => {
+    child.stdout.end(output);
+    setImmediate(() => child.emit('close', 0));
+  });
+  return child;
+}
+
+test('Git commands without input do not open a pipe that can fail after an early input close', async t => {
+  const { options } = await fixture(t);
+  let versionInput;
+  const inspect = createGitEvidenceCapture({ spawn: (binary, args, processOptions) => {
+    if (!args.includes('--version')) return spawn(binary, args, processOptions);
+    versionInput = processOptions.stdio[0];
+    const child = earlyInputClose('git version 2.55.0\n');
+    if (versionInput === 'ignore') child.stdin = null;
+    return child;
+  } });
+  const evidence = await inspect(options);
+  assert.match(evidence.headSha, /^[a-f0-9]{40}$/);
+  assert.equal(versionInput, 'ignore');
+});
+
+test('an early input close remains fatal when cat-file requires the requested object IDs', async t => {
+  const { options } = await fixture(t);
+  let catFileInput;
+  const inspect = createGitEvidenceCapture({ spawn: (binary, args, processOptions) => {
+    if (!args.includes('cat-file')) return spawn(binary, args, processOptions);
+    catFileInput = processOptions.stdio[0];
+    return earlyInputClose();
+  } });
+  await assert.rejects(inspect(options), /Git rejected the local evidence request/);
+  assert.equal(catFileInput, 'pipe');
+});
+
 function fakeProcess(action) {
   const child = new EventEmitter();
   child.stdout = new PassThrough();

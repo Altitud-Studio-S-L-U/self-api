@@ -232,7 +232,8 @@ export function createGitEvidenceCapture(dependencies: Dependencies = {}): (opti
           let failure: string | undefined;
           let settled = false;
           const child = launch(options.gitPath, [...fixed, ...args], {
-            cwd: root, env: environment(options.gitPath), shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+            cwd: root, env: environment(options.gitPath), shell: false, windowsHide: true,
+            stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
           });
           const finish = (error?: string): void => {
             if (settled) return;
@@ -260,8 +261,10 @@ export function createGitEvidenceCapture(dependencies: Dependencies = {}): (opti
           child.stderr!.on('data', (chunk: Buffer) => { count(chunk); });
           child.once('error', () => finish('The trusted Git executable could not inspect local evidence.'));
           child.once('close', code => finish(failure ?? (code === 0 ? undefined : 'Git could not inspect the supported local repository profile.')));
-          child.stdin!.on('error', () => { fail('Git rejected the local evidence request.'); });
-          child.stdin!.end(input ?? '');
+          if (input !== undefined) {
+            child.stdin!.on('error', () => { fail('Git rejected the local evidence request.'); });
+            child.stdin!.end(input);
+          }
         });
       };
       const text = async (args: string[]): Promise<string> => decode(await run(args, MAX_METADATA)).trimEnd();
