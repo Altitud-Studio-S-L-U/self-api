@@ -1,6 +1,6 @@
 import { compareOpenApi } from './compare.js';
 import type { CompareOptions } from './compare.js';
-import type { ComparisonReport } from './contracts.js';
+import type { ComparisonReport, LocalSnapshot } from './contracts.js';
 import type { ConsumerCall, ConsumerInventory } from './consumer-contracts.js';
 import { PlumberError } from './errors.js';
 import { scanConsumer } from './scan.js';
@@ -9,6 +9,13 @@ import { loadOpenApi } from './openapi.js';
 export interface ImpactOptions extends CompareOptions {
   readonly consumerRoot: string;
   /** Explicit subscription binding, including any API base path. Never fetched. */
+  readonly providerBaseUrl: string;
+}
+
+export interface CapturedImpactOptions {
+  readonly comparison: ComparisonReport;
+  readonly inventory: ConsumerInventory;
+  readonly base: LocalSnapshot;
   readonly providerBaseUrl: string;
 }
 
@@ -50,10 +57,18 @@ function matchesOperation(call: ConsumerCall, provider: ImpactReport['provider']
 }
 
 export async function analyzeImpact(options: ImpactOptions): Promise<ImpactReport> {
-  const provider = binding(options.providerBaseUrl);
+  const providerBaseUrl = options.providerBaseUrl;
+  // Reject invalid bindings before reading files or invoking the comparison engine.
+  binding(providerBaseUrl);
   const [comparison, inventory, base] = await Promise.all([
     compareOpenApi(options), scanConsumer(options.consumerRoot), loadOpenApi(options.basePath),
   ]);
+  return analyzeCapturedImpact({ comparison, inventory, base, providerBaseUrl });
+}
+
+export function analyzeCapturedImpact(options: CapturedImpactOptions): ImpactReport {
+  const provider = binding(options.providerBaseUrl);
+  const { comparison, inventory, base } = options;
   if (base.metadata.sha256 !== comparison.base.sha256) {
     throw new PlumberError('INVALID_INPUT', 'The base contract changed during impact analysis; retry with stable input.');
   }

@@ -17,6 +17,7 @@
       "id": "consumer-impact",
       "title": "Locate TypeScript consumers affected by contract changes",
       "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/3",
       "acceptance": [
         "Associate supported native HTTP call syntax with changed operations and local file/line evidence.",
         "Report dynamic, ambiguous, or unsupported call forms as unresolved; do not imply exhaustive discovery.",
@@ -25,9 +26,22 @@
       ]
     },
     {
+      "id": "migration-proposal",
+      "title": "Preview explicit migrations against captured evidence",
+      "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/4",
+      "acceptance": [
+        "Bind exact unique source edits to the consumer, contracts, recipe, and explicit business decisions.",
+        "Keep the consumer unchanged and unexecuted while showing reviewable before/after content.",
+        "Reject stale, ambiguous, overlapping, malformed, or out-of-scope recipes and expose missing decisions.",
+        "Prove the controlled call and parser transformation preserves the fictional consumer's internal model."
+      ]
+    },
+    {
       "id": "authorized-migration",
       "title": "Propose and validate an authorized call and parser migration",
-      "status": "planned",
+      "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/5",
       "acceptance": [
         "Bind a reviewable plan to source evidence, consumer revision, permitted files, and validation commands.",
         "Require applicable authorization before mutation or consumer execution and use an isolated execution environment.",
@@ -36,14 +50,38 @@
       ]
     },
     {
+      "id": "local-observation",
+      "title": "Persist local subscriptions and review jobs",
+      "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/6",
+      "acceptance": [
+        "Persist exact bounded OpenAPI bytes and an explicit configured baseline without claiming adoption or deployment.",
+        "Observe local file subscriptions once, identify potential consumer impact, and retain pending review jobs across restarts.",
+        "Deduplicate identical evidence while preserving provider rollback transitions and changed consumer evidence.",
+        "Use expiring ownership claims and transactions so stale observers cannot commit; never grant approval or execute consumer code."
+      ]
+    },
+    {
       "id": "local-worker",
-      "title": "Resume local subscriptions and maintenance jobs",
-      "status": "planned",
+      "title": "Resume authorized maintenance jobs",
+      "status": "in-review",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/7",
       "acceptance": [
         "Persist subscriptions, observed evidence, authorized jobs, and attempts without starting a worker on SDK import.",
-        "Recover interrupted work and reconcile duplicate events without losing pending migrations or duplicating publication.",
-        "Respect changed bases, human commits, stale observations, and authorization limits.",
+        "Reconcile interrupted validation, owned containers and late durable outcomes without replaying a consumed approval.",
+        "Respect changed source and consumer evidence, bounded ownership claims and authorization expiry.",
         "Keep observed, validated, adopted, and deployed state distinct."
+      ]
+    },
+    {
+      "id": "local-publication",
+      "title": "Publish an explicitly authorized migration from the customer environment",
+      "status": "planned",
+      "acceptance": [
+        "Bind publication to a reviewed repository, base commit, remote destination, permitted files and validation evidence.",
+        "Require separate publication scope, isolate credentials from consumer execution and preserve human commits.",
+        "Create a branch and draft pull request directly from the local runner with idempotent reconciliation after uncertain responses.",
+        "Demonstrate the flow in an explicitly authorized test repository without automatic merge, deployment or code transmission to Plumber Cloud."
       ]
     },
     {

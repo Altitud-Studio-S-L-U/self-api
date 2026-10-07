@@ -7,11 +7,22 @@ import { scanConsumer } from './scan.js';
 import { analyzeImpact } from './impact.js';
 import type { ImpactReport } from './impact.js';
 import type { ConsumerInventory } from './consumer-contracts.js';
+import { createMigrationPlan } from './migration-plan.js';
+import { loadLocalJson } from './local-file.js';
+import { prepareMigrationValidation, approveMigrationValidation, executeMigrationValidation } from './migration-validation.js';
+import { runWorkerCli } from './worker-cli.js';
+import { escapeTerminal, jsonLine, renderPlan, renderValidation, confirmLocalRequest } from './cli-presentation.js';
+import { runJobCli } from './job-cli.js';
 
 interface CliOptions {
   readonly compare?: typeof compareOpenApi;
   readonly scan?: typeof scanConsumer;
   readonly impact?: typeof analyzeImpact;
+  readonly plan?: typeof createMigrationPlan;
+  readonly prepareValidation?: typeof prepareMigrationValidation;
+  readonly approveValidation?: typeof approveMigrationValidation;
+  readonly executeValidation?: typeof executeMigrationValidation;
+  readonly confirm?: (requestId: string) => Promise<boolean>;
   readonly stdout?: (text: string) => void;
   readonly stderr?: (text: string) => void;
 }
@@ -19,6 +30,20 @@ interface CliOptions {
 const help = `Usage: plumber compare <base.json> <revision.json> --engine <path> [--json]
        plumber scan <consumer-directory> [--json]
        plumber impact <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> [--json]
+       plumber plan <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> --recipe <recipe.json> [--json]
+       plumber validation-plan <base.json> <revision.json> <plan-options> --test <relative-test-file> [--json]
+       plumber approve <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory>
+       plumber validate <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory> --approval <receipt-id> [--json]
+       plumber subscribe <source.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
+       plumber worker --once --state <directory> --engine <path> [--subscription <id>] [--json]
+       plumber subscriptions --state <directory> [--json]
+       plumber jobs --state <directory> [--json]
+       plumber job-plan <job-id> --state <directory> --engine <path> --recipe <path> --test <file> [--json]
+       plumber job-approve <job-id> --state <directory> --engine <path> --recipe <path> --test <file>
+       plumber job-queue <job-id> --state <directory> --engine <path> --recipe <path> --test <file> --approval <receipt-id> [--json]
+       plumber run-approved --once --state <directory> --engine <path> [--intent <id>] [--limit <1-10>] [--json]
+       plumber recover-approved --state <directory> [--limit <1-10>] [--json]
+       plumber executions --state <directory> [--json]
 
 Compare local OpenAPI JSON contracts using an explicitly selected oasdiff executable.
 
@@ -26,6 +51,10 @@ Options:
   --engine <path>  Path to the local oasdiff executable (required).
   --consumer <directory>  Consumer repository to inspect without executing code.
   --provider-base-url <url>  Explicit HTTP(S) provider origin and optional base path.
+  --recipe <path>  Explicit local migration decisions and exact edits.
+  --test <path>    Captured Node test file; repeat to select multiple tests.
+  --state <path>   Private local state outside the consumer checkout.
+  --approval <id>  Single-use approval from an explicit approve action.
   --json           Write the comparison report as JSON to stdout.
   -h, --help       Show this help.
 
@@ -35,18 +64,20 @@ Errors are written as JSON to stderr in both output modes.
 Coverage is structural only; consumer impact is not analyzed.
 Use impact to associate potential native-fetch usages; every impact report requires review.
 scan exits 1 for unresolved calls or inspection issues; impact exits 1 for contract breaking changes,
-including changes with no observed consumer match. No command executes consumer scripts.
+including changes with no observed consumer match. Inspection commands do not execute consumer scripts.
+plan exits 0 for a syntax-checked proposal, 1 for pending decisions, or 2 for invalid input.
+Planning never grants authorization or modifies consumer files; JSON plans contain local source previews.
+<plan-options> means --consumer, --provider-base-url, --engine, and --recipe as above.
+approve requires a terminal confirmation of the exact request; it never starts validation.
+validate runs approved tests against isolated copies using the fixed Linux x64 Docker profile.
+validate exits 0 only when both baseline and candidate pass, 1 for completed failures/improvement,
+or 2 for invalid authorization/unavailable execution. It never changes the live consumer or publishes.
+job-approve requires the same explicit terminal review; job-queue only persists existing authorization.
+run-approved defaults to one queued intent and never retries an interrupted attempt.
+recover-approved reconciles expired/interrupted intents; it cannot execute tests or grant approval.
+Execution passes exit 0 for no work or all passing outcomes, 1 for completed failures/improvement,
+and 2 for blocked, interrupted, or unavailable execution. JSON artifacts are private local data.
 `;
-
-function escapeTerminal(text: string): string {
-  // Contract and engine text must not control the terminal or reorder its output.
-  return text.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/gu,
-    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
-}
-
-function jsonLine(value: unknown): string {
-  return `${escapeTerminal(JSON.stringify(value))}\n`;
-}
 
 function renderReport(report: ComparisonReport, withConsumerEvidence = false): string {
   const summary = report.status === 'breaking-changes'
@@ -99,6 +130,16 @@ function renderImpact(report: ImpactReport): string {
 }
 
 export async function runCli(args: string[], options: CliOptions = {}): Promise<number> {
+  if (args.includes('--help') || args.includes('-h')) {
+    (options.stdout ?? ((text: string) => { process.stdout.write(text); }))(help);
+    return 0;
+  }
+  if (['subscribe', 'worker', 'subscriptions', 'jobs'].includes(args[0] ?? '')) {
+    return runWorkerCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (['job-plan', 'job-approve', 'job-queue', 'run-approved', 'recover-approved', 'executions'].includes(args[0] ?? '')) {
+    return runJobCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });
   let parsed;
@@ -111,6 +152,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         engine: { type: 'string' },
         consumer: { type: 'string' },
         'provider-base-url': { type: 'string' },
+        recipe: { type: 'string' },
+        test: { type: 'string', multiple: true },
+        state: { type: 'string' },
+        approval: { type: 'string' },
         json: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
@@ -132,18 +177,54 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const enginePath = parsed.values.engine;
   const consumerRoot = parsed.values.consumer;
   const providerBaseUrl = parsed.values['provider-base-url'];
-  const validCompare = command === 'compare' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && !consumerRoot && !providerBaseUrl;
-  const validScan = command === 'scan' && parsed.positionals.length === 2 && basePath && !enginePath && !consumerRoot && !providerBaseUrl;
-  const validImpact = command === 'impact' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && consumerRoot && providerBaseUrl;
-  if (!validCompare && !validScan && !validImpact) {
+  const recipePath = parsed.values.recipe;
+  const testPaths = parsed.values.test;
+  const statePath = parsed.values.state;
+  const receiptId = parsed.values.approval;
+  const isValidation = command === 'validation-plan' || command === 'approve' || command === 'validate';
+  const validationOnlyOptions = testPaths || statePath || receiptId;
+  const validCompare = command === 'compare' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && !consumerRoot && !providerBaseUrl && !recipePath;
+  const validScan = command === 'scan' && parsed.positionals.length === 2 && basePath && !enginePath && !consumerRoot && !providerBaseUrl && !recipePath;
+  const validImpact = command === 'impact' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && consumerRoot && providerBaseUrl && !recipePath;
+  const validPlan = command === 'plan' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && consumerRoot && providerBaseUrl && recipePath;
+  const validValidation = isValidation && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && consumerRoot && providerBaseUrl && recipePath && testPaths?.length
+    && (command === 'validation-plan' ? !statePath && !receiptId
+      : command === 'approve' ? statePath && !receiptId && !parsed.values.json : statePath && receiptId);
+  if ((!validCompare && !validScan && !validImpact && !validPlan && !validValidation) || (!isValidation && validationOnlyOptions)) {
     stderr(jsonLine({ error: {
       code: 'INVALID_INPUT',
-      message: 'Invalid compare, scan, or impact arguments. Use --help for the required options.',
+      message: 'Invalid command arguments. Use --help for the required options.',
     } }));
     return 2;
   }
 
   try {
+    if (validValidation) {
+      const recipe = await loadLocalJson(recipePath!, 1024 * 1024);
+      const validationOptions = { basePath: basePath!, revisionPath: revisionPath!, enginePath: enginePath!, consumerRoot: consumerRoot!, providerBaseUrl: providerBaseUrl!, recipe, testPaths: testPaths! };
+      if (command === 'validate') {
+        const result = await (options.executeValidation ?? executeMigrationValidation)({ options: validationOptions, statePath: statePath!, receiptId: receiptId! });
+        stdout(parsed.values.json ? jsonLine(result)
+          : `Validation: ${result.status}\nBaseline: ${result.baseline.status}\nCandidate: ${result.candidate?.status ?? 'not-run'}\nConsumer modified: no. Publication: not authorized.\n`);
+        return result.status === 'passed' ? 0 : result.status === 'blocked' ? 2 : 1;
+      }
+      const request = await (options.prepareValidation ?? prepareMigrationValidation)(validationOptions);
+      stdout(parsed.values.json ? jsonLine(request) : renderValidation(request, command === 'approve'));
+      if (command === 'validation-plan') return 0;
+      if (!await (options.confirm ?? confirmLocalRequest)(request.id)) {
+        stdout('Approval cancelled; no execution authorized.\n');
+        return 1;
+      }
+      const receipt = await (options.approveValidation ?? approveMigrationValidation)({ options: validationOptions, expectedRequestId: request.id, statePath: statePath!, origin: 'local-cli' });
+      stdout(`Approval receipt: ${receipt.id}\nExpires: ${receipt.expiresAt}\nValidation has not started.\n`);
+      return 0;
+    }
+    if (validPlan) {
+      const recipe = await loadLocalJson(recipePath!, 1024 * 1024);
+      const plan = await (options.plan ?? createMigrationPlan)({ basePath: basePath!, revisionPath: revisionPath!, enginePath: enginePath!, consumerRoot: consumerRoot!, providerBaseUrl: providerBaseUrl!, recipe });
+      stdout(parsed.values.json ? jsonLine(plan) : renderPlan(plan));
+      return plan.status === 'ready-for-review' ? 0 : 1;
+    }
     if (validScan) {
       const inventory = await (options.scan ?? scanConsumer)(basePath!);
       stdout(parsed.values.json ? jsonLine(inventory) : renderInventory(inventory));
