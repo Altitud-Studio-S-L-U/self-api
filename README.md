@@ -28,7 +28,7 @@ Code, patches, private schemas and raw logs are excluded from the Cloud status p
 - Node.js **24.x**, minimum **24.11.1**, and pnpm **11.19.0**.
 - Project dependencies available in the local pnpm store for offline installation.
 - The pinned **oasdiff 1.33.0** binary for contract comparison and the test suite.
-- Git supporting `--no-lazy-fetch` for publication preparation and the ordinary test suite.
+- Git supporting `--no-lazy-fetch` for publication preparation and the ordinary test suite. Verify the selected executable with `git --no-lazy-fetch --version`; older system Git installations can lack this capability. Plumber fails before repository plumbing and never removes this protection as a fallback.
 - A prepared Linux x64 Docker host for consumer test execution only. Windows/macOS support inspection and planning; execution there returns `blocked`.
 
 ## Quick start from this checkout
