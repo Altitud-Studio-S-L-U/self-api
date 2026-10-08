@@ -143,7 +143,10 @@ Replace the CLI path with the resolved installed export. Put the pinned wrapper 
 & 'C:\Program Files\Keepseam\keepseam.exe' start
 & 'C:\Program Files\Keepseam\keepseam.exe' status
 & 'C:\Program Files\Keepseam\keepseam.exe' stop
+(Get-Service -Name keepseam).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromMinutes(3))
 ```
+
+WinSW's `stop` command can return while SCM still reports `StopPending`. Wait for `Stopped` before replacing files or issuing a separate `start`; starting during that transition can leave the service stopped instead of restarted.
 
 SCM starts the service automatically with delayed start, as LocalService. Recovery waits 30 seconds, then 60 seconds, then five minutes for later failures. WinSW requests Ctrl+C/SIGINT and waits up to 180 seconds before forced termination; the CLI registers handlers before configuration preflight. The XML deliberately omits `stoparguments`: that WinSW 2.12.0 branch does not enforce its configured stop timeout. Wrapper stdout/stderr logs rotate at 1 MiB with two archives each; wrapper/OS diagnostic events have their own retention. `restart` applies reviewed changes; `uninstall` removes service registration after stopping and preserves the customer state. No interactive desktop is requested. [Windows service entry point](https://learn.microsoft.com/en-us/windows/win32/services/service-entry-point), [WinSW configuration](https://github.com/winsw/winsw/blob/v2.12.0/doc/xmlConfigFile.md), [WinSW shutdown implementation](https://github.com/winsw/winsw/blob/v2.12.0/src/WinSW/WrapperService.cs), [WinSW log rotation](https://github.com/winsw/winsw/blob/v2.12.0/doc/loggingAndErrorReporting.md).
 

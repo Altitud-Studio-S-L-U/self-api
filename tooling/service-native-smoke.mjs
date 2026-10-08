@@ -41,6 +41,7 @@ async function until(predicate, message, timeout = 90_000) {
   }
   throw new Error(message);
 }
+const windowsStopped = () => until(() => run(wrapper, ['status']).trim() === 'Stopped', 'SCM did not complete the service stop', 180_000);
 const assertOwned = () => {
   assert.equal(basename(directory), name);
   if (target === 'systemd') assert.equal(directory, `/opt/${name}`);
@@ -88,7 +89,12 @@ try {
   async function stop() {
     if (target === 'systemd') run('sudo', ['systemctl', 'stop', `${name}.service`]);
     else if (target === 'launchd') { run('sudo', ['launchctl', 'bootout', 'system', manifestPath]); installed = false; }
-    else run(wrapper, ['stop']);
+    else {
+      run(wrapper, ['stop']);
+      // WinSW's stop command returns during StopPending. A new start at that
+      // point is ignored, so await the manager's completed transition first.
+      await windowsStopped();
+    }
   }
   if (target === 'systemd') {
     run('sudo', ['systemd-analyze', 'verify', manifestPath]);
@@ -165,6 +171,7 @@ try {
   } else if (target === 'launchd' && installed) run('sudo', ['launchctl', 'bootout', 'system', manifestPath]);
   else if (target === 'windows' && installed) {
     run(wrapper, ['stop'], true);
+    await windowsStopped();
     run(wrapper, ['uninstall']);
   }
   if (directoryCreated) {
