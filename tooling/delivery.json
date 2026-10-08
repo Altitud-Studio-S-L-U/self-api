@@ -143,8 +143,20 @@
       ]
     },
     {
+      "id": "persistent-service",
+      "title": "Operate persistent observation under native service managers",
+      "status": "completed",
+      "pullRequest": "https://github.com/Altitud-Studio-S-L-U/keepseam-client/pull/14",
+      "acceptance": [
+        "Observe registered sources continuously with private state, singleton ownership, bounded logs and graceful cancellation.",
+        "Render explicit systemd, launchd and Windows SCM/WinSW definitions without installing services or downloading wrappers implicitly.",
+        "Exercise real observation, process loss, native recovery, stop and explicit restart on disposable Windows, Linux and macOS runners.",
+        "Keep execution, model disclosure, publication and package upgrades outside the observation service."
+      ]
+    },
+    {
       "id": "connected-cloud",
-      "title": "Connect the local workflow to Keepseam Cloud",
+      "title": "Complete connected maintenance release gates",
       "status": "planned",
       "acceptance": [
         "Consume a versioned shared protocol in the separate cloud repository, including runner enrollment and revocation.",
