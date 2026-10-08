@@ -1,6 +1,6 @@
 # Operate a persistent worker
 
-Keepseam Client `0.1.0` is the private `keepseam-client` package with the `keepseam` command. The foreground `worker-service` runner observes registered subscriptions continuously. The operating system starts it at boot and restarts it after a process failure: systemd on Linux, launchd on macOS, and Windows Service Control Manager through WinSW on Windows. Importing the SDK or rendering a manifest installs nothing.
+Keepseam Client `0.1.0` is the private `keepseam-client` package with the `keepseam` command. The foreground `worker-service` runner observes registered subscriptions continuously. A native manager owns startup and recovery after a process failure: systemd on Linux, launchd on macOS, and Windows Service Control Manager through WinSW on Windows. System services start at boot; Linux user services start with their user manager. Importing the SDK or rendering a manifest installs nothing.
 
 The service proposes review jobs and optionally synchronizes approved metadata to Cloud. It does **not** approve, execute or publish changes, load a model, install SDK updates, run consumer scripts or download executables. Validation and publication retain their separate local approval flows.
 
@@ -88,6 +88,10 @@ This is process supervision, **not a hung-process watchdog**. A slow batch delay
 
 ## Linux: systemd
 
+`--scope system` is the default and requires `--user <non-root-account>`. `--scope user` uses the current non-root user manager and rejects `--user`; it never tries to switch identity or supplementary groups. Scope applies only to systemd, and runtime `run`, `status` and `stop` commands use the same configuration in both scopes.
+
+### System service
+
 Create the non-root `keepseam` account using the host's account-management procedure. Put state in `/var/lib/keepseam`, binaries in `/opt/keepseam` and configuration in `/etc/keepseam`; the generated sandbox deliberately hides home directories and gives private temporary storage. Consumer sources must be readable outside those hidden locations.
 
 ```sh
@@ -104,6 +108,28 @@ sudo systemctl status keepseam.service
 Replace `installed-cli.js` with the resolved public CLI export path before rendering. The definition uses `Restart=on-failure`, a 30-second restart delay and five starts per five minutes. Repeated startup failures need an operator to correct the cause and run `systemctl reset-failed keepseam` before restarting. Configuration/consumer files are read-only in the service namespace; only the state directories are writable. `NoNewPrivileges`, private temporary storage, core-dump denial and journal rate limits are included. This does not turn Node or the host into an execution sandbox for arbitrary consumer code.
 
 Stop with `sudo systemctl stop keepseam`; restart after a reviewed package/config update with `sudo systemctl restart keepseam`. Remove boot activation with `sudo systemctl disable --now keepseam`. Keep state through upgrade or rollback. Inspect `journalctl -u keepseam` for startup errors; journal-wide disk retention remains an operator setting. [systemd service semantics](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html) and [execution settings](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
+
+### User service
+
+Use an existing non-root account with an active systemd user manager. Keep binaries, configuration and consumer files in stable locations; private state may reside under that account's home. The unit sets `PrivateUsers=true`, requires a non-root manager, and uses `ProtectSystem=strict` with read-only home and explicit writable state directories. Private temporary storage and systemd's API-filesystem exceptions remain writable; these settings are not a complete execution sandbox. User namespaces must be available under the host's kernel and security policy. If they are disabled, use an administrator-provisioned system service; do not remove the isolation settings to make startup pass. Read access and protection against another process running as the same account still depend on the account's filesystem permissions.
+
+After registering subscriptions and protecting state/credential files as described above, replace these example paths with the actual account and resolved public CLI export:
+
+```sh
+mkdir -p /home/operator/.config/systemd/user
+keepseam worker-service render --config /home/operator/.config/keepseam/worker.json \
+  --target systemd --scope user --node /home/operator/.local/bin/node \
+  --cli /home/operator/.local/lib/keepseam/installed-cli.js \
+  > /home/operator/.config/systemd/user/keepseam.service
+systemd-analyze --user verify /home/operator/.config/systemd/user/keepseam.service
+systemctl --user daemon-reload
+systemctl --user enable --now keepseam.service
+systemctl --user status keepseam.service
+```
+
+`enable` attaches the unit to the user's `default.target`; it does not enable linger or change global systemd configuration. Without an operator-approved linger policy, the service depends on the user manager's login/session lifecycle and is not a guarantee of startup before login or operation after logout. WSL additionally depends on the lifetime of its Linux instance. Keepseam does not configure either lifecycle automatically. See the [systemd user identity and namespace contract](https://github.com/systemd/systemd/blob/v255/man/systemd.exec.xml) and [loginctl linger semantics](https://www.freedesktop.org/software/systemd/man/latest/loginctl.html).
+
+Use `systemctl --user stop keepseam.service` for an intentional stop, `systemctl --user restart keepseam.service` after a reviewed update, and `systemctl --user disable --now keepseam.service` to remove user startup activation while retaining state. Startup failures appear in `journalctl --user -u keepseam.service`. This scope uses the same 30-second crash recovery, start limit and 180-second shutdown timeout as system scope. No local approval or execution permission changes with the supervisor scope.
 
 ## macOS: launchd
 
@@ -154,4 +180,4 @@ SCM starts the service automatically with delayed start, as LocalService. Recove
 
 Stop the native service, preserve private state and immutable approval/recovery records, verify the chosen package/engine artifacts, update the pinned executable paths and restart. Do not reset Cloud sequence/outbox state or reinstall into another machine's state directory. Test a rollback on a copy of the deployment; schema compatibility determines whether an older version can read newer state. There is no automatic upgrade or database downgrade.
 
-Unit/package tests cover strict configuration, manifest escaping, permissions, singleton exclusion, crash release, unchanged-evidence deduplication, bounded logs and draining cancellation. A separate disposable-runner acceptance job installs an isolated service on Windows, Linux and macOS, exercises actual observation, forces process loss, checks native restart, stops and explicitly restarts it, then removes only its own service and fixture. Rendering XML/a unit file alone is not an installed-service test. No service is installed on a developer workstation by this test command.
+Unit/package tests cover strict configuration, manifest escaping, permissions, singleton exclusion, crash release, unchanged-evidence deduplication, bounded logs and draining cancellation. A separate disposable-runner acceptance job installs an isolated service on Windows, Linux and macOS, exercises actual observation, forces process loss, checks native restart, stops and explicitly restarts it, then removes only its own service and fixture. Linux also runs `node tooling/service-native-smoke.mjs --user`, checking actual read-only mounts, a stopped interval longer than the restart delay, and automatic reactivation after restarting only the disposable runner's user manager. It does not reboot a developer session or enable linger. Rendering XML/a unit file alone is not an installed-service test. No service is installed on a developer workstation by this test command.

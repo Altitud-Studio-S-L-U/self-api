@@ -17,15 +17,27 @@ const repository = resolve(import.meta.dirname, '..');
 const name = `keepseamci${randomBytes(6).toString('hex')}`;
 const target = ({ win32: 'windows', linux: 'systemd', darwin: 'launchd' })[process.platform];
 assert(target, 'Unsupported native supervisor');
-const directory = target === 'systemd' ? `/opt/${name}` : join(repository, 'work', name);
+const userScope = process.argv[2] === '--user';
+assert.equal(process.argv.length, userScope ? 3 : 2, 'Only the explicit --user mode is supported');
+assert(!userScope || target === 'systemd', 'User scope is supported only by systemd');
+assert(!userScope || process.getuid() !== 0, 'The user manager must be non-root');
+const directory = target === 'systemd' && !userScope ? `/opt/${name}` : join(repository, 'work', name);
 assert.equal(basename(directory), name);
+const environment = userScope ? {
+  ...process.env,
+  XDG_RUNTIME_DIR: `/run/user/${process.getuid()}`,
+  DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus`,
+} : process.env;
 const run = (file, args, allowFailure = false) => {
-  try { return execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 200_000 }); }
+  try { return execFileSync(file, args, { env: environment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 200_000 }); }
   catch (error) {
     if (allowFailure) return '';
     throw new Error(`${basename(file)} ${args[0]} failed: ${String(error.stderr ?? error.message).slice(0, 3000)}`);
   }
 };
+const systemctl = (args, allowFailure = false) => userScope
+  ? run('systemctl', ['--user', ...args], allowFailure)
+  : run('sudo', ['systemctl', ...args], allowFailure);
 let installed = false;
 let directoryCreated = false;
 let manifestPath;
@@ -44,11 +56,14 @@ async function until(predicate, message, timeout = 90_000) {
 const windowsStopped = () => until(() => run(wrapper, ['status']).trim() === 'Stopped', 'SCM did not complete the service stop', 180_000);
 const assertOwned = () => {
   assert.equal(basename(directory), name);
-  if (target === 'systemd') assert.equal(directory, `/opt/${name}`);
+  if (target === 'systemd' && !userScope) assert.equal(directory, `/opt/${name}`);
   else { const child = relative(join(repository, 'work'), directory); assert.equal(child, name); assert(!child.includes(sep)); }
 };
 try {
-  if (target === 'systemd') {
+  // Hosted jobs need not originate in a login session. Provision their user
+  // manager only on this disposable runner, without enabling linger.
+  if (userScope) run('sudo', ['systemctl', 'start', `user@${process.getuid()}.service`]);
+  if (target === 'systemd' && !userScope) {
     run('sudo', ['mkdir', '-m', '700', directory]);
     directoryCreated = true;
     run('sudo', ['chown', `${process.getuid()}:${process.getgid()}`, directory]);
@@ -60,8 +75,8 @@ try {
   if (target === 'windows') {
     run('icacls.exe', [directory, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-19:(OI)(CI)RX']);
   }
-  // systemd ProtectHome/PrivateTmp are kept enabled. Stage the package outside
-  // the runner's home and temporary directories instead of weakening the unit.
+  // System scope hides home; user scope intentionally exercises read-only home.
+  // Both use the exact generated sandbox with writes only to state directories.
   await cp(join(repository, 'dist'), join(directory, 'dist'), { recursive: true });
   await cp(join(repository, 'node_modules'), join(directory, 'node_modules'), { recursive: true, verbatimSymlinks: true });
   await cp(join(repository, 'package.json'), join(directory, 'package.json'));
@@ -71,8 +86,10 @@ try {
     run('icacls.exe', [fixture.statePath, '/grant:r', '*S-1-5-19:(OI)(CI)F', '/T']);
     run('icacls.exe', [directory, '/setowner', '*S-1-5-32-544', '/T']);
   }
-  const manifest = renderWorkerServiceManifest({ config, configPath: fixture.configPath, target, nodePath: process.execPath,
-    cliPath: join(directory, 'dist', 'cli.js'), name, ...(target === 'windows' ? {} : { user: userInfo().username }) });
+  const manifest = userScope ? run(process.execPath, [join(directory, 'dist', 'cli.js'), 'worker-service', 'render', '--config', fixture.configPath,
+    '--target', 'systemd', '--scope', 'user', '--node', process.execPath, '--cli', join(directory, 'dist', 'cli.js'), '--name', name])
+    : renderWorkerServiceManifest({ config, configPath: fixture.configPath, target, nodePath: process.execPath,
+      cliPath: join(directory, 'dist', 'cli.js'), name, ...(target === 'windows' ? {} : { user: userInfo().username }) });
   manifestPath = join(directory, target === 'systemd' ? `${name}.service` : target === 'launchd' ? `${name}.plist` : `${name}.xml`);
   await writeFile(manifestPath, manifest, { flag: 'wx', mode: 0o600 });
   const statusPath = join(fixture.statePath, 'worker-service.status.json');
@@ -82,12 +99,12 @@ try {
     return value && value.state === 'running' && value.cycles > 0 && value.runId !== oldRun ? value : false;
   }, 'Native service did not complete a real observation cycle');
   async function start() {
-    if (target === 'systemd') run('sudo', ['systemctl', 'start', `${name}.service`]);
+    if (target === 'systemd') systemctl(['start', `${name}.service`]);
     else if (target === 'launchd') { run('sudo', ['launchctl', 'bootstrap', 'system', manifestPath]); installed = true; }
     else run(wrapper, ['start']);
   }
   async function stop() {
-    if (target === 'systemd') run('sudo', ['systemctl', 'stop', `${name}.service`]);
+    if (target === 'systemd') systemctl(['stop', `${name}.service`]);
     else if (target === 'launchd') { run('sudo', ['launchctl', 'bootout', 'system', manifestPath]); installed = false; }
     else {
       run(wrapper, ['stop']);
@@ -97,9 +114,14 @@ try {
     }
   }
   if (target === 'systemd') {
-    run('sudo', ['systemd-analyze', 'verify', manifestPath]);
-    run('sudo', ['systemctl', 'link', manifestPath]); installed = true;
-    run('sudo', ['systemctl', 'daemon-reload']);
+    if (userScope) run('systemd-analyze', ['--user', 'verify', manifestPath]);
+    else run('sudo', ['systemd-analyze', 'verify', manifestPath]);
+    systemctl(['link', manifestPath]); installed = true;
+    systemctl(['daemon-reload']);
+    if (userScope) {
+      systemctl(['enable', `${name}.service`]);
+      assert.equal(systemctl(['is-enabled', `${name}.service`]).trim(), 'enabled');
+    }
   } else if (target === 'launchd') {
     run('plutil', ['-lint', manifestPath]);
     run('sudo', ['chown', 'root:wheel', manifestPath]);
@@ -123,8 +145,12 @@ try {
   const initial = (await listSourceSubscriptions({ statePath: fixture.statePath })).find(item => item.id === fixture.subscriptionId);
   assert(initial?.lastSucceededAt && initial.lastError === null, 'The supervisor must run the real source observer');
   assert(Number.isSafeInteger(first.pid) && first.pid > 0 && first.pid !== process.pid);
+  if (userScope) {
+    assert(run('findmnt', ['--task', String(first.pid), '--target', fixture.sourcePath, '--noheadings', '--output', 'OPTIONS']).trim().split(',').includes('ro'), 'Consumer source must be mounted read-only');
+    assert(run('findmnt', ['--task', String(first.pid), '--target', fixture.statePath, '--noheadings', '--output', 'OPTIONS']).trim().split(',').includes('rw'), 'Private state must remain writable');
+  }
   // The PID is read only from this test's private, uniquely named state.
-  if (target === 'systemd') run('sudo', ['systemctl', 'kill', '--kill-whom=main', '--signal=SIGKILL', `${name}.service`]);
+  if (target === 'systemd') systemctl(['kill', '--kill-whom=main', '--signal=SIGKILL', `${name}.service`]);
   else if (target === 'launchd') run('sudo', ['launchctl', 'kill', 'SIGKILL', `system/com.keepseam.${name}`]);
   else run('taskkill.exe', ['/PID', String(first.pid), '/F']);
   const recovered = await running(first.runId);
@@ -139,15 +165,23 @@ try {
   await stop();
   const stopped = await until(async () => { const value = await status(); return value?.state === 'stopped' ? value : false; }, 'Native supervisor failed to drain the worker');
   assert.equal(stopped.runId, recovered.runId);
-  await delay(1500);
+  await delay(userScope ? 35_000 : 1500);
   assert.equal((await status()).runId, stopped.runId);
   assert.equal((await status()).state, 'stopped');
   await start();
   const restarted = await running(stopped.runId);
   assert.notEqual(restarted.runId, stopped.runId);
+  if (userScope) {
+    // Only the disposable runner's manager is restarted. This asserts that the
+    // enabled default.target unit starts again without a manual service start.
+    run('sudo', ['systemctl', 'restart', `user@${process.getuid()}.service`]);
+    const reactivated = await running(restarted.runId);
+    assert.notEqual(reactivated.pid, restarted.pid);
+    assert.equal(systemctl(['is-enabled', `${name}.service`]).trim(), 'enabled');
+  }
   await stop();
   assert.equal((await status()).state, 'stopped');
-  process.stdout.write(`Native ${target}: real observation, crash recovery, graceful stop and explicit restart passed (${Math.round((Date.now() - started) / 1000)}s).\n`);
+  process.stdout.write(`Native ${target}${userScope ? ' user scope (including manager restart)' : ''}: real observation, crash recovery, graceful stop and explicit restart passed (${Math.round((Date.now() - started) / 1000)}s).\n`);
 } catch (error) {
   // Only this credential-free, fictional fixture is diagnosed. Keep failures
   // visible before removing the disposable native service and its state.
@@ -159,15 +193,20 @@ try {
       } catch (readError) { if (readError.code !== 'ENOENT') process.stderr.write(`${filename}: ${readError.code}\n`); }
     }
     if (target === 'windows' && wrapper) process.stderr.write(run(wrapper, ['status'], true));
+    if (target === 'systemd' && installed) {
+      process.stderr.write(systemctl(['show', `${name}.service`, '--property=ActiveState,SubState,Result,MainPID'], true));
+      const journalArguments = ['journalctl', ...(userScope ? ['--user'] : []), '--unit', `${name}.service`, '--lines=30', '--no-pager'];
+      process.stderr.write(userScope ? run(journalArguments[0], journalArguments.slice(1), true) : run('sudo', journalArguments, true));
+    }
   }
   throw error;
 } finally {
   assertOwned();
   if (target === 'systemd' && installed) {
-    run('sudo', ['systemctl', 'stop', `${name}.service`], true);
-    run('sudo', ['systemctl', 'disable', `${name}.service`]);
-    run('sudo', ['systemctl', 'daemon-reload']);
-    run('sudo', ['systemctl', 'reset-failed', `${name}.service`], true);
+    systemctl(['stop', `${name}.service`], true);
+    systemctl(['disable', `${name}.service`]);
+    systemctl(['daemon-reload']);
+    systemctl(['reset-failed', `${name}.service`], true);
   } else if (target === 'launchd' && installed) run('sudo', ['launchctl', 'bootout', 'system', manifestPath]);
   else if (target === 'windows' && installed) {
     run(wrapper, ['stop'], true);

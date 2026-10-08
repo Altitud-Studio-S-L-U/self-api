@@ -98,7 +98,9 @@ export interface WorkerServiceManifestOptions {
   readonly target: WorkerServiceTarget;
   readonly nodePath: string;
   readonly cliPath: string;
-  /** Unix dedicated account. Windows intentionally uses the built-in LocalService account without a password. */
+  /** systemd only; defaults to system. User services inherit the non-root manager's identity. */
+  readonly scope?: 'system' | 'user';
+  /** Unix system account; invalid for systemd user scope. Windows uses LocalService without a password. */
   readonly user?: string;
   readonly name?: string;
 }
@@ -109,6 +111,9 @@ const windowsArgument = (value: string): string => `"${value.replace(/(\\*)"/gu,
 
 export function renderWorkerServiceManifest(options: WorkerServiceManifestOptions): string {
   if (!['systemd', 'launchd', 'windows'].includes(options.target)) invalid('Choose systemd, launchd or windows.');
+  const scope = options.scope === undefined ? 'system' : options.scope;
+  if (!['system', 'user'].includes(scope) || (options.scope !== undefined && options.target !== 'systemd')) invalid('Service scope is system or user and applies only to systemd.');
+  if (scope === 'user' && options.user !== undefined) invalid('User services inherit their manager identity; omit the user option.');
   const config = normalizeWorkerServiceConfig(options.config, options.target);
   const configPath = servicePath(options.configPath, options.target);
   const node = servicePath(options.nodePath, options.target);
@@ -135,19 +140,18 @@ export function renderWorkerServiceManifest(options: WorkerServiceManifestOption
 `;
   }
   const user = options.user;
-  if (typeof user !== 'string' || !/^[a-z_][a-z0-9_-]{0,31}$/u.test(user) || user === 'root') invalid('Choose a dedicated non-root Unix account.');
+  if (scope === 'system' && (typeof user !== 'string' || !/^[a-z_][a-z0-9_-]{0,31}$/u.test(user) || user === 'root')) invalid('Choose a dedicated non-root Unix account.');
   if (options.target === 'systemd') {
     const writePaths = [config.statePath, ...(config.cloud ? [config.cloud.statePath] : [])].map(value => systemd(value)).join(' ');
     return `[Unit]
 Description=Keepseam local contract observer
-After=network-online.target
-Wants=network-online.target
+${scope === 'user' ? 'AssertUser=!root' : 'After=network-online.target\nWants=network-online.target'}
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
 Type=exec
-User=${user}
+${scope === 'user' ? 'PrivateUsers=true' : `User=${user}`}
 UMask=0077
 WorkingDirectory=${config.statePath.replaceAll('%', '%%')}
 ExecStart=${[node, cli, 'worker-service', 'run', '--config', configPath].map(value => systemd(value, true)).join(' ')}
@@ -158,7 +162,7 @@ KillSignal=SIGTERM
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=${scope === 'user' ? 'read-only' : 'true'}
 ReadWritePaths=${writePaths}
 RestrictSUIDSGID=true
 LockPersonality=true
@@ -169,7 +173,7 @@ LogRateLimitIntervalSec=30
 LogRateLimitBurst=30
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=${scope === 'user' ? 'default.target' : 'multi-user.target'}
 `;
   }
   const args = [node, cli, 'worker-service', 'run', '--config', configPath].map(value => `    <string>${xml(value)}</string>`).join('\n');
@@ -180,7 +184,7 @@ WantedBy=multi-user.target
   <key>ProgramArguments</key><array>
 ${args}
   </array>
-  <key>UserName</key><string>${xml(user)}</string>
+  <key>UserName</key><string>${xml(user!)}</string>
   <key>WorkingDirectory</key><string>${xml(config.statePath)}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>

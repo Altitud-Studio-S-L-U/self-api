@@ -59,7 +59,7 @@ const help = `Usage: keepseam compare <base.json> <revision.json> --engine <path
        keepseam worker --once --state <directory> --engine <path> [--subscription <id>] [--http] [--json]
        keepseam worker-loop --state <directory> --engine <path> [--cycles <1-1000>] [--interval-ms <1000-3600000>] [--run-approved] [--http] [--json]
        keepseam worker-service run|status|stop --config <absolute-json>
-       keepseam worker-service render --config <absolute-json> --target systemd|launchd|windows --node <absolute-path> --cli <absolute-path> [--user <unix-account>] [--name <service-name>]
+       keepseam worker-service render --config <absolute-json> --target systemd|launchd|windows --node <absolute-path> --cli <absolute-path> [--scope system|user] [--user <unix-account>] [--name <service-name>]
        keepseam subscriptions --state <directory> [--json]
        keepseam jobs --state <directory> [--json]
        keepseam job-plan <job-id> --state <directory> --engine <path> --recipe <path> --test <file> [--json]

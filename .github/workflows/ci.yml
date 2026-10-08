@@ -71,3 +71,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: node tooling/service-native-smoke.mjs
+      - if: runner.os == 'Linux'
+        run: node tooling/service-native-smoke.mjs --user
