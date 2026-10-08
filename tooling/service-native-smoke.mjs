@@ -193,7 +193,7 @@ try {
       }
     }
     // The PID is read only from this test's private, uniquely named state.
-    if (target === 'systemd') systemctl(['kill', '--kill-whom=main', '--signal=SIGKILL', `${name}.service`]);
+    if (target === 'systemd') systemctl(['kill', '--kill-who=main', '--signal=SIGKILL', `${name}.service`]);
     else if (target === 'launchd') run('sudo', ['launchctl', 'kill', 'SIGKILL', `system/com.keepseam.${name}`]);
     else run('taskkill.exe', ['/PID', String(first.pid), '/F']);
     const recovered = await running(first.runId);
