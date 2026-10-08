@@ -2,7 +2,7 @@
 
 Local tools for maintaining integrations with external APIs. Keepseam compares API contracts, locates potentially affected TypeScript/JavaScript calls, prepares explicit migration proposals and validates approved changes in isolated copies.
 
-The SDK and CLI run in the customer's environment. Local observation, optional model proposals and separately authorized GitHub draft publication are implemented. The GitHub transport is tested with controlled responses; a live publication pilot remains a release gate. Keepseam Cloud has a separate local development environment for accounts, organization management and internal administration. Connected worker coordination remains pending. No hosted Keepseam service is required for this local workflow.
+The SDK and CLI run in the customer's environment. Local observation, optional model proposals and separately authorized GitHub draft publication are implemented. The GitHub transport is tested with controlled responses; a live publication pilot remains a release gate. Keepseam Cloud has a separate development environment for accounts, organization management, internal administration and authenticated worker status. No hosted Keepseam service is required for the local workflow.
 
 ## What works today
 
@@ -19,7 +19,7 @@ The SDK and CLI run in the customer's environment. Local observation, optional m
 | Local worker | SQLite subscriptions, review jobs, approved execution queues, one-shot observation and a finite cancellable loop |
 | Optional model harness | Selected context, explicit one-use consent, customer-selected adapter, bounded structured proposals and mandatory semantic review |
 | GitHub publication | Separate approval, exact repository/base/file bindings, create-only branch, draft PR and read-only reconciliation of uncertain writes |
-| Cloud protocol | A separately exported, versioned status allowlist; no Cloud account, enrollment or transport is included |
+| Cloud coordination | Versioned status allowlist, local P-256 identity, DPoP transport and persistent opt-in status outbox; owner-approved enrollment in Cloud |
 
 Code, patches, private schemas and raw logs are excluded from the Cloud status protocol. Importing the SDK starts no worker, opens no database and executes no consumer code. An explicitly authorized customer model can receive selected context; authorized publication sends the approved changes directly to the customer's GitHub repository. Neither route passes through Keepseam Cloud.
 
@@ -34,7 +34,7 @@ The CLI and SDK share the same TypeScript implementation. Contract comparison an
 | Observation | `src/worker.ts`, `src/source-observer.ts`, `src/http-source.ts` | Local or explicitly permitted HTTPS capture and immutable evidence |
 | Execution | `src/job-validation.ts`, `src/migration-validation.ts`, `src/docker-runner.ts` | Approval binding, isolated baseline/candidate validation and recovery |
 | Optional external actions | `src/model-harness.ts`, `src/publication-runner.ts`, `src/github-publication.ts` | Selected model context and approved GitHub draft publication |
-| Future Cloud exchange | `src/cloud-protocol.ts`, exported as `plumber/protocol` | Versioned, bounded status messages; no connected transport yet |
+| Cloud exchange | `src/cloud-protocol.ts`, `src/cloud-connection.ts`, `src/cloud-sync.ts` | Versioned allowlist, key-bound transport and retryable local outbox |
 
 State belongs in a dedicated private directory outside the consumer checkout. `worker.sqlite3` contains subscriptions, immutable snapshots, observations, review jobs and execution intents. `source-observations.sqlite3` stores the additional source catalogs and their transitions. Approval receipts, attempt markers and validation outcomes remain local files. These databases use Node's built-in SQLite; the client does not require PostgreSQL, a hosted queue or a Keepseam account.
 
@@ -164,6 +164,7 @@ For a persistent local development environment, use the [Compose development gui
 | `pnpm test:isolated` | Run real Docker integrations on the prepared Linux x64 host |
 | `pnpm dev` | Show the delivery queue and active milestone |
 | `pnpm dev:local --help` | Seed and operate the persistent fictional Compose development environment |
+| `pnpm dev:apis --help` | Operate the separate real-documentation/native-SDK laboratory; see its guide for opt-in Cloud sync |
 | `pnpm dev:check` | Run project checks without changing delivery status |
 
 The comparison engine must be installed before checks; missing infrastructure fails explicitly rather than skipping coverage. The package check reuses the cached dependency versions and performs no registry publication. The Docker suite requires its pinned image to be provisioned separately; see the [execution prerequisites](docs/local-workflow.md#approve-and-validate-captured-copies).
@@ -185,16 +186,47 @@ CI is configured for Windows, Linux and macOS, with a separate real Docker job. 
 
 Structural diffs and passing selected tests do not prove full provider compatibility. JSON artifacts may contain source code and private evidence; keep them local. Docker uses a privileged local daemon and shared kernel, and same-account tampering is outside the trust boundary. Detailed restrictions and retained recovery evidence are documented in the [workflow reference](docs/local-workflow.md).
 
-The shared status encoder is imported from `plumber/protocol`. It validates a small allowlist; it does not authenticate installations or prove a reported outcome. Runner enrollment, DPoP/revocation integration, Cloud/Slack delivery, live provider pilots and public package distribution remain separate release gates in the implementation plan. Model and Git adapters are trusted customer code, not sandboxes. Source expansion does not imply automatic migration support for every SDK or MCP call style.
+The shared status encoder is imported from `plumber/protocol`. It validates a small allowlist; an encoder alone does not authenticate installations or prove a reported outcome. The separate Cloud transport authenticates and scopes status delivery. Remote approval/execution, Slack delivery, live provider pilots and public package distribution remain release gates. Model and Git adapters are trusted customer code, not sandboxes. Source expansion does not imply automatic migration support for every SDK or MCP call style.
+
+## Connect worker status to Cloud
+
+Follow the [connection procedure](docs/local-workflow.md#connect-an-approved-worker-to-cloud) for complete identity generation, enrollment, private credential assembly, integration binding and synchronization examples. These operations are public SDK APIs; the product CLI does not yet have identity/enrollment/sync commands. The separate [real API laboratory](dev/real-apis/README.md#connect-the-actual-worker) supplies development-only `cloud-sync` and `worker` helpers.
+
+Generate an identity with `generateCloudWorkerIdentity()` from `plumber`. Keep its `privateJwk` in customer-controlled secret storage. Give the Cloud organization owner/admin only `{ installationId, publicJwk, fingerprint }`. In the worker panel, they enroll the installation using a recently verified passkey, compare the fingerprint independently and activate it. Enrollment returns a client secret **revealed once** and an opaque Cloud project identifier; combine these locally with the private key to create a `CloudCredentials` object. The secret is reusable for token exchange until expiry/revocation, not a single-use token. HTTPS is required; `allowLocalHttp: true` permits only an explicit loopback development origin.
+
+Bind each approved local subscription separately. Its public identifier is `deriveCloudIdentifier(localSubscriptionId, installationId)` from `plumber/protocol`; the Cloud owner associates it with an enabled integration in the same project. This consent does not permit uploading the subscription's documents or code.
+
+```ts
+import { readFile } from 'node:fs/promises';
+import { syncWorkerToCloud, type CloudCredentials } from 'plumber';
+
+const credentialPath = process.env.KEEPSEAM_WORKER_CREDENTIAL_FILE;
+const approvedLocalSubscriptionId = process.env.KEEPSEAM_LOCAL_SUBSCRIPTION_ID;
+if (!credentialPath || !approvedLocalSubscriptionId) throw new Error('Select a private credential file and an approved local subscription.');
+const credentials: CloudCredentials = JSON.parse(await readFile(credentialPath, 'utf8'));
+
+const result = await syncWorkerToCloud({
+  statePath: './work/worker',
+  cloudStatePath: './work/cloud',
+  credentials,
+  integrationIds: [approvedLocalSubscriptionId],
+});
+```
+
+Both state directories must remain outside consumer codebases. `integrationIds` is mandatory: select 1–100 existing local subscription IDs, not Cloud UUIDs or their derived public IDs. The outbox stores enum states, counts and opaque identifiers, never credentials or local artifacts. A sync sends at most 50 events, with at most 1,000 pending and sequence numbers 0–1,000,000. Lost acknowledgements retain the exact event for retry. Keep SQLite state; a reset cannot safely reuse the same enrollment. A renewable lease excludes concurrent syncs. The [workflow reference](docs/local-workflow.md#sync-results-retries-and-limits) explains pending/busy results, expiry and exhausted-state recovery. Cloud failure does not alter local jobs, approvals or execution.
+
+The transport obtains a DPoP-bound token valid for at most five minutes. Cloud limits token issuance to ten per minute per installation and checks current revocation for every request. The enrollment credential expires after 90 days; enroll a replacement explicitly and revoke the previous installation. Reusable `createCloudTransport(credentials)` is available for applications emitting their own protocol events. No signing key or client secret belongs in Git, logs or Cloud status messages.
+
+Maintenance timestamps retain the local job creation or execution update time, including after an offline period; heartbeat timestamps describe the current sync. These reports do not attest the provider's most recent observation, deployment or complete compatibility. Selected/passing test counts describe selected test targets, not individual framework test cases. Cloud can display status and send an optional attention email; approving changes and executing tests remain local.
 
 ## Project map and licensing
 
 - [Implementation plan](docs/implementation-plan.md): architecture, privacy boundaries and remaining release gates.
 - [Delivery queue](tooling/delivery.json): implemented milestones and current work.
 - [Keepseam client](https://github.com/Altitud-Studio-S-L-U/keepseam-client): this SDK, CLI, local worker and versioned status protocol.
-- [Keepseam Cloud](https://github.com/Altitud-Studio-S-L-U/keepseam-cloud): the ES/EN landing page, passwordless accounts, organization workspace and internal administration foundation, with a real local API/database and simulated billing. Worker enrollment and connected coordination remain pending.
+- [Keepseam Cloud](https://github.com/Altitud-Studio-S-L-U/keepseam-cloud): the ES/EN landing page, passwordless accounts, organization workspace, internal administration and scoped worker enrollment/status ingestion. Deployment and commercial activation remain separate operations.
 - [Keepseam infrastructure](https://github.com/Altitud-Studio-S-L-U/keepseam-infra): provisioning and deployment of Keepseam Cloud on the selected provider, OVHcloud. The service and region remain to be confirmed; the infrastructure design is not a deployed environment. This choice does not change the client's local execution requirements.
 
-Runtime dependencies are Node built-ins and `@babel/parser` 8.0.6 (MIT), with its resolved Babel dependencies. The lockfile pins TypeScript (Apache-2.0), Node type declarations (MIT) and resolved dependencies. pnpm is MIT; oasdiff is Apache-2.0 and its license is retained with the installed binary. Dependency lifecycle scripts are disabled by the workspace policy.
+Runtime dependencies are Node built-ins, `@babel/parser` 8.0.6 (MIT) and `jose` 6.2.12 (MIT). JOSE implements standard ES256 proof signing and JWK thumbprints. The lockfile pins TypeScript (Apache-2.0), Node type declarations (MIT) and resolved dependencies. pnpm is MIT; oasdiff is Apache-2.0 and its license is retained with the installed binary. Dependency lifecycle scripts are disabled by the workspace policy.
 
 The source is `UNLICENSED`; public distribution has not been authorized. Apache-2.0 distribution remains a proposal requiring a separate licensing and publication decision; the implementation plan is not a license grant.

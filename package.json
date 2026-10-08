@@ -30,6 +30,7 @@
     "prepack": "pnpm run build",
     "dev": "node tooling/development.mjs status",
     "dev:local": "node dev/local/cli.mjs",
+    "dev:apis": "node dev/real-apis/cli.mjs",
     "dev:check": "node tooling/development.mjs check",
     "engine:setup": "node tooling/setup-oasdiff.mjs",
     "build": "tsc -p tsconfig.json",
@@ -40,10 +41,13 @@
     "check": "pnpm typecheck && pnpm test && pnpm test:package"
   },
   "devDependencies": {
+    "@notionhq/client": "5.27.0",
     "@types/node": "24.19.1",
+    "notion-v4": "npm:@notionhq/client@4.0.2",
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "@babel/parser": "8.0.6"
+    "@babel/parser": "8.0.6",
+    "jose": "6.2.12"
   }
 }

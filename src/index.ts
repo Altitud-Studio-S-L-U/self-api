@@ -32,6 +32,10 @@ export { loadJsonSchema, compareJsonSchemas, loadJsonExample, compareJsonExample
 export type { JsonSchema, JsonSchemaSnapshot, JsonSchemaComparison, JsonExampleSnapshot, JsonExampleComparison } from './json-schema.js';
 export { runWorkerLoop } from './worker-loop.js';
 export type { WorkerLoopOptions, WorkerLoopDependencies, WorkerLoopCycle, WorkerLoopResult } from './worker-loop.js';
+export { generateCloudWorkerIdentity, createCloudTransport, CloudConnectionError } from './cloud-connection.js';
+export { syncWorkerToCloud } from './cloud-sync.js';
+export type { CloudSyncOptions,CloudSyncResult } from './cloud-sync.js';
+export type { CloudWorkerIdentity, CloudCredentials, CloudStatusReceipt, CloudTransport } from './cloud-connection.js';
 export { preparePublicationRequest, validatePublicationRequest, approvePublicationRequest, publishPublication, reconcilePublication } from './publication-runner.js';
 export type { GitPublicationSnapshot, PublicationCommitIdentity, PublishedPullRequest, GitPublicationAdapterIdentity, GitPublicationAdapter, PublicationRequest, PublicationApproval, PublicationResult } from './publication-runner.js';
 export { createGitHubPublicationAdapter } from './github-publication.js';

@@ -242,6 +242,42 @@ test('a stalled asynchronous adapter receives cancellation and cannot trigger au
   assert.equal(signal.aborted, true);
 });
 
+test('a synchronous adapter cannot return an accepted proposal after its monotonic deadline', async t => {
+  let elapsed = 0;
+  t.mock.method(performance, 'now', () => elapsed);
+  const request = prepare({ limits: { timeoutMs: 10 } });
+  const consent = approve(request);
+  let calls = 0;
+  let signal;
+  const fixture = adapter(recipe(), { propose: async (_, options) => {
+    calls += 1;
+    signal = options.signal;
+    elapsed = 11;
+    return JSON.stringify(recipe());
+  } });
+  await assert.rejects(proposeMigrationWithModel({ request, consent, adapter: fixture }), invalid);
+  assert.equal(calls, 1);
+  assert.equal(signal.aborted, true);
+  await assert.rejects(proposeMigrationWithModel({ request, consent, adapter: fixture }), invalid);
+  assert.equal(calls, 1);
+});
+
+test('synchronous response validation consumes the same proposal deadline', async t => {
+  let elapsed = 0;
+  t.mock.method(performance, 'now', () => elapsed);
+  const request = prepare({ limits: { timeoutMs: 10 } });
+  const response = JSON.stringify(recipe());
+  const parse = JSON.parse;
+  t.mock.method(JSON, 'parse', (...args) => {
+    const value = parse(...args);
+    if (args[0] === response) elapsed = 11;
+    return value;
+  });
+  await assert.rejects(proposeMigrationWithModel({
+    request, consent: approve(request), adapter: adapter(recipe(), { propose: async () => response }),
+  }), invalid);
+});
+
 test('caller cancellation interrupts a running adapter and never accepts its late result', async () => {
   const request = prepare();
   const caller = new AbortController();
