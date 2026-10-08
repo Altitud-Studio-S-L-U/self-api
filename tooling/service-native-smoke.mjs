@@ -217,6 +217,7 @@ try {
     if (userScope) {
       // Only the disposable runner's manager is restarted. This asserts that the
       // enabled default.target unit starts again without a manual service start.
+      process.stdout.write(run('loginctl', ['show-user', String(process.getuid()), '--property=State,Sessions,Linger'], true));
       run('sudo', ['systemctl', 'restart', `user@${process.getuid()}.service`]);
       const reactivated = await running(restarted.runId);
       assert.notEqual(reactivated.pid, restarted.pid);
@@ -248,6 +249,14 @@ try {
         process.stderr.write(run('sudo', ['journalctl', '--kernel', '--lines=20', '--no-pager', '--grep=apparmor.*DENIED'], true));
         process.stderr.write(run('loginctl', ['show-user', String(process.getuid()), '--property=State,Sessions,Linger'], true));
         process.stderr.write(run('sudo', ['journalctl', '--unit', `user@${process.getuid()}.service`, '--unit', 'systemd-logind.service', '--lines=40', '--no-pager'], true));
+        // An exec child can fail before joining its unit's cgroup, so filtering
+        // only by that unit omits the errno behind an EXIT_CGROUP failure.
+        process.stderr.write(run('sudo', ['journalctl', '--since', `@${Math.floor(started / 1000)}`, '--priority=warning', '--lines=40', '--no-pager'], true));
+        const cgroup = `/sys/fs/cgroup/user.slice/user-${process.getuid()}.slice/user@${process.getuid()}.service`;
+        for (const filename of ['cgroup.type', 'cgroup.events', 'cgroup.procs', 'cgroup.subtree_control']) {
+          try { process.stderr.write(`${filename}: ${await readFile(join(cgroup, filename), 'utf8')}`); }
+          catch (readError) { process.stderr.write(`${filename}: ${readError.code}\n`); }
+        }
       }
     }
   }
