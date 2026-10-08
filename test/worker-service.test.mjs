@@ -76,7 +76,7 @@ function launch(configPath) {
   return { child, exited, stderr: () => stderr };
 }
 
-test('real foreground service prevents concurrent ownership, resumes durable evidence and drains a run-scoped stop', async t => {
+test('real foreground service prevents concurrent ownership and preserves evidence across three clean restarts', async t => {
   const item = await fixture(t);
   const config = await loadWorkerServiceConfig(item.configPath);
   let active;
@@ -92,24 +92,36 @@ test('real foreground service prevents concurrent ownership, resumes durable evi
   const stopped = await waitForStatus(item.statePath, value => value.state === 'stopped');
   assert.equal(stopped.runId, first.runId);
   const before = await listSourceObservations({ statePath: item.statePath });
-  active = launch(item.configPath);
-  const second = await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== first.runId && value.cycles >= 1, 45000, active);
-  assert.notEqual(second.pid, first.pid);
-  // The old stop marker must not terminate this new instance; unchanged evidence is not duplicated.
-  await waitForStatus(item.statePath, value => value.runId === second.runId && value.cycles >= 2, 45000, active);
-  assert.equal((await listSourceObservations({ statePath: item.statePath })).length, before.length);
-  requestWorkerServiceStop(config);
-  assert.equal((await active.exited)[0], 0, active.stderr());
+  let previous = first;
+  for (let restart = 0; restart < 3; restart++) {
+    active = launch(item.configPath);
+    const current = await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== previous.runId && value.cycles >= 1, 45000, active);
+    assert.notEqual(current.pid, previous.pid);
+    // Every restart must survive its predecessor's stop marker and preserve the
+    // evidence, not merely reach an initial status before failing on replacement.
+    await waitForStatus(item.statePath, value => value.state === 'running' && value.runId === current.runId && value.cycles >= 2, 45000, active);
+    assert.equal((await listSourceObservations({ statePath: item.statePath })).length, before.length);
+    assert.equal(requestWorkerServiceStop(config).runId, current.runId);
+    assert.equal((await active.exited)[0], 0, active.stderr());
+    assert.equal((await waitForStatus(item.statePath, value => value.state === 'stopped')).runId, current.runId);
+    previous = current;
+  }
 });
 
-test('forced process loss releases singleton ownership without deleting a stale PID file', async t => {
+test('two consecutive process losses recover ownership and durable evidence without deleting a stale PID file', async t => {
   const item = await fixture(t);
   let active = launch(item.configPath);
   t.after(async () => { if (active.child.exitCode === null && active.child.signalCode === null) { active.child.kill(); await active.exited; } });
-  const first = await waitForStatus(item.statePath, value => value.state === 'running');
-  active.child.kill('SIGKILL'); await active.exited;
-  active = launch(item.configPath);
-  await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== first.runId);
+  let previous = await waitForStatus(item.statePath, value => value.state === 'running' && value.cycles >= 2, 45000, active);
+  const before = await listSourceObservations({ statePath: item.statePath });
+  for (let loss = 0; loss < 2; loss++) {
+    active.child.kill('SIGKILL'); await active.exited;
+    active = launch(item.configPath);
+    const recovered = await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== previous.runId && value.cycles >= 2, 45000, active);
+    assert.notEqual(recovered.pid, previous.pid);
+    assert.equal((await listSourceObservations({ statePath: item.statePath })).length, before.length);
+    previous = recovered;
+  }
   requestWorkerServiceStop(await loadWorkerServiceConfig(item.configPath));
   assert.equal((await active.exited)[0], 0, active.stderr());
 });
