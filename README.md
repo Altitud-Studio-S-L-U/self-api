@@ -1,8 +1,8 @@
-# Plumber
+# Keepseam
 
-Local tools for maintaining integrations with external APIs. Plumber compares API contracts, locates potentially affected TypeScript/JavaScript calls, prepares explicit migration proposals and validates approved changes in isolated copies.
+Local tools for maintaining integrations with external APIs. Keepseam compares API contracts, locates potentially affected TypeScript/JavaScript calls, prepares explicit migration proposals and validates approved changes in isolated copies.
 
-**Status:** private, unpublished alpha. The SDK and CLI run in the customer's environment. Local observation, optional model proposals and separately authorized GitHub draft publication are implemented. The GitHub transport is tested with controlled responses; a live publication pilot remains a release gate. The Cloud application is a separate, pending product. No hosted Plumber service is required.
+The SDK and CLI run in the customer's environment. Local observation, optional model proposals and separately authorized GitHub draft publication are implemented. The GitHub transport is tested with controlled responses; a live publication pilot remains a release gate. Keepseam Cloud has a separate local development environment for accounts, organization management and internal administration. Connected worker coordination remains pending. No hosted Keepseam service is required for this local workflow.
 
 ## What works today
 
@@ -21,14 +21,14 @@ Local tools for maintaining integrations with external APIs. Plumber compares AP
 | GitHub publication | Separate approval, exact repository/base/file bindings, create-only branch, draft PR and read-only reconciliation of uncertain writes |
 | Cloud protocol | A separately exported, versioned status allowlist; no Cloud account, enrollment or transport is included |
 
-Code, patches, private schemas and raw logs are excluded from the Cloud status protocol. Importing the SDK starts no worker, opens no database and executes no consumer code. An explicitly authorized customer model can receive selected context; authorized publication sends the approved changes directly to the customer's GitHub repository. Neither route passes through Plumber Cloud.
+Code, patches, private schemas and raw logs are excluded from the Cloud status protocol. Importing the SDK starts no worker, opens no database and executes no consumer code. An explicitly authorized customer model can receive selected context; authorized publication sends the approved changes directly to the customer's GitHub repository. Neither route passes through Keepseam Cloud.
 
 ## Prerequisites
 
 - Node.js **24.x**, minimum **24.11.1**, and pnpm **11.19.0**.
 - Project dependencies available in the local pnpm store for offline installation.
 - The pinned **oasdiff 1.33.0** binary for contract comparison and the test suite.
-- Git supporting `--no-lazy-fetch` for publication preparation and the ordinary test suite. Verify the selected executable with `git --no-lazy-fetch --version`; older system Git installations can lack this capability. Plumber fails before repository plumbing and never removes this protection as a fallback.
+- Git supporting `--no-lazy-fetch` for publication preparation and the ordinary test suite. Verify the selected executable with `git --no-lazy-fetch --version`; older system Git installations can lack this capability. Keepseam fails before repository plumbing and never removes this protection as a fallback.
 - A prepared Linux x64 Docker host for consumer test execution only. Windows/macOS support inspection and planning; execution there returns `blocked`.
 
 ## Quick start from this checkout
@@ -60,6 +60,8 @@ The examples use `pnpm --silent` for JSON output so the package manager does not
 **First-time provisioning requires network access.** When permitted, `pnpm install --frozen-lockfile` downloads dependencies and `pnpm engine:setup` downloads the pinned official engine, verifies its archive checksum and retains its license under `work/tools/oasdiff`. The installer requires the system `tar` executable. These setup actions are separate from normal SDK/CLI use; comparisons never download the engine automatically. An offline installation fails if its cached dependencies are missing.
 
 ## Use the SDK
+
+Keepseam is the product name. The package `plumber`, CLI command `plumber`, `plumber/protocol` export, environment variables and stored protocol identifiers retain their existing names for compatibility. This name change does not migrate local state or publish a package to npm.
 
 Import the package's public entry point from an ESM application. This example uses the same fixture paths when run from this checkout after building:
 
@@ -172,8 +174,10 @@ The shared status encoder is imported from `plumber/protocol`. It validates a sm
 
 - [Implementation plan](docs/implementation-plan.md): architecture, privacy boundaries and remaining release gates.
 - [Delivery queue](tooling/delivery.json): implemented milestones and current work.
-- [Plumber Cloud](https://github.com/Altitud-Studio-S-L-U/plumber-cloud): separate repository for the planned landing page, dashboard and coordination API.
+- [Keepseam client](https://github.com/Altitud-Studio-S-L-U/keepseam-client): this SDK, CLI, local worker and versioned status protocol.
+- [Keepseam Cloud](https://github.com/Altitud-Studio-S-L-U/keepseam-cloud): the ES/EN landing page, passwordless accounts, organization workspace and internal administration foundation, with a real local API/database and simulated billing. Worker enrollment and connected coordination remain pending.
+- [Keepseam infrastructure](https://github.com/Altitud-Studio-S-L-U/keepseam-infra): the separate repository for provisioning and deployment; the hosting provider and region remain undecided.
 
 Runtime dependencies are Node built-ins and `@babel/parser` 8.0.6 (MIT), with its resolved Babel dependencies. The lockfile pins TypeScript (Apache-2.0), Node type declarations (MIT) and resolved dependencies. pnpm is MIT; oasdiff is Apache-2.0 and its license is retained with the installed binary. Dependency lifecycle scripts are disabled by the workspace policy.
 
-This repository is private and `UNLICENSED`. Apache-2.0 distribution remains a proposal requiring a separate licensing and publication decision; the implementation plan is not a license grant.
+The source is `UNLICENSED`; public distribution has not been authorized. Apache-2.0 distribution remains a proposal requiring a separate licensing and publication decision; the implementation plan is not a license grant.
