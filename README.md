@@ -1,4 +1,4 @@
-# Keepseam
+# Keepseam Client
 
 Local tools for maintaining integrations with external APIs. Keepseam compares API contracts, locates potentially affected TypeScript/JavaScript calls, prepares explicit migration proposals and validates approved changes in isolated copies.
 
@@ -22,6 +22,23 @@ The SDK and CLI run in the customer's environment. Local observation, optional m
 | Cloud protocol | A separately exported, versioned status allowlist; no Cloud account, enrollment or transport is included |
 
 Code, patches, private schemas and raw logs are excluded from the Cloud status protocol. Importing the SDK starts no worker, opens no database and executes no consumer code. An explicitly authorized customer model can receive selected context; authorized publication sends the approved changes directly to the customer's GitHub repository. Neither route passes through Keepseam Cloud.
+
+## Architecture and local state
+
+The CLI and SDK share the same TypeScript implementation. Contract comparison and consumer inspection produce evidence; planning binds that evidence to exact edits and selected tests. The local worker persists observations and queues separately approved execution. Model and GitHub adapters are explicit external boundaries, with independent authorization from test execution.
+
+| Boundary | Implementation | Data and responsibility |
+| --- | --- | --- |
+| Public SDK and CLI | `src/index.ts`, `src/cli.ts` | Exported operations, types and command input validation |
+| Contracts and usage | `src/contracts.ts`, `src/consumer-contracts.ts`, `src/integration-registry.ts` | Snapshot hashes, comparison reports, call sites and version/source provenance |
+| Observation | `src/worker.ts`, `src/source-observer.ts`, `src/http-source.ts` | Local or explicitly permitted HTTPS capture and immutable evidence |
+| Execution | `src/job-validation.ts`, `src/migration-validation.ts`, `src/docker-runner.ts` | Approval binding, isolated baseline/candidate validation and recovery |
+| Optional external actions | `src/model-harness.ts`, `src/publication-runner.ts`, `src/github-publication.ts` | Selected model context and approved GitHub draft publication |
+| Future Cloud exchange | `src/cloud-protocol.ts`, exported as `plumber/protocol` | Versioned, bounded status messages; no connected transport yet |
+
+State belongs in a dedicated private directory outside the consumer checkout. `worker.sqlite3` contains subscriptions, immutable snapshots, observations, review jobs and execution intents. `source-observations.sqlite3` stores the additional source catalogs and their transitions. Approval receipts, attempt markers and validation outcomes remain local files. These databases use Node's built-in SQLite; the client does not require PostgreSQL, a hosted queue or a Keepseam account.
+
+The public TypeScript contracts and their runtime validators define the supported artifact shapes. Local evidence may include private code or schemas; the separate Cloud status contract accepts only its explicit fields. Do not copy local evidence into a Cloud event or edit database rows to bypass an approval. See the [state and recovery procedures](docs/local-workflow.md#persist-local-subscriptions-and-observe-once) before operating a persistent worker.
 
 ## Prerequisites
 
@@ -100,11 +117,11 @@ pnpm pack --pack-destination work/packages
 From the receiving project's directory, install the archive using its actual absolute path:
 
 ```sh
-pnpm add --offline --ignore-scripts "/absolute/path/to/plumber/work/packages/plumber-0.0.0.tgz"
+pnpm add --offline --ignore-scripts "/absolute/path/to/keepseam-client/work/packages/plumber-0.0.0.tgz"
 pnpm exec plumber --help
 ```
 
-On Windows, use the corresponding quoted path, for example `"D:/projects/plumber/work/packages/plumber-0.0.0.tgz"`. The receiving project uses `import { compareOpenApi } from 'plumber'` and supplies its own contract files and trusted engine path. Fixtures and the engine are not bundled in the package. Offline installation requires the runtime dependencies in that machine's pnpm store.
+On Windows, use the corresponding quoted path, for example `"D:/projects/keepseam-client/work/packages/plumber-0.0.0.tgz"`. The receiving project uses `import { compareOpenApi } from 'plumber'` and supplies its own contract files and trusted engine path. Fixtures and the engine are not bundled in the package. Offline installation requires the runtime dependencies in that machine's pnpm store.
 
 | Context | CLI invocation |
 | --- | --- |
@@ -176,7 +193,7 @@ The shared status encoder is imported from `plumber/protocol`. It validates a sm
 - [Delivery queue](tooling/delivery.json): implemented milestones and current work.
 - [Keepseam client](https://github.com/Altitud-Studio-S-L-U/keepseam-client): this SDK, CLI, local worker and versioned status protocol.
 - [Keepseam Cloud](https://github.com/Altitud-Studio-S-L-U/keepseam-cloud): the ES/EN landing page, passwordless accounts, organization workspace and internal administration foundation, with a real local API/database and simulated billing. Worker enrollment and connected coordination remain pending.
-- [Keepseam infrastructure](https://github.com/Altitud-Studio-S-L-U/keepseam-infra): the separate repository for provisioning and deployment; the hosting provider and region remain undecided.
+- [Keepseam infrastructure](https://github.com/Altitud-Studio-S-L-U/keepseam-infra): provisioning and deployment of Keepseam Cloud on the selected provider, OVHcloud. The service and region remain to be confirmed; the infrastructure design is not a deployed environment. This choice does not change the client's local execution requirements.
 
 Runtime dependencies are Node built-ins and `@babel/parser` 8.0.6 (MIT), with its resolved Babel dependencies. The lockfile pins TypeScript (Apache-2.0), Node type declarations (MIT) and resolved dependencies. pnpm is MIT; oasdiff is Apache-2.0 and its license is retained with the installed binary. Dependency lifecycle scripts are disabled by the workspace policy.
 

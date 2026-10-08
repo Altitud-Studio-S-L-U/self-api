@@ -7,3 +7,7 @@
 - Do not use `codex/`, agent names, or other work-branch prefixes.
 
 Examples: `feat/api-scan`, `fix/schema-diff`, `hotfix/token-expiry`.
+
+## README scope
+
+Keep READMEs technical: implemented architecture, data contracts, dependencies, installation, operation and known limitations. Exclude hosting price comparisons, product pricing and commercial plans.
