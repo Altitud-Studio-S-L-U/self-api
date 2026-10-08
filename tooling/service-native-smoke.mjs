@@ -246,6 +246,8 @@ try {
         process.stderr.write(run('systemctl', ['--version']));
         process.stderr.write(run('sysctl', ['kernel.apparmor_restrict_unprivileged_userns'], true));
         process.stderr.write(run('sudo', ['journalctl', '--kernel', '--lines=20', '--no-pager', '--grep=apparmor.*DENIED'], true));
+        process.stderr.write(run('loginctl', ['show-user', String(process.getuid()), '--property=State,Sessions,Linger'], true));
+        process.stderr.write(run('sudo', ['journalctl', '--unit', `user@${process.getuid()}.service`, '--unit', 'systemd-logind.service', '--lines=40', '--no-pager'], true));
       }
     }
   }
