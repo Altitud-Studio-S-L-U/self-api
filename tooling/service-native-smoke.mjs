@@ -27,6 +27,7 @@ const run = (file, args, allowFailure = false) => {
   }
 };
 let installed = false;
+let directoryCreated = false;
 let manifestPath;
 let wrapper;
 const started = Date.now();
@@ -47,8 +48,13 @@ const assertOwned = () => {
 try {
   if (target === 'systemd') {
     run('sudo', ['mkdir', '-m', '700', directory]);
+    directoryCreated = true;
     run('sudo', ['chown', `${process.getuid()}:${process.getgid()}`, directory]);
-  } else await mkdir(directory, { mode: 0o700 });
+  } else {
+    await mkdir(join(repository, 'work'), { recursive: true, mode: 0o700 });
+    await mkdir(directory, { mode: 0o700 });
+    directoryCreated = true;
+  }
   if (target === 'windows') {
     run('icacls.exe', [directory, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-19:(OI)(CI)RX']);
   }
@@ -147,6 +153,8 @@ try {
     run(wrapper, ['stop'], true);
     run(wrapper, ['uninstall']);
   }
-  if (target === 'windows') run('icacls.exe', [directory, '/grant:r', `${userInfo().username}:(OI)(CI)F`, '/T']);
-  await rm(directory, { recursive: true, force: true });
+  if (directoryCreated) {
+    if (target === 'windows') run('icacls.exe', [directory, '/grant:r', `${userInfo().username}:(OI)(CI)F`, '/T']);
+    await rm(directory, { recursive: true, force: true });
+  }
 }
