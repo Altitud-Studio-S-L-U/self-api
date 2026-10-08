@@ -303,6 +303,7 @@ export async function proposeMigrationWithModel(options: {
   readonly adapter: ModelProposalAdapter;
   readonly signal?: AbortSignal;
 }): Promise<ModelMigrationProposal> {
+  const startedAt = performance.now();
   const input = object(options, ['request', 'consent', 'adapter'], ['signal']);
   const request = input.request as ModelProposalRequest;
   const state = requests.get(request);
@@ -319,6 +320,13 @@ export async function proposeMigrationWithModel(options: {
   const signal = input.signal;
   if (signal !== undefined && !(signal instanceof AbortSignal)) invalid('A model cancellation signal must be an AbortSignal.');
   if (signal?.aborted) invalid('The model proposal was cancelled before disclosure.');
+  const deadline = startedAt + request.limits.timeoutMs;
+  const checkDeadline = (): void => {
+    if (signal?.aborted || performance.now() >= deadline) {
+      invalid('The model proposal was cancelled or exceeded its deadline; no proposal was accepted.');
+    }
+  };
+  checkDeadline();
   authorization.used = true;
   const controller = new AbortController();
   const propose = adapter.propose as ModelProposalAdapter['propose'];
@@ -329,6 +337,7 @@ export async function proposeMigrationWithModel(options: {
     output = await Promise.race([
       Promise.resolve().then(() => {
         if (controller.signal.aborted) invalid('The model proposal was cancelled before disclosure.');
+        checkDeadline();
         return propose(request.context, { signal: controller.signal, maximumOutputBytes: request.limits.maximumOutputBytes });
       }),
       new Promise<never>((_, reject) => {
@@ -338,9 +347,10 @@ export async function proposeMigrationWithModel(options: {
         };
         cancel = stop;
         signal?.addEventListener('abort', stop, { once: true });
-        timer = setTimeout(stop, request.limits.timeoutMs);
+        timer = setTimeout(stop, Math.max(1, Math.ceil(deadline - performance.now())));
       }),
     ]);
+    checkDeadline();
   } catch {
     // Adapter errors may contain prompts, credentials or provider response bodies.
     invalid('The model proposal failed, was cancelled, or exceeded its deadline; no proposal was accepted.');
@@ -372,6 +382,8 @@ export async function proposeMigrationWithModel(options: {
   }
   const normalized: MigrationRecipe = JSON.parse(serializeMigrationRecipe({ ...recipe, decisions: [...required.values()] }));
   const preview = previewRecipe(normalized, [...selected.values()].map(({ path, sha256, text }) => ({ path, sha256, text })));
+  // In-process synchronous work cannot be interrupted by a timer; never accept its late output.
+  checkDeadline();
   return {
     schemaVersion: 1, requestId: request.id, contextDigest: request.contextDigest, recipe: normalized, preview,
     authorization: 'not-granted', validation: 'not-run', consumerModified: false,

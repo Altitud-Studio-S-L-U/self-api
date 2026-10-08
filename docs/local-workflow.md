@@ -24,15 +24,18 @@ Only the prepared Linux x64 Docker profile can execute consumer tests. Windows a
 - [Approve and validate an isolated copy](#approve-and-validate-captured-copies).
 - [Subscribe to changes](#persist-local-subscriptions-and-observe-once), then [queue and recover approved jobs](#queue-approved-jobs-and-recover-interrupted-validation).
 - [Prepare publication evidence](#prepare-a-local-publication-candidate) for a separately committed consumer repository.
+- [Connect an approved worker to Cloud](#connect-an-approved-worker-to-cloud) to share only selected status summaries.
 
 ## Current boundary
+
+For ten real vendor documentation sources and a reproducible native/SDK Notion migration, see the [real API laboratory](../dev/real-apis/README.md). Its consumer operations are explicitly simulated; the SDK, scanner, observer and validation worker are real.
 
 - The OpenAPI comparator accepts local OpenAPI 3.0.x/3.1.x JSON, at most 4 MiB and 128 nesting levels. External references, custom dialects, `$id`, dynamic references/anchors, reusable `components.pathItems`, and root webhooks are rejected. Direct comparator inputs must be regular files without symlinked ancestors; URLs, UNC/device paths, stdin, Git refs, and alternate data streams are not supported. The observer can separately capture remote sources using explicit HTTPS policies, as described below. YAML and general SDK call mapping remain unsupported. Authorized validation changes only an isolated captured copy.
 - Captured input digests and API/specification versions identify the compared evidence. The local engine validates both contracts before comparing immutable temporary copies.
 - Structural breaking-change findings only. `no-breaking-changes` does not prove consumer compatibility or unchanged business semantics; every report says `consumerImpact: not-analyzed`. Additive and prose-only changes can set `contentChanged` without producing breaking findings.
 - The comparison engine disables external references, uses its own empty configuration, and receives a filtered environment. Comparison does not run consumer scripts. Engine process timeout and output limits are applied; this engine process is not a container sandbox or a hard memory limit. Consumer execution uses the separate Docker profile described below.
 - The executable path is explicitly authorized by the caller. Runtime version checking is not proof of binary authenticity: protect the installed binary and use the checksum-verifying setup command or your own trusted distribution process.
-- Reports remain local and may contain private operation names or schema descriptions. They are not Cloud messages. `plumber/protocol` exports a separate status allowlist. Optional model adapters and GitHub publication require their own explicit authorization; no Cloud transport, telemetry or runtime API proxy is included.
+- Reports remain local and may contain private operation names or schema descriptions. They are not Cloud messages. `plumber/protocol` exports a separate status allowlist; the optional enrolled transport below sends only that projection. Model adapters and GitHub publication require their own explicit authorization. No telemetry or runtime API proxy is included.
 
 ## Inspect consumer usage
 
@@ -95,7 +98,7 @@ The fixed container uses the image digest above, `--pull=never`, no network, a r
 
 Results preserve both test outcomes: `passed` means both passed, `improved` means the baseline failed and the candidate passed, `regression` means only the candidate failed, and `failed` means both failed. Incomplete execution, unavailable infrastructure, exhausted budgets or unverified cleanup produce `blocked`. Passing selected tests does not establish provider compatibility beyond those assertions. The fictional B fixture is expected to return `improved` after fixing both call and parser. CLI exit 0 requires both passing, exit 1 preserves completed failures/improvement for review, and exit 2 indicates invalid input/authorization or blocked execution.
 
-Use a private state directory outside the consumer; neither directory may contain the other. New state directories/files use restrictive POSIX modes; Windows relies on inherited account ACLs. `receipts/` holds approvals; `attempts/<id>/` holds the consumed marker, exact request, snapshots and result including bounded raw output. These contain private source and must remain local. Artifacts are retained for inspection; deleting a consumed marker could permit replay while a receipt remains valid, so do not remove attempt markers to retry. The durable job flow below adds explicit recovery. No state cleanup daemon, Git publication, Cloud transmission, or live checkout mutation is implemented.
+Use a private state directory outside the consumer; neither directory may contain the other. New state directories/files use restrictive POSIX modes; Windows relies on inherited account ACLs. `receipts/` holds approvals; `attempts/<id>/` holds the consumed marker, exact request, snapshots and result including bounded raw output. These contain private source and must remain local. Artifacts are retained for inspection; deleting a consumed marker could permit replay while a receipt remains valid, so do not remove attempt markers to retry. The durable job flow below adds explicit recovery. Validation does not clean state, publish to Git, upload source or mutate the live checkout. Publication and optional status sync are separately configured actions.
 
 ## Persist local subscriptions and observe once
 
@@ -428,4 +431,147 @@ import { encodeCloudStatusEvent, decodeCloudStatusEvent, negotiateCloudProtocol 
 
 Version 1 accepts exact runner/maintenance event shapes, opaque SHA-256-form identifiers, canonical timestamps, bounded counts, enumerated states and reasons. Unknown fields, source text, logs, schemas, URLs, commands, prompts and arbitrary labels are rejected. Messages are limited to 4 KiB. `deriveCloudIdentifier(localId, installationId)` scopes already opaque IDs to an installation; hashing a predictable path does not make it confidential.
 
-This encoder is an allowlist, not a redactor or an authentication system. It neither opens a connection nor approves an action. It cannot verify the truth of a caller's status, replace customer policy, enroll a runner or establish DPoP/revocation. Cloud must consume the package contract and implement that separate identity/transport workflow before connected operation can be claimed. Do not send local comparison reports, proposals, recipes or journals to Cloud by treating them as status messages.
+The encoder is an allowlist, not a redactor or an authentication system. It neither opens a connection nor approves an action. The separate `generateCloudWorkerIdentity`, `createCloudTransport` and `syncWorkerToCloud` APIs implement identity generation, key-bound delivery and a durable local status outbox. Cloud independently validates the protocol, approval and current revocation. This authenticates the reporting installation, not the truth of every reported outcome. Do not send local comparison reports, proposals, recipes or journals as status messages.
+
+## Connect an approved worker to Cloud
+
+This is an optional SDK workflow. It requires a running Keepseam Cloud, a customer organization/project and a current owner/admin with a registered passkey. A platform employee grant alone cannot enroll a customer worker. The standalone local worker continues to operate without Cloud.
+
+Use the built checkout or the private local archive described in the [README](../README.md#install-into-another-local-project). There is no public package release or generic `plumber cloud-*` command. Save the following example scripts under this checkout's ignored `work/` directory, or in your own ESM application with the private package installed. They import the public `plumber` entry points. Keep identity, credentials and both state directories on customer-controlled storage outside every consumer checkout. On POSIX, use owner-only directory/file permissions; on Windows, verify that the chosen directory's inherited ACL grants access only to the intended account. The example file modes do not change existing directory permissions or Windows ACLs.
+
+### Generate the local identity
+
+Set `KEEPSEAM_CONNECTION_DIR` to a dedicated private directory. For example:
+
+```powershell
+$env:KEEPSEAM_CONNECTION_DIR = Join-Path $HOME '.keepseam-connection'
+```
+
+```bash
+export KEEPSEAM_CONNECTION_DIR="$HOME/.keepseam-connection"
+```
+
+Save as `work/generate-cloud-identity.mjs`, then run `node work/generate-cloud-identity.mjs`:
+
+```js
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { generateCloudWorkerIdentity } from 'plumber';
+
+const directory = process.env.KEEPSEAM_CONNECTION_DIR;
+if (!directory) throw new Error('Select a private connection directory.');
+await mkdir(directory, { recursive: true, mode: 0o700 });
+const identity = await generateCloudWorkerIdentity();
+await writeFile(join(directory, 'identity.private.json'), JSON.stringify(identity),
+  { flag: 'wx', mode: 0o600 });
+const publicIdentity = {
+  installationId: identity.installationId,
+  publicJwk: identity.publicJwk,
+  fingerprint: identity.fingerprint,
+};
+await writeFile(join(directory, 'identity.public.json'), JSON.stringify(publicIdentity, null, 2),
+  { flag: 'wx', mode: 0o600 });
+console.log('Public identity saved; compare its fingerprint during enrollment.');
+```
+
+`identity.private.json` contains the signing key and stays local. Only `identity.public.json` is suitable for the panel. Exclusive file creation prevents accidentally replacing an existing identity; retain its original key rather than generating another for the same connection. Importing/generating identity makes no Cloud request.
+
+### Enroll, approve and assemble credentials
+
+1. In the customer workspace, select the intended organization and project. Create a project first if necessary. Open Workers → **Connect worker / Conectar worker**, verify your passkey when requested and paste only `identity.public.json`. The form rejects a private JWK.
+2. Save the displayed connection JSON as `enrollment.private.json` in the same private directory. It contains `baseUrl`, `installationId`, the opaque wire `projectId` and `clientSecret`. The secret is displayed once; losing it requires an explicitly enrolled replacement, not a request to reveal it again. The wire project ID differs from the project's database UUID.
+3. Open the new worker's connection panel. Compare its fingerprint against `identity.public.json` on the worker machine, check the confirmation and activate it. A pending or mismatched key cannot obtain a token.
+4. Combine the displayed connection fields with the original private JWK **locally**, using the script below. Never upload the combined file to the panel or paste its contents into a terminal command, issue or log.
+
+Save as `work/assemble-cloud-credentials.mjs`, then run `node work/assemble-cloud-credentials.mjs`:
+
+```js
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createCloudTransport } from 'plumber';
+
+const directory = process.env.KEEPSEAM_CONNECTION_DIR;
+if (!directory) throw new Error('Select the existing private connection directory.');
+const identity = JSON.parse(await readFile(join(directory, 'identity.private.json'), 'utf8'));
+const enrollment = JSON.parse(await readFile(join(directory, 'enrollment.private.json'), 'utf8'));
+if (identity.installationId !== enrollment.installationId) throw new Error('Enrollment identity mismatch.');
+const credentials = {
+  baseUrl: enrollment.baseUrl,
+  installationId: identity.installationId,
+  projectId: enrollment.projectId,
+  clientSecret: enrollment.clientSecret,
+  privateJwk: identity.privateJwk,
+  allowLocalHttp: enrollment.baseUrl === 'http://localhost:43300',
+};
+createCloudTransport(credentials);
+await writeFile(join(directory, 'credentials.private.json'), JSON.stringify(credentials),
+  { flag: 'wx', mode: 0o600 });
+console.log('Connection configuration saved locally; no token requested.');
+```
+
+The example permits HTTP only for the explicit local development origin `http://localhost:43300`. Other origins require HTTPS unless you deliberately configure another supported loopback origin. `baseUrl` is an exact origin with no trailing slash/path/query. The transport refuses redirects. `createCloudTransport` validates configuration without connecting; token exchange happens on `send`.
+
+### Bind only selected local integrations
+
+Use `pnpm --silent plumber subscriptions --state "$PLUMBER_STATE" --json` locally to select an existing subscription. Its 64-character local ID is distinct from the Cloud integration UUID. Derive the public binding ID with the approved installation:
+
+```js
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { deriveCloudIdentifier } from 'plumber/protocol';
+
+const directory = process.env.KEEPSEAM_CONNECTION_DIR;
+const localSubscriptionId = process.env.KEEPSEAM_LOCAL_SUBSCRIPTION_ID;
+if (!directory || !localSubscriptionId) throw new Error('Select the connection and local subscription.');
+const identity = JSON.parse(await readFile(join(directory, 'identity.public.json'), 'utf8'));
+console.log(deriveCloudIdentifier(localSubscriptionId, identity.installationId));
+```
+
+Set `KEEPSEAM_LOCAL_SUBSCRIPTION_ID` to the selected local ID and run this script from the checkout/application. Its output is an opaque public ID, not a path or credential. In Cloud, create/select an integration under the worker's project, enable it and explicitly allow metadata sharing. In the active worker's **Bind integration / Vincular integración** form, select that Cloud integration and paste the derived ID. Repeat only for subscriptions you intend to share. Binding is immutable; a disabled integration or withdrawn sharing permission rejects further projection.
+
+### Synchronize status explicitly
+
+Save the following as `work/sync-cloud.mjs`. Set `KEEPSEAM_LOCAL_STATE` to the existing local worker state directory and `KEEPSEAM_CLOUD_STATE` to a separate dedicated outbox directory, both outside the consumer. Use the same connection directory and selected subscription from the preceding steps:
+
+```js
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { syncWorkerToCloud } from 'plumber';
+
+const directory = process.env.KEEPSEAM_CONNECTION_DIR;
+const statePath = process.env.KEEPSEAM_LOCAL_STATE;
+const cloudStatePath = process.env.KEEPSEAM_CLOUD_STATE;
+const subscriptionId = process.env.KEEPSEAM_LOCAL_SUBSCRIPTION_ID;
+if (!directory || !statePath || !cloudStatePath || !subscriptionId) {
+  throw new Error('Select connection, worker state, Cloud state and an approved subscription.');
+}
+const credentials = JSON.parse(await readFile(join(directory, 'credentials.private.json'), 'utf8'));
+const result = await syncWorkerToCloud({
+  statePath,
+  cloudStatePath,
+  credentials,
+  integrationIds: [subscriptionId],
+});
+console.log(result);
+```
+
+Run `node work/sync-cloud.mjs` after observing locally. `integrationIds` takes 1–100 unique **local** subscription IDs that already exist in `statePath`; do not pass derived IDs or Cloud UUIDs. For multiple subscriptions, supply an explicitly reviewed list and bind each one in Cloud first. Sync reads local jobs/execution outcomes, emits changed summaries plus a runner status, and returns counts/state. It does not observe providers, approve jobs, run tests, install a service or publish a PR.
+
+The [real API laboratory](../dev/real-apis/README.md#connect-the-actual-worker) already wraps this SDK flow with `pnpm dev:apis cloud-sync <private-credentials-file>` and `pnpm dev:apis worker <private-credentials-file>`. Pass the path to the combined credentials file, never the secret itself. Those helpers intentionally select only the lab's Notion subscription; they do not discover and share every local integration.
+
+### Sync results, retries and limits
+
+| Result or limit | Meaning and operation |
+| --- | --- |
+| `synced` | Current outbox is empty after acknowledged sends; not proof of provider compatibility, deployment or Cloud-wide freshness. |
+| `pending` | The run reached its 50-send budget with queued work remaining. Invoke sync again with the same identity, state and approved integration list. |
+| `busy` | Another process owns the 30-second renewable lease. Let it finish; a crashed owner can be replaced after expiry. Do not run competing copies of the same state. |
+| Network/authorization/status error | The call throws a bounded error code and keeps unacknowledged events. Inspect connection activation, expiry, bindings and clock; retry without deleting or editing SQLite. No automatic execution retry is granted. |
+| `cloud.sqlite3` | Bound to its installation and wire project, with exact events, next sequence and projected-summary digests. It contains no credentials. A lost acknowledgement reuses the identical event ID, sequence and timestamp. |
+| Capacity | At most 1,000 pending events, 50 sends per invocation and sequence numbers 0–1,000,000 inclusive. Exhaustion is explicit, with no automatic pruning or reset; preserve evidence and enroll a replacement when necessary. |
+| Credentials | Enrollment lasts at most 90 days; Cloud access tokens last at most five minutes. Token issuance is limited to ten per minute and fifty live tokens per installation. Avoid tight retry loops; repeated standalone sync invocations obtain new tokens. |
+| Revocation | Cloud rejects the revoked connection and its existing tokens. It cannot recall a locally running job, and personal account closure does not implicitly revoke organization-owned workers. |
+
+The server retains the latest 1,000 matching receipts and requires exact ordered sequences. Do not clone an active outbox into a second installation, delete its sequence or manually drop an event to bypass a rejection. Pending maintenance events require the original local sharing selection; if consent is withdrawn, they are not sent automatically. There is no general outbox-abandonment or remote key-rotation protocol in this version.
+
+For maintenance, `recordedAt` is the most recent selected local execution's update time, or the job's creation time if there is no execution. Runner status uses its enqueue time. Offline retries preserve both. Cloud's first reported-state timestamp and its latest receipt timestamp are distinct; protocol v1 does not update the subscription's provider-observation time. Future timestamps beyond two minutes are rejected, so correct the machine clock rather than rewriting queued evidence. Selected/passing test counts refer to selected test targets, not individual framework cases. Cloud displays summaries and can send opted-in attention emails; execution, publication, merge and deployment keep their separate local authorization requirements.

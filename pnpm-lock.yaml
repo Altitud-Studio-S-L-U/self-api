@@ -11,10 +11,19 @@ importers:
       '@babel/parser':
         specifier: 8.0.6
         version: 8.0.6
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
     devDependencies:
+      '@notionhq/client':
+        specifier: 5.27.0
+        version: 5.27.0
       '@types/node':
         specifier: 24.19.1
         version: 24.19.1
+      notion-v4:
+        specifier: npm:@notionhq/client@4.0.2
+        version: '@notionhq/client@4.0.2'
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -37,6 +46,14 @@ packages:
   '@babel/types@8.0.6':
     resolution: {integrity: sha512-c+xgSWboV2pdwXP67BUWDVRHi2BO5Q3KwxyFVs7taVTY+fsK47/L51ZXQoV9rozHJDNHvJ4v4WEsI/IlxV2l2A==}
     engines: {node: ^22.18.0 || >=24.11.0}
+
+  '@notionhq/client@4.0.2':
+    resolution: {integrity: sha512-4pk3dm4umhjsRI0umCnJ8lCZh0TMiaMdkY0rz6FV4OqVuTsmYFV3pk+YTR5S8792ZY2Rm4lJHlLj05HQVKDuIg==}
+    engines: {node: '>=18'}
+
+  '@notionhq/client@5.27.0':
+    resolution: {integrity: sha512-JnkLtAzSDrEnvtZ8dQ5L4KO+xyL5g01xK5qmKTmhJ5KFY8LWsMyFG033vHCj0mFcsz9thAMjfcAQz/SWxiexag==}
+    engines: {node: '>=18'}
 
   '@types/node@24.19.1':
     resolution: {integrity: sha512-aS3/DG0oM05K0RIXXP+hKjinGG5IgSSVGzswZxW3O0sS3pH4/fycXundUC9XsszgKCk4gHXylTEK6hyFxVxnoQ==}
@@ -161,6 +178,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  jose@6.2.12:
+    resolution: {integrity: sha512-9NiFmJEex0sy2Dk58j2UGBSHgUs2ypF9eZSu4L6vjOX3Dp96Sw1F3uL+H+D1sx02jZZdzUT0HgvCy59CuvXcWw==}
+
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
@@ -183,6 +203,10 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 8.0.6
       '@babel/helper-validator-identifier': 8.0.6
+
+  '@notionhq/client@4.0.2': {}
+
+  '@notionhq/client@5.27.0': {}
 
   '@types/node@24.19.1':
     dependencies:
@@ -247,6 +271,8 @@ snapshots:
 
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
+
+  jose@6.2.12: {}
 
   typescript@7.0.2:
     optionalDependencies:
