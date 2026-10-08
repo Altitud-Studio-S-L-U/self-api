@@ -229,6 +229,7 @@ try {
 } catch (error) {
   // Only this credential-free, fictional fixture is diagnosed. Keep failures
   // visible before removing the disposable native service and its state.
+  process.stderr.write(`Original native acceptance failure: ${String(error.stack ?? error).slice(0, 4000)}\n`);
   if (fixture) {
     for (const filename of ['worker-service.status.json', 'worker-service.log', `${name}.err.log`, `${name}.out.log`, `${name}.wrapper.log`]) {
       try {
