@@ -377,7 +377,7 @@ export async function captureHttpSource(options: CaptureHttpSourceOptions, depen
     }
     check();
     const headers: Record<string, string> = { Accept: source.contentKind === 'json' ? 'application/json' : 'text/plain, text/markdown, text/html',
-      'Accept-Encoding': 'identity', 'User-Agent': 'plumber-local-source-observer' };
+      'Accept-Encoding': 'identity', 'User-Agent': 'keepseam-client/0.1.0' };
     if (previous?.etag) headers['If-None-Match'] = previous.etag;
     if (previous?.lastModified) headers['If-Modified-Since'] = previous.lastModified;
     if (credentials) {

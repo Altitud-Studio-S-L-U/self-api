@@ -1,21 +1,21 @@
 # Local workflow reference
 
-Start with the [README](../README.md) for prerequisites, public SDK imports and local installation. Run these examples from the repository root after building. They use fictional provider contracts and do not contact that provider. Checkout examples use `pnpm plumber`, with `--silent` when emitting JSON to suppress the package-manager banner. Installed consumers use `pnpm exec plumber` and supply their own paths.
+Start with the [README](../README.md) for prerequisites, public SDK imports and local installation. Run these examples from the repository root after building. They use fictional provider contracts and do not contact that provider. Checkout examples use `pnpm keepseam`, with `--silent` when emitting JSON to suppress the package-manager banner. Installed consumers use `pnpm exec keepseam` and supply their own paths.
 
 Set the engine and private state paths once. The state directory must be outside the consumer directory and must not contain it.
 
 PowerShell (inspection and planning on Windows):
 
 ```powershell
-$PLUMBER_ENGINE = './work/tools/oasdiff/oasdiff.exe'
-$PLUMBER_STATE = Join-Path $HOME '.plumber-local-state'
+$KEEPSEAM_ENGINE = './work/tools/oasdiff/oasdiff.exe'
+$KEEPSEAM_STATE = Join-Path $HOME '.keepseam-local-state'
 ```
 
 Bash (Linux/macOS):
 
 ```bash
-PLUMBER_ENGINE='./work/tools/oasdiff/oasdiff'
-PLUMBER_STATE="$HOME/.plumber-local-state"
+KEEPSEAM_ENGINE='./work/tools/oasdiff/oasdiff'
+KEEPSEAM_STATE="$HOME/.keepseam-local-state"
 ```
 
 Only the prepared Linux x64 Docker profile can execute consumer tests. Windows and macOS can inspect, plan and manage local evidence; unavailable execution produces a blocked result.
@@ -35,13 +35,13 @@ For ten real vendor documentation sources and a reproducible native/SDK Notion m
 - Structural breaking-change findings only. `no-breaking-changes` does not prove consumer compatibility or unchanged business semantics; every report says `consumerImpact: not-analyzed`. Additive and prose-only changes can set `contentChanged` without producing breaking findings.
 - The comparison engine disables external references, uses its own empty configuration, and receives a filtered environment. Comparison does not run consumer scripts. Engine process timeout and output limits are applied; this engine process is not a container sandbox or a hard memory limit. Consumer execution uses the separate Docker profile described below.
 - The executable path is explicitly authorized by the caller. Runtime version checking is not proof of binary authenticity: protect the installed binary and use the checksum-verifying setup command or your own trusted distribution process.
-- Reports remain local and may contain private operation names or schema descriptions. They are not Cloud messages. `plumber/protocol` exports a separate status allowlist; the optional enrolled transport below sends only that projection. Model adapters and GitHub publication require their own explicit authorization. No telemetry or runtime API proxy is included.
+- Reports remain local and may contain private operation names or schema descriptions. They are not Cloud messages. `keepseam-client/protocol` exports a separate status allowlist; the optional enrolled transport below sends only that projection. Model adapters and GitHub publication require their own explicit authorization. No telemetry or runtime API proxy is included.
 
 ## Inspect consumer usage
 
 ```sh
-pnpm --silent plumber scan fixtures/consumer --json
-pnpm --silent plumber impact fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/consumer --provider-base-url https://orders.example.invalid --engine "$PLUMBER_ENGINE" --json
+pnpm --silent keepseam scan fixtures/consumer --json
+pnpm --silent keepseam impact fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/consumer --provider-base-url https://orders.example.invalid --engine "$KEEPSEAM_ENGINE" --json
 ```
 
 The SDK equivalents are `scanConsumer(directory)` and `analyzeImpact({ basePath, revisionPath, enginePath, consumerRoot, providerBaseUrl })`. `scan` captures TS/JS syntax and package manifests without loading application modules, resolving imports, reading Babel/project configuration, installing consumer dependencies, or running scripts. The AST parser is an explicitly pinned dependency of Keepseam.
@@ -57,7 +57,7 @@ Capture is limited to 500 source/manifest files, 2,000 directory entries, 1 MiB 
 ## Preview an explicit migration
 
 ```sh
-pnpm --silent plumber plan fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/migration-consumer --provider-base-url https://orders.example.invalid --engine "$PLUMBER_ENGINE" --recipe fixtures/orders-migration.json --json
+pnpm --silent keepseam plan fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/migration-consumer --provider-base-url https://orders.example.invalid --engine "$KEEPSEAM_ENGINE" --recipe fixtures/orders-migration.json --json
 ```
 
 The SDK exposes `createMigrationPlan({ ...impactOptions, recipe })`. A recipe supplies its summary, explicit business decisions, source paths and expected hashes, and exact unique replacements. Recipes are supplied by the caller at this stage; they are not inferred automatically from a schema diff. The fictional guide in `fixtures/migration-guide.md` explains both the `total`/`amount` equivalence and the existing source of `region`.
@@ -83,9 +83,9 @@ docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3
 Use `validation-plan`, `approve`, then `validate` with identical source, recipe and selected tests. For the fictional fixture:
 
 ```sh
-pnpm --silent plumber validation-plan fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine "$PLUMBER_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --json
-pnpm plumber approve fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine "$PLUMBER_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --state "$PLUMBER_STATE"
-pnpm plumber validate fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine "$PLUMBER_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --state "$PLUMBER_STATE" --approval RECEIPT_ID
+pnpm --silent keepseam validation-plan fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine "$KEEPSEAM_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --json
+pnpm keepseam approve fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine "$KEEPSEAM_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --state "$KEEPSEAM_STATE"
+pnpm keepseam validate fixtures/orders-v1.json fixtures/orders-v2.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine "$KEEPSEAM_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --state "$KEEPSEAM_STATE" --approval RECEIPT_ID
 ```
 
 Replace `RECEIPT_ID` with the returned local approval ID. `approve` shows the before/after content, selected commands, profile and limits, then requires typing the exact request ID in an interactive terminal. There is no `--yes`, piped approval, implicit authorization, or execution during approval. A changed request must be reviewed again. The SDK exposes `prepareMigrationValidation(options)`, `approveMigrationValidation({ options, expectedRequestId, statePath, origin: 'explicit-sdk-caller' })`, and `executeMigrationValidation({ options, statePath, receiptId })`. An SDK approval represents the trusted caller's explicit intent; it does not prove a human reviewed the change.
@@ -103,10 +103,10 @@ Use a private state directory outside the consumer; neither directory may contai
 ## Persist local subscriptions and observe once
 
 ```sh
-pnpm plumber subscribe fixtures/orders-v2.json --baseline fixtures/orders-v1.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine "$PLUMBER_ENGINE" --state "$PLUMBER_STATE" --label "Fictional orders API"
-pnpm --silent plumber worker --once --state "$PLUMBER_STATE" --engine "$PLUMBER_ENGINE" --json
-pnpm --silent plumber subscriptions --state "$PLUMBER_STATE" --json
-pnpm --silent plumber jobs --state "$PLUMBER_STATE" --json
+pnpm keepseam subscribe fixtures/orders-v2.json --baseline fixtures/orders-v1.json --consumer fixtures/validation-consumer --provider-base-url https://orders.example.invalid --engine "$KEEPSEAM_ENGINE" --state "$KEEPSEAM_STATE" --label "Fictional orders API"
+pnpm --silent keepseam worker --once --state "$KEEPSEAM_STATE" --engine "$KEEPSEAM_ENGINE" --json
+pnpm --silent keepseam subscriptions --state "$KEEPSEAM_STATE" --json
+pnpm --silent keepseam jobs --state "$KEEPSEAM_STATE" --json
 ```
 
 Use `.exe` for the engine on Windows. `registerLocalSubscription(options)`, `observeOnce({ statePath, enginePath, subscriptionId? })`, `listLocalSubscriptions({ statePath })`, and `listMaintenanceJobs({ statePath })` provide the SDK equivalents. Importing the SDK does not load SQLite, open a database, create state, start polling, or execute a consumer. The engine executable remains an explicit argument each cycle rather than a command loaded from the database.
@@ -128,12 +128,12 @@ Limits are 100 subscriptions, 1,000 jobs and 1,000 observed transitions; individ
 For a subscription using `fixtures/validation-consumer`, select its current job from `jobs`, then review and authorize a specific recipe and test set:
 
 ```sh
-pnpm --silent plumber job-plan JOB_ID --state "$PLUMBER_STATE" --engine "$PLUMBER_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --json
-pnpm plumber job-approve JOB_ID --state "$PLUMBER_STATE" --engine "$PLUMBER_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs
-pnpm plumber job-queue JOB_ID --state "$PLUMBER_STATE" --engine "$PLUMBER_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --approval RECEIPT_ID
-pnpm --silent plumber run-approved --once --state "$PLUMBER_STATE" --engine "$PLUMBER_ENGINE" --json
-pnpm --silent plumber recover-approved --state "$PLUMBER_STATE" --json
-pnpm plumber executions --state "$PLUMBER_STATE"
+pnpm --silent keepseam job-plan JOB_ID --state "$KEEPSEAM_STATE" --engine "$KEEPSEAM_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --json
+pnpm keepseam job-approve JOB_ID --state "$KEEPSEAM_STATE" --engine "$KEEPSEAM_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs
+pnpm keepseam job-queue JOB_ID --state "$KEEPSEAM_STATE" --engine "$KEEPSEAM_ENGINE" --recipe fixtures/validation-recipe.json --test orders.test.mjs --approval RECEIPT_ID
+pnpm --silent keepseam run-approved --once --state "$KEEPSEAM_STATE" --engine "$KEEPSEAM_ENGINE" --json
+pnpm --silent keepseam recover-approved --state "$KEEPSEAM_STATE" --json
+pnpm keepseam executions --state "$KEEPSEAM_STATE"
 ```
 
 Replace `JOB_ID` and `RECEIPT_ID` with the returned identifiers. The SDK equivalents are `prepareJobValidation`, `approveJobValidation`, `queueJobValidation`, `runApprovedJobsOnce`, `recoverApprovedJobs`, and `listJobExecutions`. A job fixes the observed contract bytes, configured baseline, consumer digest and engine version. Planning, approval, queue admission and execution compare those against current evidence; changed source or consumer requires a fresh observation/review. Queue admission inspects an unexpired, unconsumed approval but does not consume it. The 15-minute approval deadline continues while queued; it is not renewed automatically.
@@ -157,7 +157,7 @@ This step requires a separate consumer repository committed **before** observati
 After an execution intent completes with a passing candidate, prepare a private proposal against a committed consumer repository:
 
 ```sh
-pnpm --silent plumber publication-plan INTENT_ID --state "$PLUMBER_STATE" --git /usr/bin/git --engine "$PLUMBER_ENGINE" --repository OWNER/REPO --base main --json
+pnpm --silent keepseam publication-plan INTENT_ID --state "$KEEPSEAM_STATE" --git /usr/bin/git --engine "$KEEPSEAM_ENGINE" --repository OWNER/REPO --base main --json
 ```
 
 Replace the identifiers and paths with the reviewed destination and trusted local executables. On Windows, supply the absolute path to `git.exe`. The SDK equivalent is `prepareJobPublicationCandidate({ statePath, intentId, gitPath, enginePath, repository, baseBranch })`. Git must support `--no-lazy-fetch`; an unsupported executable fails explicitly. Neither Git nor oasdiff is installed automatically.
@@ -177,9 +177,9 @@ These commands contact GitHub only with an explicit `--github` flag. They are op
 Save the `publication-plan --json` output as `candidate.json` in a private directory outside the consumer. Replace all placeholders and review the destination. The following examples assume that directory is the current working directory and the package is installed there:
 
 ```sh
-pnpm exec plumber publication-review --candidate candidate.json --author-name "YOUR COMMIT NAME" --author-email "YOUR COMMIT EMAIL" --github --json > publication-request.json
-pnpm exec plumber publication-approve --request publication-request.json --state /private/plumber-state --consumer /projects/consumer
-pnpm exec plumber publication-publish --request publication-request.json --state /private/plumber-state --consumer /projects/consumer --approval RECEIPT_ID --github --json
+pnpm exec keepseam publication-review --candidate candidate.json --author-name "YOUR COMMIT NAME" --author-email "YOUR COMMIT EMAIL" --github --json > publication-request.json
+pnpm exec keepseam publication-approve --request publication-request.json --state /private/keepseam-state --consumer /projects/consumer
+pnpm exec keepseam publication-publish --request publication-request.json --state /private/keepseam-state --consumer /projects/consumer --approval RECEIPT_ID --github --json
 ```
 
 `publication-review` performs reads to verify the private repository's immutable ID, permissions, branch, commit and tree. It grants no permission and sends no candidate source in those read requests. `publication-approve` is entirely local: it shows before/after source, PR content, author and destination, then requires the exact request ID in a terminal. The resulting permission is single-use, expires after 15 minutes and cannot be replaced by a validation receipt. JSON request files are private local artifacts; the CLI accepts at most 4 MiB per file, while the SDK's publication evidence budget is 16 MiB.
@@ -192,7 +192,7 @@ The SDK equivalents are:
 import {
   createGitHubPublicationAdapter, preparePublicationRequest,
   approvePublicationRequest, publishPublication, reconcilePublication,
-} from 'plumber';
+} from 'keepseam-client';
 ```
 
 Use `preparePublicationRequest({ candidate, adapter, author })`, review the complete returned request, then `approvePublicationRequest({ request, expectedRequestId: request.id, statePath, consumerRoot, origin: 'explicit-sdk-caller' })`. Calling that approval method is an explicit customer policy decision; do not call it automatically on untrusted Cloud or model input. `publishPublication({ request, receiptId: approval.id, statePath, consumerRoot, adapter })` requires the same request and adapter identity. `validatePublicationRequest(unknown)` validates a serialized request without authorizing it or contacting GitHub.
@@ -200,7 +200,7 @@ Use `preparePublicationRequest({ candidate, adapter, author })`, review the comp
 Every external write phase has a durable local intent recorded first. A timeout, lost response or mismatched result produces `uncertain`, never an automatic retry. Reconcile the original request and receipt:
 
 ```sh
-pnpm exec plumber publication-reconcile --request publication-request.json --state /private/plumber-state --consumer /projects/consumer --approval RECEIPT_ID --github --json
+pnpm exec keepseam publication-reconcile --request publication-request.json --state /private/keepseam-state --consumer /projects/consumer --approval RECEIPT_ID --github --json
 ```
 
 Reconciliation reads GitHub and the journal. It recognizes an existing matching open, closed or merged PR without recreating it, and preserves human commits. A missing PR after an uncertain write does not prove that the write will never complete. Missing durable commit identity also remains uncertain. Reconciliation does not resume remote writes; retain the evidence for operator review. Publication exits `0` for confirmed publication, `1` for a conflict and `2` for uncertainty or an error. A simulated adapter labels its results `mode: simulation`; this is not evidence of a live PR.
@@ -212,10 +212,10 @@ The first transport profile supports private, active, writable, non-fork GitHub.
 MCP input is an explicit normalized capture, not a URL or a request to invoke tools. Use the complete examples under `fixtures/mcp/` for the file shape: `schemaVersion`, server/protocol/auth-context identity, capabilities, capture time, completeness, pagination and tools. Keep auth-context IDs opaque; never include access tokens. Partial/failed captures or changed server, authorization, protocol or capabilities produce `inconclusive`, without interpreting absent tools as removals.
 
 ```sh
-pnpm --silent plumber mcp-snapshot fixtures/mcp/catalog-before.json --json
-pnpm --silent plumber mcp-compare fixtures/mcp/catalog-before.json fixtures/mcp/catalog-after.json --json
-pnpm --silent plumber schema-compare /contracts/before.json /contracts/after.json --direction output --json
-pnpm --silent plumber example-compare /samples/before.json /samples/after.json --json
+pnpm --silent keepseam mcp-snapshot fixtures/mcp/catalog-before.json --json
+pnpm --silent keepseam mcp-compare fixtures/mcp/catalog-before.json fixtures/mcp/catalog-after.json --json
+pnpm --silent keepseam schema-compare /contracts/before.json /contracts/after.json --direction output --json
+pnpm --silent keepseam example-compare /samples/before.json /samples/after.json --json
 ```
 
 The shared JSON Schema profile supports a single type, object properties/required/boolean `additionalProperties`, arrays/items and scalar enum/const values. References, combinators, type unions and additional constraints outside the profile are rejected. Input comparison preserves old accepted inputs; output comparison requires new outputs to satisfy the old contract. An annotation change requires review, even when the structural profile is compatible. Absent MCP output contracts remain a limitation. Limits are 4 MiB, depth 64 and 20,000 inspected schema nodes; MCP has at most 1,000 tools.
@@ -227,10 +227,10 @@ MCP/schema/example JSON readers reject numeric precision loss before parsing: nu
 Persist observations using a dedicated state directory:
 
 ```sh
-pnpm plumber source-subscribe fixtures/mcp/catalog-after.json --kind mcp --baseline fixtures/mcp/catalog-before.json --state "$PLUMBER_STATE"
-pnpm --silent plumber source-observe --once --state "$PLUMBER_STATE" --json
-pnpm --silent plumber source-subscriptions --state "$PLUMBER_STATE" --json
-pnpm --silent plumber source-history --state "$PLUMBER_STATE" --json
+pnpm keepseam source-subscribe fixtures/mcp/catalog-after.json --kind mcp --baseline fixtures/mcp/catalog-before.json --state "$KEEPSEAM_STATE"
+pnpm --silent keepseam source-observe --once --state "$KEEPSEAM_STATE" --json
+pnpm --silent keepseam source-subscriptions --state "$KEEPSEAM_STATE" --json
+pnpm --silent keepseam source-history --state "$KEEPSEAM_STATE" --json
 ```
 
 `source-subscribe` also supports `json-schema` with a required `--direction`, `json-example`, and `documentation` for `.md`/`.txt` files. Documentation can explicitly enable `--normalize-line-endings`; no other presentation filtering is implied. Text is never rendered, links are not fetched, and examples are never executed. Changed prose is review evidence, not proof of a deployed breaking change.
@@ -246,7 +246,7 @@ To inspect a consumer's MCP calls, supply a local JSON array of explicit binding
 ```
 
 ```sh
-pnpm --silent plumber mcp-impact fixtures/mcp/catalog-before.json fixtures/mcp/catalog-after.json --consumer /projects/mcp-consumer --bindings /private/mcp-bindings.json --json
+pnpm --silent keepseam mcp-impact fixtures/mcp/catalog-before.json fixtures/mcp/catalog-after.json --consumer /projects/mcp-consumer --bindings /private/mcp-bindings.json --json
 ```
 
 `analyzeMcpImpact({basePath, revisionPath, consumerRoot, bindings})` returns captured file digests, calls, input field names, direct reads below `response.structuredContent`, and associations to changed tools. A binding is an operator declaration, not proof of a live connection. Each binding names one exact relative file and receiver. Unbound clients, shadowing, reassignment, dynamic tool names/arguments, aliases and indirect parser flows remain unresolved. Inconsistent server/protocol/authorization/capability context or incomplete catalogs prevent confident associations. No consumer imports or MCP tools execute, no recipe is generated, and the result always requires review. CLI exit `1` includes breaking/inconclusive contracts, unresolved calls, inspection issues and unmapped changes; `0` does not establish application compatibility.
@@ -260,11 +260,11 @@ Create a private local policy file using the provider's actual URL and exact per
 ```
 
 ```sh
-pnpm plumber http-subscribe /private/source-policy.json --baseline /contracts/base.json --consumer /projects/consumer --provider-base-url https://provider.example.invalid --engine "$PLUMBER_ENGINE" --state "$PLUMBER_STATE"
-pnpm plumber worker --once --state "$PLUMBER_STATE" --engine "$PLUMBER_ENGINE" --http
+pnpm keepseam http-subscribe /private/source-policy.json --baseline /contracts/base.json --consumer /projects/consumer --provider-base-url https://provider.example.invalid --engine "$KEEPSEAM_ENGINE" --state "$KEEPSEAM_STATE"
+pnpm keepseam worker --once --state "$KEEPSEAM_STATE" --engine "$KEEPSEAM_ENGINE" --http
 ```
 
-For normalized MCP catalogs, JSON schemas/examples or raw documentation, use `source-http-subscribe /private/source-policy.json --kind KIND --baseline LOCAL_FILE --state "$PLUMBER_STATE"`, then `source-observe --once --state "$PLUMBER_STATE" --http`. JSON schemas also require `--direction input|output`; documentation requires `contentKind: "text"` and a local `.md`/`.txt` baseline. Text and HTML are retained as text without rendering, links or execution. Fetching a JSON catalog is not an MCP transport connection or automatic `tools/list` pagination.
+For normalized MCP catalogs, JSON schemas/examples or raw documentation, use `source-http-subscribe /private/source-policy.json --kind KIND --baseline LOCAL_FILE --state "$KEEPSEAM_STATE"`, then `source-observe --once --state "$KEEPSEAM_STATE" --http`. JSON schemas also require `--direction input|output`; documentation requires `contentKind: "text"` and a local `.md`/`.txt` baseline. Text and HTML are retained as text without rendering, links or execution. Fetching a JSON catalog is not an MCP transport connection or automatic `tools/list` pagination.
 
 The SDK equivalents are `prepareHttpSource`, `registerHttpSubscription` for OpenAPI, `registerHttpSourceSubscription` for the other profiles, and observation with `allowHttp: true`. Registration is offline. A registered remote source observed without explicit HTTP enablement fails with `http-not-enabled`; it cannot be mistaken for a fresh check. `captureHttpSource` is also available for a single bounded capture without persistence.
 
@@ -308,7 +308,7 @@ Optional boundary metadata annotates an existing function without introducing a 
 
 ```js
 import { readFile } from 'node:fs/promises';
-import { defineIntegrationBoundary, getIntegrationBoundary } from 'plumber';
+import { defineIntegrationBoundary, getIntegrationBoundary } from 'keepseam-client';
 
 const manifest = JSON.parse(await readFile('fixtures/integration-manifest.json', 'utf8'));
 function parseOrder(response) {
@@ -397,7 +397,7 @@ Expect the original v2 tests to fail, the candidate's **25 cases** to pass, and 
 ## Run the worker explicitly
 
 ```sh
-pnpm plumber worker-loop --state "$PLUMBER_STATE" --engine "$PLUMBER_ENGINE" --cycles 10 --interval-ms 60000
+pnpm keepseam worker-loop --state "$KEEPSEAM_STATE" --engine "$KEEPSEAM_ENGINE" --cycles 10 --interval-ms 60000
 ```
 
 The finite loop defaults to one cycle and a 60-second interval, allows 1–1,000 cycles and 1-second–1-hour delays, and never starts on import. It observes the OpenAPI job workflow. Add `--http` to enable registered public HTTPS sources, or pass explicit credentials through the SDK. Add `--run-approved` only to process already queued, authorized validation jobs; it grants no new approval. Non-OpenAPI source observations use their explicit `source-observe --once` command or SDK function. For persistent observation of both profiles under a native OS manager, use the [worker service operation guide](worker-service.md).
@@ -407,8 +407,8 @@ The finite loop defaults to one cycle and a 60-second interval, allows 1–1,000
 ## Inspect dependency and advisory evidence
 
 ```sh
-pnpm --silent plumber deps-scan /projects/consumer/package-lock.json --json
-pnpm --silent plumber deps-audit /projects/consumer/package-lock.json --advisories /private/advisories.json --json
+pnpm --silent keepseam deps-scan /projects/consumer/package-lock.json --json
+pnpm --silent keepseam deps-audit /projects/consumer/package-lock.json --advisories /private/advisories.json --json
 ```
 
 The initial dependency profile reads npm `package-lock` v2/v3, with direct, nested, scoped and transitive records. It separates declared selectors from recorded versions; the lockfile does not prove installed files or deployment. Unsupported links, aliases, sources and ambiguous versions remain unresolved. Registry URLs, credentials, integrity values and raw selectors are excluded from output. No package scripts, installations or registry requests run.
@@ -423,10 +423,10 @@ Supply an explicit advisory catalog, for example this **fictional** entry:
 
 ## Share bounded status, not local artifacts
 
-Import the separately versioned status contract from `plumber/protocol`:
+Import the separately versioned status contract from `keepseam-client/protocol`:
 
 ```ts
-import { encodeCloudStatusEvent, decodeCloudStatusEvent, negotiateCloudProtocol } from 'plumber/protocol';
+import { encodeCloudStatusEvent, decodeCloudStatusEvent, negotiateCloudProtocol } from 'keepseam-client/protocol';
 ```
 
 Version 1 accepts exact runner/maintenance event shapes, opaque SHA-256-form identifiers, canonical timestamps, bounded counts, enumerated states and reasons. Unknown fields, source text, logs, schemas, URLs, commands, prompts and arbitrary labels are rejected. Messages are limited to 4 KiB. `deriveCloudIdentifier(localId, installationId)` scopes already opaque IDs to an installation; hashing a predictable path does not make it confidential.
@@ -437,7 +437,7 @@ The encoder is an allowlist, not a redactor or an authentication system. It neit
 
 This is an optional SDK workflow. It requires a running Keepseam Cloud, a customer organization/project and a current owner/admin with a registered passkey. A platform employee grant alone cannot enroll a customer worker. The standalone local worker continues to operate without Cloud.
 
-Use the built checkout or the private local archive described in the [README](../README.md#install-into-another-local-project). There is no public package release or generic `plumber cloud-*` command. Save the following example scripts under this checkout's ignored `work/` directory, or in your own ESM application with the private package installed. They import the public `plumber` entry points. Keep identity, credentials and both state directories on customer-controlled storage outside every consumer checkout. On POSIX, use owner-only directory/file permissions; on Windows, verify that the chosen directory's inherited ACL grants access only to the intended account. The example file modes do not change existing directory permissions or Windows ACLs.
+Use the built checkout or the private local archive described in the [README](../README.md#install-into-another-local-project). There is no public package release or generic `keepseam cloud-*` command. Save the following example scripts under this checkout's ignored `work/` directory, or in your own ESM application with the private package installed. They import the public `keepseam-client` entry points. Keep identity, credentials and both state directories on customer-controlled storage outside every consumer checkout. On POSIX, use owner-only directory/file permissions; on Windows, verify that the chosen directory's inherited ACL grants access only to the intended account. The example file modes do not change existing directory permissions or Windows ACLs.
 
 ### Generate the local identity
 
@@ -456,7 +456,7 @@ Save as `work/generate-cloud-identity.mjs`, then run `node work/generate-cloud-i
 ```js
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { generateCloudWorkerIdentity } from 'plumber';
+import { generateCloudWorkerIdentity } from 'keepseam-client';
 
 const directory = process.env.KEEPSEAM_CONNECTION_DIR;
 if (!directory) throw new Error('Select a private connection directory.');
@@ -488,7 +488,7 @@ Save as `work/assemble-cloud-credentials.mjs`, then run `node work/assemble-clou
 ```js
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createCloudTransport } from 'plumber';
+import { createCloudTransport } from 'keepseam-client';
 
 const directory = process.env.KEEPSEAM_CONNECTION_DIR;
 if (!directory) throw new Error('Select the existing private connection directory.');
@@ -513,12 +513,12 @@ The example permits HTTP only for the explicit local development origin `http://
 
 ### Bind only selected local integrations
 
-Use `pnpm --silent plumber subscriptions --state "$PLUMBER_STATE" --json` locally to select an existing subscription. Its 64-character local ID is distinct from the Cloud integration UUID. Derive the public binding ID with the approved installation:
+Use `pnpm --silent keepseam subscriptions --state "$KEEPSEAM_STATE" --json` locally to select an existing subscription. Its 64-character local ID is distinct from the Cloud integration UUID. Derive the public binding ID with the approved installation:
 
 ```js
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { deriveCloudIdentifier } from 'plumber/protocol';
+import { deriveCloudIdentifier } from 'keepseam-client/protocol';
 
 const directory = process.env.KEEPSEAM_CONNECTION_DIR;
 const localSubscriptionId = process.env.KEEPSEAM_LOCAL_SUBSCRIPTION_ID;
@@ -536,7 +536,7 @@ Save the following as `work/sync-cloud.mjs`. Set `KEEPSEAM_LOCAL_STATE` to the e
 ```js
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { syncWorkerToCloud } from 'plumber';
+import { syncWorkerToCloud } from 'keepseam-client';
 
 const directory = process.env.KEEPSEAM_CONNECTION_DIR;
 const statePath = process.env.KEEPSEAM_LOCAL_STATE;

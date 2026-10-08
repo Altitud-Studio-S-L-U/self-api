@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { observeOnce, prepareJobValidation, approveJobValidation, queueJobValidation, runApprovedJobsOnce } from 'plumber';
+import { observeOnce, prepareJobValidation, approveJobValidation, queueJobValidation, runApprovedJobsOnce } from 'keepseam-client';
 import { seed, selectVersion, registerNotion, migrationRecipe, enginePath } from '../dev/real-apis/environment.mjs';
 
 test('the real local worker validates the reviewed Notion exercise in isolated baseline and candidate containers', { timeout: 150_000 }, async t => {

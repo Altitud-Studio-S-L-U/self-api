@@ -1,6 +1,6 @@
 # Operate a persistent worker
 
-Keepseam Client `0.0.0` is a private package with the existing `plumber` package and command names. The foreground `worker-service` runner observes registered subscriptions continuously. The operating system starts it at boot and restarts it after a process failure: systemd on Linux, launchd on macOS, and Windows Service Control Manager through WinSW on Windows. Importing the SDK or rendering a manifest installs nothing.
+Keepseam Client `0.1.0` is the private `keepseam-client` package with the `keepseam` command. The foreground `worker-service` runner observes registered subscriptions continuously. The operating system starts it at boot and restarts it after a process failure: systemd on Linux, launchd on macOS, and Windows Service Control Manager through WinSW on Windows. Importing the SDK or rendering a manifest installs nothing.
 
 The service proposes review jobs and optionally synchronizes approved metadata to Cloud. It does **not** approve, execute or publish changes, load a model, install SDK updates, run consumer scripts or download executables. Validation and publication retain their separate local approval flows.
 
@@ -16,7 +16,7 @@ The Windows manifest uses the built-in **LocalService** identity without a passw
 Resolve the installed CLI through its public export, rather than coupling your application to a build directory:
 
 ```sh
-node --input-type=module -e "import { fileURLToPath } from 'node:url'; console.log(fileURLToPath(import.meta.resolve('plumber/cli')))"
+node --input-type=module -e "import { fileURLToPath } from 'node:url'; console.log(fileURLToPath(import.meta.resolve('keepseam-client/cli')))"
 node -p "process.execPath"
 ```
 
@@ -71,9 +71,9 @@ POSIX state/credentials must have no group or other access (`0700` directories, 
 ## Run and inspect
 
 ```sh
-plumber worker-service run --config /etc/keepseam/worker.json
-plumber worker-service status --config /etc/keepseam/worker.json
-plumber worker-service stop --config /etc/keepseam/worker.json
+keepseam worker-service run --config /etc/keepseam/worker.json
+keepseam worker-service status --config /etc/keepseam/worker.json
+keepseam worker-service stop --config /etc/keepseam/worker.json
 ```
 
 `run` stays in the foreground until SIGINT, SIGTERM or a private run-specific stop request. `status` prints `{ status, liveness }`; it is a durable snapshot, **not** evidence that its PID is still alive. Use the native manager for authoritative process status. `stop` writes a request for the observed random `runId`, checks it at most one second later, cancels in-flight HTTP work and drains the current observer/sync. A marker for a crashed process never stops its replacement. Run these local commands as the service identity. With Windows LocalService, use SCM/WinSW management commands from an administrator session; the wrapper requests Ctrl+C/SIGINT and bounds the shutdown wait.
@@ -91,7 +91,7 @@ This is process supervision, **not a hung-process watchdog**. A slow batch delay
 Create the non-root `keepseam` account using the host's account-management procedure. Put state in `/var/lib/keepseam`, binaries in `/opt/keepseam` and configuration in `/etc/keepseam`; the generated sandbox deliberately hides home directories and gives private temporary storage. Consumer sources must be readable outside those hidden locations.
 
 ```sh
-plumber worker-service render --config /etc/keepseam/worker.json \
+keepseam worker-service render --config /etc/keepseam/worker.json \
   --target systemd --node /usr/bin/node --cli /opt/keepseam/installed-cli.js \
   --user keepseam > keepseam.service
 sudo systemd-analyze verify keepseam.service
@@ -110,7 +110,7 @@ Stop with `sudo systemctl stop keepseam`; restart after a reviewed package/confi
 Provision a dedicated non-root account and stable readable installation, configuration and private state directories using the organization's macOS administration procedure. Use a system LaunchDaemon when observation must continue without a logged-in desktop user.
 
 ```sh
-plumber worker-service render --config /etc/keepseam/worker.json \
+keepseam worker-service render --config /etc/keepseam/worker.json \
   --target launchd --node /usr/local/bin/node --cli /opt/keepseam/installed-cli.js \
   --user keepseam > com.keepseam.keepseam.plist
 plutil -lint com.keepseam.keepseam.plist
@@ -130,7 +130,7 @@ Provision `C:\ProgramData\Keepseam\state` with LocalService (`S-1-5-19`), SYSTEM
 Render in PowerShell, preserving UTF-8:
 
 ```powershell
-plumber worker-service render --config 'C:\ProgramData\Keepseam\worker.json' `
+keepseam worker-service render --config 'C:\ProgramData\Keepseam\worker.json' `
   --target windows --node 'C:\Program Files\nodejs\node.exe' `
   --cli 'C:\Program Files\Keepseam\installed-cli.js' |
   Set-Content -LiteralPath 'C:\Program Files\Keepseam\keepseam.xml' -Encoding utf8

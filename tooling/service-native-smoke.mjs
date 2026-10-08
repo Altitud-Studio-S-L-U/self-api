@@ -30,6 +30,7 @@ let installed = false;
 let directoryCreated = false;
 let manifestPath;
 let wrapper;
+let fixture;
 const started = Date.now();
 async function until(predicate, message, timeout = 90_000) {
   const deadline = Date.now() + timeout;
@@ -63,7 +64,7 @@ try {
   await cp(join(repository, 'dist'), join(directory, 'dist'), { recursive: true });
   await cp(join(repository, 'node_modules'), join(directory, 'node_modules'), { recursive: true, verbatimSymlinks: true });
   await cp(join(repository, 'package.json'), join(directory, 'package.json'));
-  const fixture = await createServiceFixture(join(directory, 'fixture'));
+  fixture = await createServiceFixture(join(directory, 'fixture'));
   const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
   if (target === 'windows') {
     run('icacls.exe', [fixture.statePath, '/grant:r', '*S-1-5-19:(OI)(CI)F', '/T']);
@@ -141,6 +142,19 @@ try {
   await stop();
   assert.equal((await status()).state, 'stopped');
   process.stdout.write(`Native ${target}: real observation, crash recovery, graceful stop and explicit restart passed (${Math.round((Date.now() - started) / 1000)}s).\n`);
+} catch (error) {
+  // Only this credential-free, fictional fixture is diagnosed. Keep failures
+  // visible before removing the disposable native service and its state.
+  if (fixture) {
+    for (const filename of ['worker-service.status.json', 'worker-service.log', `${name}.err.log`, `${name}.out.log`, `${name}.wrapper.log`]) {
+      try {
+        const contents = await readFile(join(fixture.statePath, filename), 'utf8');
+        process.stderr.write(`${filename}:\n${contents.slice(-6000)}\n`);
+      } catch (readError) { if (readError.code !== 'ENOENT') process.stderr.write(`${filename}: ${readError.code}\n`); }
+    }
+    if (target === 'windows' && wrapper) process.stderr.write(run(wrapper, ['status'], true));
+  }
+  throw error;
 } finally {
   assertOwned();
   if (target === 'systemd' && installed) {

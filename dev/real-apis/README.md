@@ -1,6 +1,6 @@
 # Real API maintenance laboratory
 
-This application uses the public Keepseam SDK (`import … from 'plumber'`), its persistent worker and its approval/validation flow. Ten official public sources are fetched through the normal bounded HTTPS observer. Downloaded documents and worker evidence stay in ignored `work/real-apis`; they are never executed or sent to Cloud.
+This application uses the public Keepseam SDK (`import … from 'keepseam-client'`), its persistent worker and its approval/validation flow. Ten official public sources are fetched through the normal bounded HTTPS observer. Downloaded documents and worker evidence stay in ignored `work/real-apis`; they are never executed or sent to Cloud.
 
 Provider operations use a deliberately closed, simulated transport. No provider API keys, payments, orders, uploads or real messages are involved. The Notion SDK versions are genuine, pinned development dependencies: `4.0.2` and `5.27.0` (MIT, Node >=18). They are not runtime dependencies of the distributed Keepseam client.
 

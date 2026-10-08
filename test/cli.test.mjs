@@ -54,7 +54,7 @@ test('the built CLI shows help without requiring an engine', () => {
   const result = invoke(['--help']);
   assert.equal(result.status, 0);
   assert.equal(result.stderr, '');
-  assert.match(result.stdout, /plumber compare <base\.json> <revision\.json>/u);
+  assert.match(result.stdout, /keepseam compare <base\.json> <revision\.json>/u);
   assert.match(result.stdout, /consumer impact is not analyzed/u);
 });
 

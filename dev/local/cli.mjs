@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { registerLocalSubscription, observeOnce, runWorkerLoop, listMaintenanceJobs, prepareJobValidation,
-  approveJobValidation, queueJobValidation, runApprovedJobsOnce, listJobExecutions } from 'plumber';
+  approveJobValidation, queueJobValidation, runApprovedJobsOnce, listJobExecutions } from 'keepseam-client';
 import { seedDevelopment, selectProviderVersion, fixtureRoot, repositoryRoot } from './environment.mjs';
 
 const [command, argument, requestId, ...extra] = process.argv.slice(2);

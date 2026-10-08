@@ -5,8 +5,8 @@ import { createServer } from 'node:http';
 import { mkdir,mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
 import { join,relative,isAbsolute,resolve } from 'node:path';
 import { importJWK,jwtVerify,calculateJwkThumbprint } from 'jose';
-import { generateCloudWorkerIdentity,createCloudTransport,syncWorkerToCloud,registerLocalSubscription,observeOnce,listMaintenanceJobs } from 'plumber';
-import { deriveCloudIdentifier } from 'plumber/protocol';
+import { generateCloudWorkerIdentity,createCloudTransport,syncWorkerToCloud,registerLocalSubscription,observeOnce,listMaintenanceJobs } from 'keepseam-client';
+import { deriveCloudIdentifier } from 'keepseam-client/protocol';
 import { openWorkerStore } from '../dist/worker-store.js';
 
 const opaque=()=>randomBytes(32).toString('hex');

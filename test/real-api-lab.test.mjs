@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { Client as LegacyNotion } from 'notion-v4';
 import { Client as ModernNotion } from '@notionhq/client';
-import { scanConsumer, defineIntegrationBoundary, getIntegrationBoundary, createMigrationPlan, observeOnce, listMaintenanceJobs } from 'plumber';
+import { scanConsumer, defineIntegrationBoundary, getIntegrationBoundary, createMigrationPlan, observeOnce, listMaintenanceJobs } from 'keepseam-client';
 import { providers, providerManifest } from '../dev/real-apis/catalog.mjs';
 import { seed, selectVersion, migrationRecipe, registerNotion, enginePath } from '../dev/real-apis/environment.mjs';
 import { fixtureContext, pageResponse, simulatedNotion } from '../dev/real-apis/server.mjs';

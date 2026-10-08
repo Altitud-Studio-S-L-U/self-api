@@ -36,7 +36,7 @@ function run(args, cwd, timeout = 60_000) {
 
 try {
   await mkdir(consumer);
-  const packed = run([pnpmPath, 'pack', '--out', join(directory, 'plumber.tgz'), '--json'], root);
+  const packed = run([pnpmPath, 'pack', '--out', join(directory, 'keepseam-client.tgz'), '--json'], root);
   // pnpm places the JSON manifest after any stdout from our prepack build.
   const packageContents = JSON.parse(packed.stdout.slice(packed.stdout.lastIndexOf('\n{') + 1));
   assert.ok(Array.isArray(packageContents.files) && packageContents.files.length > 0);
@@ -46,11 +46,11 @@ try {
     `Unexpected packaged file: ${path}`);
   }
   await writeFile(join(consumer, 'package.json'), JSON.stringify({
-    name: 'plumber-package-consumer-fixture',
+    name: 'keepseam-package-consumer-fixture',
     private: true,
     type: 'module',
     packageManager: manifest.packageManager,
-    dependencies: { plumber: 'file:../plumber.tgz' },
+    dependencies: { 'keepseam-client': 'file:../keepseam-client.tgz' },
     devDependencies: {
       typescript: manifest.devDependencies.typescript,
       '@types/node': manifest.devDependencies['@types/node'],
@@ -65,15 +65,15 @@ import assert from 'node:assert/strict';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compareOpenApi, compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest } from 'plumber';
-import { runCli } from 'plumber/cli';
-import { negotiateCloudProtocol, encodeCloudStatusEvent } from 'plumber/protocol';
+import { compareOpenApi, compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest } from 'keepseam-client';
+import { runCli } from 'keepseam-client/cli';
+import { negotiateCloudProtocol, encodeCloudStatusEvent } from 'keepseam-client/protocol';
 
 for (const api of [compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, encodeCloudStatusEvent, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest, runCli]) assert.equal(typeof api, 'function');
 assert.deepEqual(negotiateCloudProtocol([1]), { status: 'compatible', version: 1 });
 
 const installed = await realpath(join(import.meta.dirname, 'node_modules'));
-const entry = await realpath(fileURLToPath(import.meta.resolve('plumber')));
+const entry = await realpath(fileURLToPath(import.meta.resolve('keepseam-client')));
 const location = relative(installed, entry);
 assert.ok(location && !isAbsolute(location) && location !== '..' && !location.startsWith('..' + sep),
   'The SDK must resolve from the installed consumer package.');
@@ -85,13 +85,13 @@ const report = await compareOpenApi({
 assert.equal(report.status, 'breaking-changes');
 assert.ok(report.changes.some(change => change.id.includes('required') && change.text.includes('region')));
 assert.ok(report.changes.some(change => change.id.includes('property') && change.text.includes('total')));
-for (const path of ['plumber/dist/index.js', 'plumber/dist/compare.js', 'plumber/package.json']) {
+for (const path of ['keepseam-client/dist/index.js', 'keepseam-client/dist/compare.js', 'keepseam-client/package.json']) {
   await assert.rejects(import(path), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
 `);
   await writeFile(join(consumer, 'use-types.ts'), `
-import { compareOpenApi, type CompareOptions, type ComparisonReport, type GitPublicationAdapter, type ModelProposalAdapter, type SourceSubscriptionOptions, type HttpSourcePolicy, type McpImpactOptions } from 'plumber';
-import { validateCloudStatusEvent, type CloudStatusEvent } from 'plumber/protocol';
+import { compareOpenApi, type CompareOptions, type ComparisonReport, type GitPublicationAdapter, type ModelProposalAdapter, type SourceSubscriptionOptions, type HttpSourcePolicy, type McpImpactOptions } from 'keepseam-client';
+import { validateCloudStatusEvent, type CloudStatusEvent } from 'keepseam-client/protocol';
 
 const compare: (options: CompareOptions) => Promise<ComparisonReport> = compareOpenApi;
 const options: CompareOptions = { basePath: 'base.json', revisionPath: 'revision.json', enginePath: 'oasdiff' };
@@ -120,9 +120,9 @@ void validateEvent;
   ], consumer);
   assert.equal(runtime.stdout, '', 'Importing and using the SDK must not print to stdout.');
   assert.equal(runtime.stderr, '', 'Importing and using the SDK must not emit warnings.');
-  const cli = run([pnpmPath, 'exec', 'plumber', '--help'], consumer);
+  const cli = run([pnpmPath, 'exec', 'keepseam', '--help'], consumer);
   assert.equal(cli.stderr, '');
-  assert.match(cli.stdout, /plumber compare <base\.json> <revision\.json>/u);
+  assert.match(cli.stdout, /keepseam compare <base\.json> <revision\.json>/u);
   process.stdout.write('Packed package passed: public SDK import, NodeNext types, installed CLI, private subpaths, and package contents.\n');
 } finally {
   const actualWork = await realpath(work);

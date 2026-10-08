@@ -31,7 +31,7 @@ async function readDelivery() {
 }
 
 function renderStatus(delivery) {
-  const lines = ['Plumber development', ''];
+  const lines = ['Keepseam development', ''];
   for (const [index, item] of delivery.items.entries()) {
     lines.push(`${index + 1}. [${item.status}] ${item.title}`);
   }

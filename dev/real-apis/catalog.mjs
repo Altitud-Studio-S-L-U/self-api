@@ -1,4 +1,4 @@
-import { normalizeIntegrationManifest } from 'plumber';
+import { normalizeIntegrationManifest } from 'keepseam-client';
 
 // Public documentation is real. Operations in this lab always use a simulated transport.
 export const providers = Object.freeze([

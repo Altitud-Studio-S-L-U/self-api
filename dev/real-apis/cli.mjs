@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { observeOnce, observeSourcesOnce, listMaintenanceJobs, listSourceSubscriptions, prepareJobValidation,
-  approveJobValidation, queueJobValidation, runApprovedJobsOnce, listJobExecutions, CloudConnectionError } from 'plumber';
+  approveJobValidation, queueJobValidation, runApprovedJobsOnce, listJobExecutions, CloudConnectionError } from 'keepseam-client';
 import { providers } from './catalog.mjs';
 import { seed, selectVersion, registerNotion, migrationRecipe, fetchDocumentation, inventory, enginePath } from './environment.mjs';
 
@@ -25,7 +25,7 @@ when Cloud is unavailable; a local observation failure stops this development su
 `;
 
 async function sync(paths, credentialPath) {
-  const { syncWorkerToCloud } = await import('plumber');
+  const { syncWorkerToCloud } = await import('keepseam-client');
   const credentials = JSON.parse(await readFile(resolve(credentialPath), 'utf8'));
   const subscription = await registerNotion(paths);
   return syncWorkerToCloud({ statePath: paths.state, cloudStatePath: join(paths.root, 'cloud'), credentials, integrationIds: [subscription.id] });
