@@ -72,4 +72,20 @@ jobs:
       - run: pnpm build
       - run: node tooling/service-native-smoke.mjs
       - if: runner.os == 'Linux'
-        run: node tooling/service-native-smoke.mjs --user
+        run: node tooling/service-native-smoke.mjs --user --expect-namespace-denial
+  user-supervision:
+    name: user service (Ubuntu 22.04)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: node tooling/service-native-smoke.mjs --user

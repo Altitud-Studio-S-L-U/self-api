@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { cp, mkdir, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { basename, join, relative, resolve, sep } from 'node:path';
@@ -18,7 +18,9 @@ const name = `keepseamci${randomBytes(6).toString('hex')}`;
 const target = ({ win32: 'windows', linux: 'systemd', darwin: 'launchd' })[process.platform];
 assert(target, 'Unsupported native supervisor');
 const userScope = process.argv[2] === '--user';
-assert.equal(process.argv.length, userScope ? 3 : 2, 'Only the explicit --user mode is supported');
+const expectNamespaceDenial = process.argv[3] === '--expect-namespace-denial';
+assert.equal(process.argv.length, expectNamespaceDenial ? 4 : userScope ? 3 : 2, 'Unsupported native acceptance arguments');
+assert(!expectNamespaceDenial || userScope, 'Namespace rejection requires explicit user scope');
 assert(!userScope || target === 'systemd', 'User scope is supported only by systemd');
 assert(!userScope || process.getuid() !== 0, 'The user manager must be non-root');
 const directory = target === 'systemd' && !userScope ? `/opt/${name}` : join(repository, 'work', name);
@@ -136,68 +138,94 @@ try {
     wrapper = join(directory, `${name}.exe`); await writeFile(wrapper, bytes, { flag: 'wx' });
     run(wrapper, ['install']); installed = true;
   }
-  // A stop issued before the application has produced its first status must
-  // still return through the native manager, rather than wait on a missing PID.
-  await start();
-  await stop();
-  await start();
-  const first = await running();
-  const initial = (await listSourceSubscriptions({ statePath: fixture.statePath })).find(item => item.id === fixture.subscriptionId);
-  assert(initial?.lastSucceededAt && initial.lastError === null, 'The supervisor must run the real source observer');
-  assert(Number.isSafeInteger(first.pid) && first.pid > 0 && first.pid !== process.pid);
-  if (userScope) {
-    const sourceMount = run('findmnt', ['--task', String(first.pid), '--target', fixture.sourcePath, '--noheadings', '--output', 'OPTIONS']).trim();
-    const stateMount = run('findmnt', ['--task', String(first.pid), '--target', fixture.statePath, '--noheadings', '--output', 'OPTIONS']).trim();
-    if (!sourceMount.split(',').includes('ro') || !stateMount.split(',').includes('rw')) {
-      const mounts = (await readFile(`/proc/${first.pid}/mountinfo`, 'utf8')).split('\n').filter(line => {
-        const target = line.split(' ')[4];
-        return target && (target === '/' || fixture.sourcePath.startsWith(`${target}/`) || fixture.statePath === target || fixture.statePath.startsWith(`${target}/`));
-      });
-      process.stderr.write(`${JSON.stringify({ sourceMount, stateMount, mounts,
-        workerNamespace: await readlink(`/proc/${first.pid}/ns/mnt`), testNamespace: await readlink('/proc/self/ns/mnt') })}\n`);
-      process.stderr.write(systemctl(['show', `${name}.service`, '--property=ProtectHome,ProtectSystem,PrivateUsers,ReadWritePaths']));
-      process.stderr.write(run('findmnt', ['--version']));
+  if (expectNamespaceDenial) {
+    assert.match(await readFile('/etc/os-release', 'utf8'), /^VERSION_ID="24\.04"$/m, 'Rejection acceptance targets the restricted Ubuntu 24.04 image');
+    assert.equal(run('sysctl', ['--values', 'kernel.apparmor_restrict_unprivileged_userns']).trim(), '1');
+    const result = spawnSync('systemctl', ['--user', 'start', `${name}.service`], {
+      env: environment, encoding: 'utf8', timeout: 200_000, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 1, 'The restricted manager must refuse startup');
+    const properties = Object.fromEntries(systemctl(['show', `${name}.service`, '--property=MainPID,ExecMainStatus,Result'])
+      .trim().split('\n').map(line => line.split('=')));
+    assert.equal(properties.MainPID, '0');
+    assert.equal(properties.ExecMainStatus, '226', 'Only an explicit NAMESPACE failure is expected');
+    assert.equal(properties.Result, 'exit-code');
+    await stop();
+    assert.equal(await status(), null, 'The rejected unit must never enter the worker runtime');
+    const subscriptions = await listSourceSubscriptions({ statePath: fixture.statePath });
+    assert.equal(subscriptions.find(item => item.id === fixture.subscriptionId)?.lastSucceededAt, null);
+    assert.deepEqual(await listSourceObservations({ statePath: fixture.statePath, subscriptionId: fixture.subscriptionId }), []);
+    process.stdout.write('Restricted systemd user manager: NAMESPACE rejection, no process, no status and no observations passed.\n');
+    process.stdout.write(run('systemctl', ['--version']));
+    process.stdout.write(run('sysctl', ['kernel.apparmor_restrict_unprivileged_userns'], true));
+    const audit = run('sudo', ['dmesg', '--color=never'], true).split('\n').filter(line => /apparmor.*DENIED/u.test(line));
+    process.stdout.write(`${audit.slice(-20).join('\n')}\n`);
+  } else {
+    // A stop issued before the application has produced its first status must
+    // still return through the native manager, rather than wait on a missing PID.
+    await start();
+    await stop();
+    await start();
+    const first = await running();
+    const initial = (await listSourceSubscriptions({ statePath: fixture.statePath })).find(item => item.id === fixture.subscriptionId);
+    assert(initial?.lastSucceededAt && initial.lastError === null, 'The supervisor must run the real source observer');
+    assert(Number.isSafeInteger(first.pid) && first.pid > 0 && first.pid !== process.pid);
+    if (userScope) {
+      const sourceMount = run('findmnt', ['--task', String(first.pid), '--target', fixture.sourcePath, '--noheadings', '--output', 'OPTIONS']).trim();
+      const stateMount = run('findmnt', ['--task', String(first.pid), '--target', fixture.statePath, '--noheadings', '--output', 'OPTIONS']).trim();
+      if (!sourceMount.split(',').includes('ro') || !stateMount.split(',').includes('rw')) {
+        const mounts = (await readFile(`/proc/${first.pid}/mountinfo`, 'utf8')).split('\n').filter(line => {
+          const target = line.split(' ')[4];
+          return target && (target === '/' || fixture.sourcePath.startsWith(`${target}/`) || fixture.statePath === target || fixture.statePath.startsWith(`${target}/`));
+        });
+        process.stderr.write(`${JSON.stringify({ sourceMount, stateMount, mounts,
+          workerNamespace: await readlink(`/proc/${first.pid}/ns/mnt`), testNamespace: await readlink('/proc/self/ns/mnt') })}\n`);
+        process.stderr.write(systemctl(['show', `${name}.service`, '--property=ProtectHome,ProtectSystem,PrivateUsers,ReadWritePaths']));
+        process.stderr.write(run('findmnt', ['--version']));
+      }
+      assert(sourceMount.split(',').includes('ro'), 'Consumer source must be mounted read-only');
+      assert(stateMount.split(',').includes('rw'), 'Private state must remain writable');
+      for (const path of ['/tmp', '/var/tmp']) {
+        const temporaryMount = run('findmnt', ['--task', String(first.pid), '--target', path, '--noheadings', '--output', 'FSTYPE,OPTIONS']).trim();
+        assert(temporaryMount.startsWith('tmpfs ') && temporaryMount.includes('size=65536k'), 'User temporary storage must be private bounded tmpfs');
+      }
     }
-    assert(sourceMount.split(',').includes('ro'), 'Consumer source must be mounted read-only');
-    assert(stateMount.split(',').includes('rw'), 'Private state must remain writable');
-    for (const path of ['/tmp', '/var/tmp']) {
-      const temporaryMount = run('findmnt', ['--task', String(first.pid), '--target', path, '--noheadings', '--output', 'FSTYPE,OPTIONS']).trim();
-      assert(temporaryMount.startsWith('tmpfs ') && temporaryMount.includes('size=65536k'), 'User temporary storage must be private bounded tmpfs');
+    // The PID is read only from this test's private, uniquely named state.
+    if (target === 'systemd') systemctl(['kill', '--kill-whom=main', '--signal=SIGKILL', `${name}.service`]);
+    else if (target === 'launchd') run('sudo', ['launchctl', 'kill', 'SIGKILL', `system/com.keepseam.${name}`]);
+    else run('taskkill.exe', ['/PID', String(first.pid), '/F']);
+    const recovered = await running(first.runId);
+    assert.notEqual(recovered.pid, first.pid);
+    await writeFile(fixture.sourcePath, JSON.stringify({ type: 'object', properties: { id: { type: 'string' }, region: { type: 'string' } }, required: ['id', 'region'] }));
+    await until(async () => {
+      const current = (await listSourceSubscriptions({ statePath: fixture.statePath })).find(item => item.id === fixture.subscriptionId);
+      return current?.lastObservedSha !== initial.lastObservedSha && current?.lastError === null;
+    }, 'Recovered service did not observe the changed contract');
+    const observations = await listSourceObservations({ statePath: fixture.statePath, subscriptionId: fixture.subscriptionId });
+    assert(observations.length > 0 && observations.every(item => item.authorization === 'not-granted'));
+    await stop();
+    const stopped = await until(async () => { const value = await status(); return value?.state === 'stopped' ? value : false; }, 'Native supervisor failed to drain the worker');
+    assert.equal(stopped.runId, recovered.runId);
+    await delay(userScope ? 35_000 : 1500);
+    assert.equal((await status()).runId, stopped.runId);
+    assert.equal((await status()).state, 'stopped');
+    await start();
+    const restarted = await running(stopped.runId);
+    assert.notEqual(restarted.runId, stopped.runId);
+    if (userScope) {
+      // Only the disposable runner's manager is restarted. This asserts that the
+      // enabled default.target unit starts again without a manual service start.
+      run('sudo', ['systemctl', 'restart', `user@${process.getuid()}.service`]);
+      const reactivated = await running(restarted.runId);
+      assert.notEqual(reactivated.pid, restarted.pid);
+      assert.equal(systemctl(['is-enabled', `${name}.service`]).trim(), 'enabled');
     }
+    await stop();
+    assert.equal((await status()).state, 'stopped');
+    process.stdout.write(`Native ${target}${userScope ? ' user scope (including manager restart)' : ''}: real observation, crash recovery, graceful stop and explicit restart passed (${Math.round((Date.now() - started) / 1000)}s).\n`);
   }
-  // The PID is read only from this test's private, uniquely named state.
-  if (target === 'systemd') systemctl(['kill', '--kill-whom=main', '--signal=SIGKILL', `${name}.service`]);
-  else if (target === 'launchd') run('sudo', ['launchctl', 'kill', 'SIGKILL', `system/com.keepseam.${name}`]);
-  else run('taskkill.exe', ['/PID', String(first.pid), '/F']);
-  const recovered = await running(first.runId);
-  assert.notEqual(recovered.pid, first.pid);
-  await writeFile(fixture.sourcePath, JSON.stringify({ type: 'object', properties: { id: { type: 'string' }, region: { type: 'string' } }, required: ['id', 'region'] }));
-  await until(async () => {
-    const current = (await listSourceSubscriptions({ statePath: fixture.statePath })).find(item => item.id === fixture.subscriptionId);
-    return current?.lastObservedSha !== initial.lastObservedSha && current?.lastError === null;
-  }, 'Recovered service did not observe the changed contract');
-  const observations = await listSourceObservations({ statePath: fixture.statePath, subscriptionId: fixture.subscriptionId });
-  assert(observations.length > 0 && observations.every(item => item.authorization === 'not-granted'));
-  await stop();
-  const stopped = await until(async () => { const value = await status(); return value?.state === 'stopped' ? value : false; }, 'Native supervisor failed to drain the worker');
-  assert.equal(stopped.runId, recovered.runId);
-  await delay(userScope ? 35_000 : 1500);
-  assert.equal((await status()).runId, stopped.runId);
-  assert.equal((await status()).state, 'stopped');
-  await start();
-  const restarted = await running(stopped.runId);
-  assert.notEqual(restarted.runId, stopped.runId);
-  if (userScope) {
-    // Only the disposable runner's manager is restarted. This asserts that the
-    // enabled default.target unit starts again without a manual service start.
-    run('sudo', ['systemctl', 'restart', `user@${process.getuid()}.service`]);
-    const reactivated = await running(restarted.runId);
-    assert.notEqual(reactivated.pid, restarted.pid);
-    assert.equal(systemctl(['is-enabled', `${name}.service`]).trim(), 'enabled');
-  }
-  await stop();
-  assert.equal((await status()).state, 'stopped');
-  process.stdout.write(`Native ${target}${userScope ? ' user scope (including manager restart)' : ''}: real observation, crash recovery, graceful stop and explicit restart passed (${Math.round((Date.now() - started) / 1000)}s).\n`);
 } catch (error) {
   // Only this credential-free, fictional fixture is diagnosed. Keep failures
   // visible before removing the disposable native service and its state.
