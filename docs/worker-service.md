@@ -113,6 +113,8 @@ Stop with `sudo systemctl stop keepseam`; restart after a reviewed package/confi
 
 Use an existing non-root account with an active systemd user manager. Keep binaries, configuration and consumer files in stable locations; private state may reside under that account's home. The unit sets `PrivateUsers=true`, requires a non-root manager, and uses `ProtectSystem=strict` with read-only home and explicit writable state directories. Private temporary storage and systemd's API-filesystem exceptions remain writable; these settings are not a complete execution sandbox. User namespaces must be available under the host's kernel and security policy. If they are disabled, use an administrator-provisioned system service; do not remove the isolation settings to make startup pass. Read access and protection against another process running as the same account still depend on the account's filesystem permissions.
 
+User units explicitly mount private tmpfs volumes at `/tmp` and `/var/tmp`, each limited to 64 MiB and discarded on stop. Keep contracts, runtime and durable state outside these paths. Explicit temporary filesystems also require mount namespace setup: unlike `PrivateTmp` alone, systemd must fail startup when it cannot provide this environment. This prevents silent loss of filesystem protection on a restricted host. Host policy changes require the operator's own security review; the CLI does not change sysctl or LSM configuration. See [systemd's namespace failure handling](https://github.com/systemd/systemd/blob/v255/src/core/exec-invoke.c).
+
 After registering subscriptions and protecting state/credential files as described above, replace these example paths with the actual account and resolved public CLI export:
 
 ```sh

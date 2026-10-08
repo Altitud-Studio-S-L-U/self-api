@@ -56,6 +56,7 @@ test('systemd user scope inherits a non-root manager identity and keeps home rea
   assert.doesNotMatch(content,/^User=|^Group=|network-online\.target|multi-user\.target/m);
   assert.match(content,/AssertUser=!root\n/);
   assert.match(content,/PrivateUsers=true\n/);
+  assert.match(content,/TemporaryFileSystem=\/tmp:rw,nosuid,nodev,size=64M \/var\/tmp:rw,nosuid,nodev,size=64M\n/);
   assert.match(content,/ProtectHome=read-only\n/);
   assert.match(content,/ProtectSystem=strict\n/);
   assert.match(content,/ReadWritePaths="\/home\/operator\/private state%%v"\n/);

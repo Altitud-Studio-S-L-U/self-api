@@ -160,6 +160,10 @@ try {
     }
     assert(sourceMount.split(',').includes('ro'), 'Consumer source must be mounted read-only');
     assert(stateMount.split(',').includes('rw'), 'Private state must remain writable');
+    for (const path of ['/tmp', '/var/tmp']) {
+      const temporaryMount = run('findmnt', ['--task', String(first.pid), '--target', path, '--noheadings', '--output', 'FSTYPE,OPTIONS']).trim();
+      assert(temporaryMount.startsWith('tmpfs ') && temporaryMount.includes('size=65536k'), 'User temporary storage must be private bounded tmpfs');
+    }
   }
   // The PID is read only from this test's private, uniquely named state.
   if (target === 'systemd') systemctl(['kill', '--kill-whom=main', '--signal=SIGKILL', `${name}.service`]);
@@ -209,6 +213,11 @@ try {
       process.stderr.write(systemctl(['show', `${name}.service`, '--property=ActiveState,SubState,Result,MainPID'], true));
       const journalArguments = ['journalctl', ...(userScope ? ['--user'] : []), '--unit', `${name}.service`, '--lines=30', '--no-pager'];
       process.stderr.write(userScope ? run(journalArguments[0], journalArguments.slice(1), true) : run('sudo', journalArguments, true));
+      if (userScope) {
+        process.stderr.write(run('systemctl', ['--version']));
+        process.stderr.write(run('sysctl', ['kernel.apparmor_restrict_unprivileged_userns'], true));
+        process.stderr.write(run('sudo', ['journalctl', '--kernel', '--lines=20', '--no-pager', '--grep=apparmor.*DENIED'], true));
+      }
     }
   }
   throw error;

@@ -143,6 +143,11 @@ export function renderWorkerServiceManifest(options: WorkerServiceManifestOption
   if (scope === 'system' && (typeof user !== 'string' || !/^[a-z_][a-z0-9_-]{0,31}$/u.test(user) || user === 'root')) invalid('Choose a dedicated non-root Unix account.');
   if (options.target === 'systemd') {
     const writePaths = [config.statePath, ...(config.cloud ? [config.cloud.statePath] : [])].map(value => systemd(value)).join(' ');
+    // Explicit tmpfs mounts make namespaces mandatory. PrivateTmp alone can be
+    // silently ignored by systemd when a host denies mount namespace setup.
+    const temporaryStorage = scope === 'user'
+      ? 'TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=64M /var/tmp:rw,nosuid,nodev,size=64M'
+      : 'PrivateTmp=true';
     return `[Unit]
 Description=Keepseam local contract observer
 ${scope === 'user' ? 'AssertUser=!root' : 'After=network-online.target\nWants=network-online.target'}
@@ -160,7 +165,7 @@ RestartSec=30
 TimeoutStopSec=180
 KillSignal=SIGTERM
 NoNewPrivileges=true
-PrivateTmp=true
+${temporaryStorage}
 ProtectSystem=strict
 ProtectHome=${scope === 'user' ? 'read-only' : 'true'}
 ReadWritePaths=${writePaths}
