@@ -48,16 +48,25 @@ async function fixture(t) {
   });
   return { directory, ...value };
 }
-async function waitForStatus(statePath, predicate, timeout = 45000) {
+async function waitForStatus(statePath, predicate, timeout = 45000, processInfo) {
   const deadline = Date.now() + timeout;
+  let lastStatus;
   while (Date.now() < deadline) {
     let status;
     try { status = JSON.parse(await readFile(join(statePath, serviceFiles.status), 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (status && predicate(status)) return status;
+    lastStatus = status;
+    if (processInfo && (processInfo.child.exitCode !== null || processInfo.child.signalCode !== null)) break;
     await delay(50);
   }
-  throw new Error('Worker did not reach the expected observable lifecycle state.');
+  // These fixtures contain fictional contracts only. Retain actionable failure
+  // evidence before their cleanup instead of reporting every exit as a timeout.
+  let log;
+  try { log = (await readFile(join(statePath, serviceFiles.log), 'utf8')).slice(-4096); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  throw new Error(`Worker did not reach the expected observable lifecycle state: ${JSON.stringify({ lastStatus,
+    exitCode: processInfo?.child.exitCode, signal: processInfo?.child.signalCode, stderr: processInfo?.stderr().slice(-4096), log })}`);
 }
 function launch(configPath) {
   const child = spawn(process.execPath, [cli, 'worker-service', 'run', '--config', configPath], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -72,7 +81,7 @@ test('real foreground service prevents concurrent ownership, resumes durable evi
   let active;
   t.after(async () => { if (active && active.child.exitCode === null && active.child.signalCode === null) { active.child.kill(); await active.exited; } });
   active = launch(item.configPath);
-  const first = await waitForStatus(item.statePath, value => value.state === 'running' && value.cycles >= 1);
+  const first = await waitForStatus(item.statePath, value => value.state === 'running' && value.cycles >= 1, 45000, active);
   assert.equal(first.pid, active.child.pid);
   const contender = launch(item.configPath);
   assert.equal((await contender.exited)[0], 2);
@@ -83,10 +92,10 @@ test('real foreground service prevents concurrent ownership, resumes durable evi
   assert.equal(stopped.runId, first.runId);
   const before = await listSourceObservations({ statePath: item.statePath });
   active = launch(item.configPath);
-  const second = await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== first.runId && value.cycles >= 1);
+  const second = await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== first.runId && value.cycles >= 1, 45000, active);
   assert.notEqual(second.pid, first.pid);
   // The old stop marker must not terminate this new instance; unchanged evidence is not duplicated.
-  await waitForStatus(item.statePath, value => value.runId === second.runId && value.cycles >= 2);
+  await waitForStatus(item.statePath, value => value.runId === second.runId && value.cycles >= 2, 45000, active);
   assert.equal((await listSourceObservations({ statePath: item.statePath })).length, before.length);
   requestWorkerServiceStop(config);
   assert.equal((await active.exited)[0], 0, active.stderr());
