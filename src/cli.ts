@@ -16,6 +16,7 @@ import { runJobCli } from './job-cli.js';
 import { runPublicationCli } from './publication-cli.js';
 import { runSourceCli } from './source-cli.js';
 import { runWorkerLoopCli } from './worker-loop-cli.js';
+import { runWorkerServiceCli } from './worker-service-cli.js';
 import { runSourceObserverCli } from './source-observer-cli.js';
 import { runDependencyCli } from './dependency-cli.js';
 import { runPublicationCommandCli } from './publication-command-cli.js';
@@ -57,6 +58,8 @@ const help = `Usage: plumber compare <base.json> <revision.json> --engine <path>
        plumber http-subscribe <policy.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
        plumber worker --once --state <directory> --engine <path> [--subscription <id>] [--http] [--json]
        plumber worker-loop --state <directory> --engine <path> [--cycles <1-1000>] [--interval-ms <1000-3600000>] [--run-approved] [--http] [--json]
+       plumber worker-service run|status|stop --config <absolute-json>
+       plumber worker-service render --config <absolute-json> --target systemd|launchd|windows --node <absolute-path> --cli <absolute-path> [--user <unix-account>] [--name <service-name>]
        plumber subscriptions --state <directory> [--json]
        plumber jobs --state <directory> [--json]
        plumber job-plan <job-id> --state <directory> --engine <path> --recipe <path> --test <file> [--json]
@@ -185,6 +188,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   }
   if (args[0] === 'worker-loop') {
     return runWorkerLoopCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (args[0] === 'worker-service') {
+    return runWorkerServiceCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
   }
   if (['source-subscribe', 'source-http-subscribe', 'source-observe', 'source-subscriptions', 'source-history'].includes(args[0] ?? '')) {
     return runSourceObserverCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });

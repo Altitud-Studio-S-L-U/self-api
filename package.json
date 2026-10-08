@@ -17,6 +17,10 @@
     "./protocol": {
       "types": "./dist/cloud-protocol.d.ts",
       "import": "./dist/cloud-protocol.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js"
     }
   },
   "bin": {

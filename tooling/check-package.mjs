@@ -65,10 +65,11 @@ import assert from 'node:assert/strict';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compareOpenApi, compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription } from 'plumber';
+import { compareOpenApi, compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest } from 'plumber';
+import { runCli } from 'plumber/cli';
 import { negotiateCloudProtocol, encodeCloudStatusEvent } from 'plumber/protocol';
 
-for (const api of [compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, encodeCloudStatusEvent, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription]) assert.equal(typeof api, 'function');
+for (const api of [compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, encodeCloudStatusEvent, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest, runCli]) assert.equal(typeof api, 'function');
 assert.deepEqual(negotiateCloudProtocol([1]), { status: 'compatible', version: 1 });
 
 const installed = await realpath(join(import.meta.dirname, 'node_modules'));

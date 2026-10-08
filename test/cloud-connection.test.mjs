@@ -11,7 +11,7 @@ import { openWorkerStore } from '../dist/worker-store.js';
 
 const opaque=()=>randomBytes(32).toString('hex');
 async function receiver(t,identity) {
-  let baseUrl,drop=false,reject=false;const access=opaque(),events=[],proofs=new Set();let tokens=0;
+  let baseUrl,drop=false,reject=false,hold;const access=opaque(),events=[],proofs=new Set();let tokens=0;
   const server=createServer(async(req,res)=>{
     try {
       const verified=await jwtVerify(req.headers.dpop,await importJWK(identity.publicJwk,'ES256'),{algorithms:['ES256']});
@@ -29,6 +29,7 @@ async function receiver(t,identity) {
       assert.equal(req.headers.authorization,`DPoP ${access}`);assert.equal(verified.payload.ath,createHash('sha256').update(access).digest('base64url'));
       if(reject){res.statusCode=401;res.end('{}');return;}
       const event=JSON.parse(raw),duplicate=events.some(existing=>existing.eventId===event.eventId);events.push(event);
+      if(hold){const notify=hold;hold=undefined;notify();return;}
       if(drop){drop=false;res.destroy();return;}
       res.end(JSON.stringify({eventId:event.eventId,sequence:event.sequence,status:duplicate?'duplicate':'accepted'}));
     }catch(error){res.statusCode=500;res.end('{}');server.emit('fixture-error',error);}
@@ -36,7 +37,7 @@ async function receiver(t,identity) {
   const errors=[];server.on('fixture-error',error=>errors.push(error));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));baseUrl=`http://127.0.0.1:${server.address().port}`;
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));assert.deepEqual(errors,[]);});
-  return {baseUrl,events,drop(){drop=true;},revoke(){reject=true;},get tokens(){return tokens;}};
+  return {baseUrl,events,drop(){drop=true;},holdNext(notify){hold=notify;},revoke(){reject=true;},get tokens(){return tokens;}};
 }
 
 test('client signs scoped key-bound requests, caches token, rejects remote HTTP and fails closed on revocation',async t=>{
@@ -48,6 +49,43 @@ test('client signs scoped key-bound requests, caches token, rejects remote HTTP 
   assert.equal((await transport.send(event)).status,'accepted');assert.equal((await transport.send(event)).status,'duplicate');assert.equal(server.tokens,1);
   await assert.rejects(transport.send({...event,sourceCode:'private'}));assert.equal(server.events.length,2);
   server.revoke();await assert.rejects(transport.send({...event,eventId:opaque(),sequence:1}),{code:'AUTHORIZATION_REJECTED'});
+});
+
+test('transport cancellation drains an in-flight request instead of waiting for the ten-second network deadline',async t=>{
+  const identity=await generateCloudWorkerIdentity();
+  let received;const arrived=new Promise(resolveRequest=>{received=resolveRequest;});
+  const server=createServer((_request,_response)=>{received();});
+  await new Promise(resolveListen=>server.listen(0,'127.0.0.1',resolveListen));
+  t.after(async()=>{server.closeAllConnections();await new Promise(resolveClose=>server.close(resolveClose));});
+  const credentials={...identity,baseUrl:`http://127.0.0.1:${server.address().port}`,projectId:opaque(),clientSecret:opaque(),allowLocalHttp:true};
+  const controller=new AbortController();
+  const transport=createCloudTransport(credentials,{signal:controller.signal});
+  const pending=transport.send({schemaVersion:1,eventId:opaque(),installationId:identity.installationId,projectId:credentials.projectId,
+    sequence:0,recordedAt:new Date().toISOString(),body:{type:'runner-status',state:'idle',reason:'none',pendingJobs:0}});
+  const rejected=assert.rejects(pending,{code:'NETWORK_UNAVAILABLE'});
+  await arrived;controller.abort();await rejected;
+  assert.throws(()=>createCloudTransport(credentials,{signal:{}}),{code:'INVALID_CONFIGURATION'});
+});
+
+test('canceled synchronization retains the exact outbox event and immediately releases its lease for a later run',async t=>{
+  const work=resolve('work/test-cloud-cancellation');await mkdir(work,{recursive:true});
+  const owned=await mkdtemp(join(work,'case-'));
+  t.after(async()=>{const path=relative(work,owned);assert(!isAbsolute(path)&&path.startsWith('case-')&&!path.includes('..'));await rm(owned,{recursive:true,force:true});});
+  const statePath=join(owned,'state'),cloudStatePath=join(owned,'cloud'),consumerRoot=join(owned,'consumer');await mkdir(consumerRoot);
+  const bytes=Buffer.from(JSON.stringify({openapi:'3.0.3',info:{title:'Cancellation fixture',version:'1'},paths:{}}));
+  const subscriptionId=opaque(),store=await openWorkerStore(statePath);
+  try{store.register({id:subscriptionId,label:'Cancellation fixture',sourcePath:join(owned,'source.json'),consumerRoot,providerBaseUrl:'https://example.invalid',
+    baseline:{bytes,metadata:{sha256:createHash('sha256').update(bytes).digest('hex'),byteLength:bytes.length,specificationVersion:'3.0.3',apiVersion:'1'}}});}finally{store.close();}
+  const identity=await generateCloudWorkerIdentity(),server=await receiver(t,identity);
+  const credentials={...identity,baseUrl:server.baseUrl,projectId:opaque(),clientSecret:opaque(),allowLocalHttp:true};
+  let arrived;const received=new Promise(resolveRequest=>{arrived=resolveRequest;});server.holdNext(arrived);
+  const controller=new AbortController(),options={statePath,cloudStatePath,credentials,integrationIds:[subscriptionId]};
+  const failed=assert.rejects(syncWorkerToCloud({...options,signal:controller.signal}),{code:'NETWORK_UNAVAILABLE'});
+  await received;controller.abort();await failed;
+  assert.equal(server.events.length,1);
+  const first=server.events[0],resumed=await syncWorkerToCloud(options);
+  assert.equal(resumed.state,'synced');assert.equal(resumed.pending,0);
+  assert.deepEqual(server.events[1],first,'Lost acknowledgement must replay the same event, ID and sequence.');
 });
 
 test('actual local jobs publish only allowlisted summaries and retry a lost acknowledgement with the same sequence',async t=>{

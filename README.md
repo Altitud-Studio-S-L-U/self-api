@@ -16,7 +16,7 @@ The SDK and CLI run in the customer's environment. Local observation, optional m
 | Consumer inspection | Bounded TS/JS analysis of native `fetch` and explicitly bound MCP `callTool` calls, including direct structured-output reads; unresolved usages remain explicit |
 | Migration proposals | Caller-supplied recipes with exact edits, hashes and business decisions |
 | Validation | Explicit approval, baseline/candidate tests and recovery on a fixed Linux x64 Docker profile |
-| Local worker | SQLite subscriptions, review jobs, approved execution queues, one-shot observation and a finite cancellable loop |
+| Local worker | SQLite subscriptions, review jobs, approved execution queues, one-shot/finite observation and a persistent observation service with native supervisor definitions |
 | Optional model harness | Selected context, explicit one-use consent, customer-selected adapter, bounded structured proposals and mandatory semantic review |
 | GitHub publication | Separate approval, exact repository/base/file bindings, create-only branch, draft PR and read-only reconciliation of uncertain writes |
 | Cloud coordination | Versioned status allowlist, local P-256 identity, DPoP transport and persistent opt-in status outbox; owner-approved enrollment in Cloud |
@@ -32,6 +32,7 @@ The CLI and SDK share the same TypeScript implementation. Contract comparison an
 | Public SDK and CLI | `src/index.ts`, `src/cli.ts` | Exported operations, types and command input validation |
 | Contracts and usage | `src/contracts.ts`, `src/consumer-contracts.ts`, `src/integration-registry.ts` | Snapshot hashes, comparison reports, call sites and version/source provenance |
 | Observation | `src/worker.ts`, `src/source-observer.ts`, `src/http-source.ts` | Local or explicitly permitted HTTPS capture and immutable evidence |
+| Persistent service | `src/worker-service.ts`, `src/worker-service-config.ts` | Serialized observation, private bounded operational state and systemd/launchd/Windows SCM definitions |
 | Execution | `src/job-validation.ts`, `src/migration-validation.ts`, `src/docker-runner.ts` | Approval binding, isolated baseline/candidate validation and recovery |
 | Optional external actions | `src/model-harness.ts`, `src/publication-runner.ts`, `src/github-publication.ts` | Selected model context and approved GitHub draft publication |
 | Cloud exchange | `src/cloud-protocol.ts`, `src/cloud-connection.ts`, `src/cloud-sync.ts` | Versioned allowlist, key-bound transport and retryable local outbox |
@@ -188,9 +189,15 @@ Structural diffs and passing selected tests do not prove full provider compatibi
 
 The shared status encoder is imported from `plumber/protocol`. It validates a small allowlist; an encoder alone does not authenticate installations or prove a reported outcome. The separate Cloud transport authenticates and scopes status delivery. Remote approval/execution, Slack delivery, live provider pilots and public package distribution remain release gates. Model and Git adapters are trusted customer code, not sandboxes. Source expansion does not imply automatic migration support for every SDK or MCP call style.
 
+## Run a persistent worker
+
+Use the [service operation guide](docs/worker-service.md) for complete configuration, least-privilege filesystem preparation, native installation, status, shutdown and upgrade procedures. `plumber worker-service run --config <absolute-json>` stays in the foreground under systemd, launchd or Windows SCM/WinSW. `render` creates a reviewable supervisor definition; it does not install a service. The private `plumber/cli` export resolves the installed CLI entry point without importing a build path in application code.
+
+The service observes registered OpenAPI and source profiles, creates review jobs and can synchronize explicitly shared status to Cloud. It never grants approvals, executes consumer tests or installs updates. A separate SQLite lock excludes concurrent service ownership and releases on process loss; the native manager owns boot and restart. Logs are sanitized and rotate locally. Long observation batches can delay Cloud heartbeats; supervisor restart is not a hung-process watchdog.
+
 ## Connect worker status to Cloud
 
-Follow the [connection procedure](docs/local-workflow.md#connect-an-approved-worker-to-cloud) for complete identity generation, enrollment, private credential assembly, integration binding and synchronization examples. These operations are public SDK APIs; the product CLI does not yet have identity/enrollment/sync commands. The separate [real API laboratory](dev/real-apis/README.md#connect-the-actual-worker) supplies development-only `cloud-sync` and `worker` helpers.
+Follow the [connection procedure](docs/local-workflow.md#connect-an-approved-worker-to-cloud) for complete identity generation, enrollment, private credential assembly, integration binding and synchronization examples. Identity/enrollment are public SDK APIs; the product CLI does not yet have enrollment commands. The persistent service can synchronize approved metadata using a private credential-file reference. The separate [real API laboratory](dev/real-apis/README.md#connect-the-actual-worker) supplies development-only `cloud-sync` and `worker` helpers.
 
 Generate an identity with `generateCloudWorkerIdentity()` from `plumber`. Keep its `privateJwk` in customer-controlled secret storage. Give the Cloud organization owner/admin only `{ installationId, publicJwk, fingerprint }`. In the worker panel, they enroll the installation using a recently verified passkey, compare the fingerprint independently and activate it. Enrollment returns a client secret **revealed once** and an opaque Cloud project identifier; combine these locally with the private key to create a `CloudCredentials` object. The secret is reusable for token exchange until expiry/revocation, not a single-use token. HTTPS is required; `allowLocalHttp: true` permits only an explicit loopback development origin.
 
