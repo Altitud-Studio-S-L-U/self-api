@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { cp, mkdir, readFile, readlink, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { userInfo } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -218,7 +218,22 @@ try {
       // Only the disposable runner's manager is restarted. This asserts that the
       // enabled default.target unit starts again without a manual service start.
       process.stdout.write(run('loginctl', ['show-user', String(process.getuid()), '--property=State,Sessions,Linger'], true));
-      run('sudo', ['systemctl', 'restart', `user@${process.getuid()}.service`]);
+      assert.equal(run('findmnt', ['--target', '/sys/fs/cgroup', '--noheadings', '--output', 'FSTYPE']).trim(), 'cgroup2');
+      const managerControlGroup = run('sudo', ['systemctl', 'show', `user@${process.getuid()}.service`, '--property=ControlGroup', '--value']).trim();
+      assert.equal(managerControlGroup, `/user.slice/user-${process.getuid()}.slice/user@${process.getuid()}.service`);
+      const managerCgroup = `/sys/fs/cgroup${managerControlGroup}`;
+      assert((await lstat(managerCgroup)).isDirectory(), 'The running manager must own the expected cgroup');
+      run('sudo', ['systemctl', 'stop', `user@${process.getuid()}.service`]);
+      // systemd 249 failed EBUSY during an immediate manager restart in native
+      // acceptance (also reported upstream in systemd#23163). Observe complete
+      // teardown of the old delegated cgroup before creating its replacement,
+      // without retrying a failed start or inserting an arbitrary grace period.
+      await until(async () => {
+        try { await lstat(managerCgroup); return false; }
+        catch (error) { if (error.code === 'ENOENT') return true; throw error; }
+      }, 'Stopped user manager did not release its delegated cgroup');
+      assert((await lstat('/sys/fs/cgroup')).isDirectory());
+      run('sudo', ['systemctl', 'start', `user@${process.getuid()}.service`]);
       const reactivated = await running(restarted.runId);
       assert.notEqual(reactivated.pid, restarted.pid);
       assert.equal(systemctl(['is-enabled', `${name}.service`]).trim(), 'enabled');
