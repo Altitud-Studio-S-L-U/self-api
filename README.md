@@ -172,6 +172,8 @@ The comparison engine must be installed before checks; missing infrastructure fa
 
 The [fictional payments scenarios](docs/local-workflow.md#exercise-a-fictional-payments-provider) use real HTTP/TLS sockets. They cover API retirement, required request fields, nested decimal amounts, currency integrity, rate limits and provider failures. The Linux Docker suite runs the approved worker migration and HTTPS capture inside the existing network-isolated profile. No real payment provider or account is contacted.
 
+The opt-in [live API pilot](dev/live-validation/README.md) captures GitHub's actual versioned directory-listing change, replays the captured responses in Docker, checks an approved candidate against a fresh public response and can publish a draft through the SDK. Its locally authored partial schema and reviewed recipe are explicit; fetching documentation for ten providers does not prove ten migrations.
+
 CI is configured for Windows, Linux and macOS, with a separate real Docker job. Running checks locally does not trigger CI, push commits or deploy. Follow the branch conventions in [AGENTS.md](AGENTS.md). Keep credentials, local state, archives and intermediate files out of Git; `work/` is ignored.
 
 ## Limits and troubleshooting
@@ -197,7 +199,7 @@ The service observes registered OpenAPI and source profiles, creates review jobs
 
 ## Connect worker status to Cloud
 
-Follow the [connection procedure](docs/local-workflow.md#connect-an-approved-worker-to-cloud) for complete identity generation, enrollment, private credential assembly, integration binding and synchronization examples. Identity/enrollment are public SDK APIs; the product CLI does not yet have enrollment commands. The persistent service can synchronize approved metadata using a private credential-file reference. The separate [real API laboratory](dev/real-apis/README.md#connect-the-actual-worker) supplies development-only `cloud-sync` and `worker` helpers.
+Follow the [connection procedure](docs/local-workflow.md#connect-an-approved-worker-to-cloud) for complete identity generation, enrollment, private credential assembly, integration binding and synchronization examples. Identity generation and status transport are public SDK APIs; enrollment and activation happen in Cloud, and the product CLI does not yet have enrollment commands. The persistent service can synchronize approved metadata using a private credential-file reference. The separate [real API laboratory](dev/real-apis/README.md#connect-the-actual-worker) supplies development-only `cloud-sync` and `worker` helpers.
 
 Generate an identity with `generateCloudWorkerIdentity()` from `keepseam-client`. Keep its `privateJwk` in customer-controlled secret storage. Give the Cloud organization owner/admin only `{ installationId, publicJwk, fingerprint }`. In the worker panel, they enroll the installation using a recently verified passkey, compare the fingerprint independently and activate it. Enrollment returns a client secret **revealed once** and an opaque Cloud project identifier; combine these locally with the private key to create a `CloudCredentials` object. The secret is reusable for token exchange until expiry/revocation, not a single-use token. HTTPS is required; `allowLocalHttp: true` permits only an explicit loopback development origin.
 
