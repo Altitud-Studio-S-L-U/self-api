@@ -84,6 +84,8 @@ The runner serializes observation and Cloud sync. Failures back off exponentiall
 
 `worker-service.status.json` contains only run ID, PID, lifecycle state, timestamps, cycle count and observation/Cloud enums. `worker-service.log` and `worker-service.previous.log` retain at most 1 MiB each, with counts and sanitized outcomes only. They exclude code, documents, URLs, keys, raw errors and observer results. A crash can leave one small `.next` record, reused on the next write. These limits apply to service logs, not the existing subscription/evidence stores; monitor their documented quotas and disk space separately.
 
+An unexpected local filesystem failure can include an allowlisted `systemCode` and `operation` in the failure log and CLI error, such as `EACCES` and `rename`. Paths, error messages and stacks are excluded from these diagnostics. Logging a failure and saving its failed status are independent attempts: a stale status can remain when its replacement fails, so consult the native manager and stderr as well.
+
 This is process supervision, **not a hung-process watchdog**. A slow batch delays later profiles and Cloud heartbeats. The Cloud can show a stale/offline status during a long local observation; it does not attest that all providers were just checked. Split large dependency sets across separately registered installations if their measured duration exceeds the required cadence. The native manager allows 180 seconds for shutdown, after which it may terminate the process; normal store recovery handles an interrupted observation. It does not replay an uncertain approved execution.
 
 ## Linux: systemd

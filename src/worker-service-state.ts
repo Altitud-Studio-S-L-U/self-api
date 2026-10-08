@@ -10,6 +10,19 @@ export const serviceFiles = Object.freeze({ lock: 'worker-service.sqlite3', stat
 const MAX_LOG_BYTES = 1024 * 1024;
 const flags = constants.O_WRONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK);
 
+/** Native failures are useful to operators; arbitrary error text and paths are not safe log fields. */
+export function serviceFailureDetails(error: unknown): { systemCode?: string; operation?: string } {
+  try {
+    if (!(error instanceof Error)) return {};
+    const code = Object.getOwnPropertyDescriptor(error, 'code')?.value as unknown;
+    const operation = Object.getOwnPropertyDescriptor(error, 'syscall')?.value as unknown;
+    return {
+      ...(typeof code === 'string' && ['EACCES', 'EPERM', 'EBUSY', 'ENOENT', 'ENOSPC', 'EIO', 'EISDIR', 'ENOTDIR', 'EMFILE', 'ENFILE', 'EROFS'].includes(code) ? { systemCode: code } : {}),
+      ...(typeof operation === 'string' && ['rename', 'open', 'read', 'write', 'stat', 'lstat', 'unlink', 'close', 'fsync'].includes(operation) ? { operation } : {}),
+    };
+  } catch { return {}; }
+}
+
 /** These checks supplement, rather than replace, the dedicated OS account and operator-provisioned directory ACL. */
 export function checkServicePath(path: string, kind: 'directory' | 'config' | 'secret'): void {
   const root = parse(path).root;

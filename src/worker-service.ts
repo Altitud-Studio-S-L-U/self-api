@@ -8,7 +8,7 @@ import { listSourceSubscriptions, observeSourcesOnce } from './source-observer.j
 import { listLocalSubscriptions, observeOnce, type ObservationCycle } from './worker.js';
 import { normalizeWorkerServiceConfig, servicePath, type WorkerServiceConfig } from './worker-service-config.js';
 import { appendServiceLog, checkServicePath, checkWindowsServiceAcl, hasServiceDatabase, lockWorkerService,
-  readServiceRecord, serviceFiles, writeServiceSnapshot } from './worker-service-state.js';
+  readServiceRecord, serviceFailureDetails, serviceFiles, writeServiceSnapshot } from './worker-service-state.js';
 
 export interface WorkerServiceStatus {
   readonly schemaVersion: 1;
@@ -162,7 +162,10 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
     update({ state: 'stopped' }); log('stopped');
     return status;
   } catch (error) {
-    try { update({ state: 'failed' }); log('failed', { reason: 'local-operation-failed' }); } catch { /* Preserve the original failure if storage itself is unavailable. */ }
+    // Failure to replace a snapshot must not prevent an independent bounded log
+    // append. The CLI also retains these allowlisted fields if storage is down.
+    try { log('failed', { reason: 'local-operation-failed', ...serviceFailureDetails(error) }); } catch { /* Preserve the original storage failure. */ }
+    try { update({ state: 'failed' }); } catch { /* Preserve the original storage failure. */ }
     throw error;
   } finally {
     if (monitor) clearInterval(monitor);

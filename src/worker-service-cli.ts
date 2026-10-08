@@ -4,6 +4,7 @@ import { PlumberError } from './errors.js';
 import { loadLocalJson } from './local-file.js';
 import { renderWorkerServiceManifest, type WorkerServiceTarget } from './worker-service-config.js';
 import { loadWorkerServiceConfig, readWorkerServiceStatus, requestWorkerServiceStop, runWorkerService } from './worker-service.js';
+import { serviceFailureDetails } from './worker-service-state.js';
 
 export async function runWorkerServiceCli(args: string[], options: { readonly stdout?: (text: string) => void; readonly stderr?: (text: string) => void } = {}): Promise<number> {
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
@@ -45,7 +46,7 @@ export async function runWorkerServiceCli(args: string[], options: { readonly st
     return 0;
   } catch (error) {
     stderr(jsonLine({ error: error instanceof PlumberError ? { code: error.code, message: error.message }
-      : { code: 'SERVICE_FAILED', message: 'Worker service could not complete its local operation. Inspect the native manager and private status log.' } }));
+      : { code: 'SERVICE_FAILED', message: 'Worker service could not complete its local operation. Inspect the native manager and private status log.', ...serviceFailureDetails(error) } }));
     return 2;
   } finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
 }

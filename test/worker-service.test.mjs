@@ -7,8 +7,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { createServiceFixture } from '../tooling/service-fixture.mjs';
 import { loadWorkerServiceConfig, requestWorkerServiceStop, runWorkerService } from '../dist/index.js';
-import { appendServiceLog, serviceFiles } from '../dist/worker-service-state.js';
+import { appendServiceLog, serviceFailureDetails, serviceFiles } from '../dist/worker-service-state.js';
 import { listSourceObservations } from '../dist/source-observer.js';
+import { runWorkerServiceCli } from '../dist/worker-service-cli.js';
 
 const parent = resolve('work/test-worker-service');
 const cli = resolve('dist/cli.js');
@@ -173,4 +174,44 @@ test('invalid service CLI options cannot start a process or hide a configuration
   let output = ''; result.stderr.on('data', chunk => { output += chunk; });
   assert.equal((await once(result, 'exit'))[0], 2);
   assert.match(output, /SERVICE_FAILED|INVALID_INPUT/);
+});
+
+test('native failure diagnostics expose only allowlisted codes and operations without evaluating getters', () => {
+  const native = Object.assign(new Error('SECRET path and payload'), { code: 'EACCES', syscall: 'rename', path: '/SECRET', dest: '/SECRET' });
+  assert.deepEqual(serviceFailureDetails(native), { systemCode: 'EACCES', operation: 'rename' });
+  assert.deepEqual(serviceFailureDetails(Object.assign(new Error('SECRET'), { code: 'SECRET', syscall: 'SECRET' })), {});
+  const accessor = new Error('SECRET');
+  Object.defineProperties(accessor, { code: { get() { assert.fail('Do not evaluate an error code accessor'); } },
+    syscall: { get() { assert.fail('Do not evaluate an operation accessor'); } } });
+  assert.deepEqual(serviceFailureDetails(accessor), {});
+  assert.deepEqual(serviceFailureDetails({ code: 'EACCES', syscall: 'rename', message: 'SECRET' }), {});
+  assert.deepEqual(serviceFailureDetails(new Proxy(native, { getOwnPropertyDescriptor() { throw new Error('SECRET'); } })), {});
+});
+
+test('service CLI reports a native filesystem error without revealing its private path', async () => {
+  let output = '', errors = '';
+  const privatePath = resolve('work/service-private-missing/SECRET-never-log.json');
+  assert.equal(await runWorkerServiceCli(['worker-service', 'run', '--config', privatePath], {
+    stdout: text => { output += text; }, stderr: text => { errors += text; },
+  }), 2);
+  assert.equal(output, '');
+  const result = JSON.parse(errors).error;
+  assert.equal(result.code, 'SERVICE_FAILED');
+  assert.equal(result.systemCode, 'ENOENT');
+  assert.equal(result.operation, 'lstat');
+  assert.doesNotMatch(errors, /SECRET|service-private-missing|stack/);
+});
+
+test('failed status persistence retains an independent sanitized failure log', async t => {
+  const item = await fixture(t);
+  const config = await loadWorkerServiceConfig(item.configPath);
+  await assert.rejects(runWorkerService(config, { dependencies: { observeSources: async () => {
+    await mkdir(join(item.statePath, `${serviceFiles.status}.next`));
+    return { schemaVersion: 1, results: [{ status: 'unchanged' }] };
+  } } }), /Service runtime files cannot be links or special files/);
+  const entries = (await readFile(join(item.statePath, serviceFiles.log), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(entries.at(-1).event, 'failed');
+  assert.equal(entries.at(-1).reason, 'local-operation-failed');
+  assert.deepEqual(Object.keys(entries.at(-1)).sort(), ['event', 'reason', 'runId', 'timestamp']);
+  assert.equal(JSON.parse(await readFile(join(item.statePath, serviceFiles.status), 'utf8')).state, 'starting');
 });
