@@ -96,9 +96,9 @@ try {
   await writeFile(manifestPath, manifest, { flag: 'wx', mode: 0o600 });
   const statusPath = join(fixture.statePath, 'worker-service.status.json');
   async function status() { try { return JSON.parse(await readFile(statusPath, 'utf8')); } catch (error) { if (['ENOENT', 'EACCES', 'EPERM'].includes(error.code)) return null; throw error; } }
-  const running = oldRun => until(async () => {
+  const running = (oldRun, minimumCycles = 1) => until(async () => {
     const value = await status();
-    return value && value.state === 'running' && value.cycles > 0 && value.runId !== oldRun ? value : false;
+    return value && value.state === 'running' && value.cycles >= minimumCycles && value.runId !== oldRun ? value : false;
   }, 'Native service did not complete a real observation cycle');
   async function start() {
     if (target === 'systemd') systemctl(['start', `${name}.service`]);
@@ -196,7 +196,7 @@ try {
     if (target === 'systemd') systemctl(['kill', '--kill-who=main', '--signal=SIGKILL', `${name}.service`]);
     else if (target === 'launchd') run('sudo', ['launchctl', 'kill', 'SIGKILL', `system/com.keepseam.${name}`]);
     else run('taskkill.exe', ['/PID', String(first.pid), '/F']);
-    const recovered = await running(first.runId);
+    let recovered = await running(first.runId, target === 'windows' ? 2 : 1);
     assert.notEqual(recovered.pid, first.pid);
     await writeFile(fixture.sourcePath, JSON.stringify({ type: 'object', properties: { id: { type: 'string' }, region: { type: 'string' } }, required: ['id', 'region'] }));
     await until(async () => {
@@ -205,6 +205,15 @@ try {
     }, 'Recovered service did not observe the changed contract');
     const observations = await listSourceObservations({ statePath: fixture.statePath, subscriptionId: fixture.subscriptionId });
     assert(observations.length > 0 && observations.every(item => item.authorization === 'not-granted'));
+    if (target === 'windows') {
+      // Both losses must recover; this is not a retry of a failed assertion.
+      // Keep SCM's configured 30s/60s recovery schedule. A third forced failure
+      // would correctly wait 300s, so this bounded acceptance stops at two.
+      run('taskkill.exe', ['/PID', String(recovered.pid), '/F']);
+      const secondRecovery = await running(recovered.runId, 2);
+      assert.notEqual(secondRecovery.pid, recovered.pid);
+      recovered = secondRecovery;
+    }
     await stop();
     const stopped = await until(async () => { const value = await status(); return value?.state === 'stopped' ? value : false; }, 'Native supervisor failed to drain the worker');
     assert.equal(stopped.runId, recovered.runId);
@@ -212,8 +221,25 @@ try {
     assert.equal((await status()).runId, stopped.runId);
     assert.equal((await status()).state, 'stopped');
     await start();
-    const restarted = await running(stopped.runId);
+    let restarted = await running(stopped.runId, target === 'windows' ? 2 : 1);
     assert.notEqual(restarted.runId, stopped.runId);
+    if (target === 'windows') {
+      // Exercise three clean restarts in total, including the one above. Every
+      // start must persist multiple healthy cycles before the next stop.
+      for (let restart = 1; restart < 3; restart++) {
+        await stop();
+        const stoppedAgain = await status();
+        assert.equal(stoppedAgain?.state, 'stopped');
+        assert.equal(stoppedAgain.runId, restarted.runId);
+        await start();
+        const next = await running(restarted.runId, 2);
+        assert.notEqual(next.pid, restarted.pid);
+        restarted = next;
+      }
+      const finalObservations = await listSourceObservations({ statePath: fixture.statePath, subscriptionId: fixture.subscriptionId });
+      assert(finalObservations.length > 0 && finalObservations.every(item => item.authorization === 'not-granted'));
+      process.stdout.write('Windows recovery acceptance: two forced losses and three clean restarts each persisted multiple healthy cycles.\n');
+    }
     if (userScope) {
       // Only the disposable runner's manager is restarted. This asserts that the
       // enabled default.target unit starts again without a manual service start.
