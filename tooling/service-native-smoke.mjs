@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { userInfo } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -146,8 +146,20 @@ try {
   assert(initial?.lastSucceededAt && initial.lastError === null, 'The supervisor must run the real source observer');
   assert(Number.isSafeInteger(first.pid) && first.pid > 0 && first.pid !== process.pid);
   if (userScope) {
-    assert(run('findmnt', ['--task', String(first.pid), '--target', fixture.sourcePath, '--noheadings', '--output', 'OPTIONS']).trim().split(',').includes('ro'), 'Consumer source must be mounted read-only');
-    assert(run('findmnt', ['--task', String(first.pid), '--target', fixture.statePath, '--noheadings', '--output', 'OPTIONS']).trim().split(',').includes('rw'), 'Private state must remain writable');
+    const sourceMount = run('findmnt', ['--task', String(first.pid), '--target', fixture.sourcePath, '--noheadings', '--output', 'OPTIONS']).trim();
+    const stateMount = run('findmnt', ['--task', String(first.pid), '--target', fixture.statePath, '--noheadings', '--output', 'OPTIONS']).trim();
+    if (!sourceMount.split(',').includes('ro') || !stateMount.split(',').includes('rw')) {
+      const mounts = (await readFile(`/proc/${first.pid}/mountinfo`, 'utf8')).split('\n').filter(line => {
+        const target = line.split(' ')[4];
+        return target && (target === '/' || fixture.sourcePath.startsWith(`${target}/`) || fixture.statePath === target || fixture.statePath.startsWith(`${target}/`));
+      });
+      process.stderr.write(`${JSON.stringify({ sourceMount, stateMount, mounts,
+        workerNamespace: await readlink(`/proc/${first.pid}/ns/mnt`), testNamespace: await readlink('/proc/self/ns/mnt') })}\n`);
+      process.stderr.write(systemctl(['show', `${name}.service`, '--property=ProtectHome,ProtectSystem,PrivateUsers,ReadWritePaths']));
+      process.stderr.write(run('findmnt', ['--version']));
+    }
+    assert(sourceMount.split(',').includes('ro'), 'Consumer source must be mounted read-only');
+    assert(stateMount.split(',').includes('rw'), 'Private state must remain writable');
   }
   // The PID is read only from this test's private, uniquely named state.
   if (target === 'systemd') systemctl(['kill', '--kill-whom=main', '--signal=SIGKILL', `${name}.service`]);
