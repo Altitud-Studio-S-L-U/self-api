@@ -58,7 +58,8 @@ async function boundedJSON(response: Response): Promise<unknown> {
   } finally { reader.releaseLock(); }
 }
 
-export function createCloudTransport(credentials: CloudCredentials): CloudTransport {
+export function createCloudTransport(credentials: CloudCredentials, options: { readonly signal?: AbortSignal } = {}): CloudTransport {
+  if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) reject();
   let origin:URL;
   try { origin=new URL(credentials.baseUrl); } catch { reject(); }
   if (origin.origin!==credentials.baseUrl || origin.username || origin.password
@@ -83,7 +84,7 @@ export function createCloudTransport(credentials: CloudCredentials): CloudTransp
     const url=new URL(path,origin).href;
     let response:Response;
     try {
-      response=await fetch(url,{method:'POST',redirect:'error',signal:AbortSignal.timeout(10_000),
+      response=await fetch(url,{method:'POST',redirect:'error',signal:options.signal ? AbortSignal.any([options.signal,AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
         headers:{'content-type':type,DPoP:await proof(url,accessToken),...(accessToken?{authorization:`DPoP ${accessToken}`}:{})},body});
       const payload=await boundedJSON(response);
       return {status:response.status,body:payload};

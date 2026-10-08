@@ -16,7 +16,7 @@ The SDK and CLI run in the customer's environment. Local observation, optional m
 | Consumer inspection | Bounded TS/JS analysis of native `fetch` and explicitly bound MCP `callTool` calls, including direct structured-output reads; unresolved usages remain explicit |
 | Migration proposals | Caller-supplied recipes with exact edits, hashes and business decisions |
 | Validation | Explicit approval, baseline/candidate tests and recovery on a fixed Linux x64 Docker profile |
-| Local worker | SQLite subscriptions, review jobs, approved execution queues, one-shot observation and a finite cancellable loop |
+| Local worker | SQLite subscriptions, review jobs, approved execution queues, one-shot/finite observation and a persistent observation service with native supervisor definitions |
 | Optional model harness | Selected context, explicit one-use consent, customer-selected adapter, bounded structured proposals and mandatory semantic review |
 | GitHub publication | Separate approval, exact repository/base/file bindings, create-only branch, draft PR and read-only reconciliation of uncertain writes |
 | Cloud coordination | Versioned status allowlist, local P-256 identity, DPoP transport and persistent opt-in status outbox; owner-approved enrollment in Cloud |
@@ -32,6 +32,7 @@ The CLI and SDK share the same TypeScript implementation. Contract comparison an
 | Public SDK and CLI | `src/index.ts`, `src/cli.ts` | Exported operations, types and command input validation |
 | Contracts and usage | `src/contracts.ts`, `src/consumer-contracts.ts`, `src/integration-registry.ts` | Snapshot hashes, comparison reports, call sites and version/source provenance |
 | Observation | `src/worker.ts`, `src/source-observer.ts`, `src/http-source.ts` | Local or explicitly permitted HTTPS capture and immutable evidence |
+| Persistent service | `src/worker-service.ts`, `src/worker-service-config.ts` | Serialized observation, private bounded operational state and systemd/launchd/Windows SCM definitions |
 | Execution | `src/job-validation.ts`, `src/migration-validation.ts`, `src/docker-runner.ts` | Approval binding, isolated baseline/candidate validation and recovery |
 | Optional external actions | `src/model-harness.ts`, `src/publication-runner.ts`, `src/github-publication.ts` | Selected model context and approved GitHub draft publication |
 | Cloud exchange | `src/cloud-protocol.ts`, `src/cloud-connection.ts`, `src/cloud-sync.ts` | Versioned allowlist, key-bound transport and retryable local outbox |
@@ -55,35 +56,35 @@ Run from the repository root. With dependencies already cached and the engine pr
 ```sh
 pnpm install --offline --frozen-lockfile
 pnpm build
-pnpm plumber --help
+pnpm keepseam --help
 ```
 
 Compare the supplied **fictional** Orders API contracts on Windows:
 
 ```powershell
-pnpm --silent plumber compare fixtures/orders-v1.json fixtures/orders-v2.json --engine work/tools/oasdiff/oasdiff.exe --json
+pnpm --silent keepseam compare fixtures/orders-v1.json fixtures/orders-v2.json --engine work/tools/oasdiff/oasdiff.exe --json
 ```
 
 On Linux/macOS:
 
 ```sh
-pnpm --silent plumber compare fixtures/orders-v1.json fixtures/orders-v2.json --engine work/tools/oasdiff/oasdiff --json
+pnpm --silent keepseam compare fixtures/orders-v1.json fixtures/orders-v2.json --engine work/tools/oasdiff/oasdiff --json
 ```
 
 Expect `status: "breaking-changes"` and exit code **1**: the second contract requires `region` and replaces `total` with `amount`. This is the expected comparison result, not a command failure. Comparing a file with itself exits **0**; invalid input or engine failure exits **2**. Errors are JSON on stderr. Omit `--json` for readable output.
 
-The examples use `pnpm --silent` for JSON output so the package manager does not prepend its script banner. The installed `pnpm exec plumber` command invokes the CLI directly.
+The examples use `pnpm --silent` for JSON output so the package manager does not prepend its script banner. The installed `pnpm exec keepseam` command invokes the CLI directly.
 
 **First-time provisioning requires network access.** When permitted, `pnpm install --frozen-lockfile` downloads dependencies and `pnpm engine:setup` downloads the pinned official engine, verifies its archive checksum and retains its license under `work/tools/oasdiff`. The installer requires the system `tar` executable. These setup actions are separate from normal SDK/CLI use; comparisons never download the engine automatically. An offline installation fails if its cached dependencies are missing.
 
 ## Use the SDK
 
-Keepseam is the product name. The package `plumber`, CLI command `plumber`, `plumber/protocol` export, environment variables and stored protocol identifiers retain their existing names for compatibility. This name change does not migrate local state or publish a package to npm.
+The private **`keepseam-client` 0.1.0** package exposes the `keepseam` command and the `keepseam-client`, `keepseam-client/protocol` and `keepseam-client/cli` entry points. This replaces the unpublished prototype package name; reinstall the new local archive and update imports/commands in a consuming project. Existing database identities, approval hashes, Cloud IDs and recovery records retain their format, so this distribution rename does not reset local state or publish to npm.
 
 Import the package's public entry point from an ESM application. This example uses the same fixture paths when run from this checkout after building:
 
 ```js
-import { compareOpenApi } from 'plumber';
+import { compareOpenApi } from 'keepseam-client';
 
 const report = await compareOpenApi({
   basePath: './fixtures/orders-v1.json',
@@ -99,12 +100,12 @@ console.log(report.status, report.changes);
 TypeScript consumers use the same package name, including types:
 
 ```ts
-import { compareOpenApi, type CompareOptions, type ComparisonReport } from 'plumber';
+import { compareOpenApi, type CompareOptions, type ComparisonReport } from 'keepseam-client';
 
 const compare: (options: CompareOptions) => Promise<ComparisonReport> = compareOpenApi;
 ```
 
-Use ESM with TypeScript's `NodeNext` module resolution and Node type declarations. The package export map resolves build files internally. Consumers do not import `dist`, `src`, or other internal paths. Node also resolves `plumber` by its public name from this checkout.
+Use ESM with TypeScript's `NodeNext` module resolution and Node type declarations. The package export map resolves build files internally. Consumers do not import `dist`, `src`, or other internal paths. Node also resolves `keepseam-client` by its public name from this checkout.
 
 ## Install into another local project
 
@@ -117,17 +118,17 @@ pnpm pack --pack-destination work/packages
 From the receiving project's directory, install the archive using its actual absolute path:
 
 ```sh
-pnpm add --offline --ignore-scripts "/absolute/path/to/keepseam-client/work/packages/plumber-0.0.0.tgz"
-pnpm exec plumber --help
+pnpm add --offline --ignore-scripts "/absolute/path/to/keepseam-client/work/packages/keepseam-client-0.1.0.tgz"
+pnpm exec keepseam --help
 ```
 
-On Windows, use the corresponding quoted path, for example `"D:/projects/keepseam-client/work/packages/plumber-0.0.0.tgz"`. The receiving project uses `import { compareOpenApi } from 'plumber'` and supplies its own contract files and trusted engine path. Fixtures and the engine are not bundled in the package. Offline installation requires the runtime dependencies in that machine's pnpm store.
+On Windows, use the corresponding quoted path, for example `"D:/projects/keepseam-client/work/packages/keepseam-client-0.1.0.tgz"`. The receiving project uses `import { compareOpenApi } from 'keepseam-client'` and supplies its own contract files and trusted engine path. Fixtures and the engine are not bundled in the package. Offline installation requires the runtime dependencies in that machine's pnpm store.
 
 | Context | CLI invocation |
 | --- | --- |
-| Developing this repository | `pnpm plumber <command>` after a build |
-| Project with the archive installed | `pnpm exec plumber <command>` |
-| SDK consumer | Named imports from `plumber` |
+| Developing this repository | `pnpm keepseam <command>` after a build |
+| Project with the archive installed | `pnpm exec keepseam <command>` |
+| SDK consumer | Named imports from `keepseam-client` |
 
 Do not install an unrelated registry package using this development name. The final package scope and public distribution remain undecided; no global install or production server is needed.
 
@@ -144,8 +145,8 @@ Use the [local workflow reference](docs/local-workflow.md) for SDK/CLI examples,
 Try MCP comparison without an engine or server connection:
 
 ```sh
-pnpm --silent plumber mcp-compare fixtures/mcp/catalog-before.json fixtures/mcp/catalog-after.json --json
-pnpm --silent plumber integration-check fixtures/integration-manifest.json --json
+pnpm --silent keepseam mcp-compare fixtures/mcp/catalog-before.json fixtures/mcp/catalog-after.json --json
+pnpm --silent keepseam integration-check fixtures/integration-manifest.json --json
 ```
 
 The MCP fixture changes both an input and a parsed output. Expect comparison exit code **1**. Its files and the integration manifest are fictional examples, not maintained provider catalogs. `mcp-impact` can associate these changes with explicitly bound calls and direct parser reads. HTTPS observation requires an explicit source policy and `--http`; it fetches only the selected URL, without crawling documentation or discovering versions. Framework/DB export execution remains outside this profile. See the [source and impact instructions](docs/local-workflow.md#mcp-schemas-examples-and-documentation).
@@ -186,19 +187,25 @@ CI is configured for Windows, Linux and macOS, with a separate real Docker job. 
 
 Structural diffs and passing selected tests do not prove full provider compatibility. JSON artifacts may contain source code and private evidence; keep them local. Docker uses a privileged local daemon and shared kernel, and same-account tampering is outside the trust boundary. Detailed restrictions and retained recovery evidence are documented in the [workflow reference](docs/local-workflow.md).
 
-The shared status encoder is imported from `plumber/protocol`. It validates a small allowlist; an encoder alone does not authenticate installations or prove a reported outcome. The separate Cloud transport authenticates and scopes status delivery. Remote approval/execution, Slack delivery, live provider pilots and public package distribution remain release gates. Model and Git adapters are trusted customer code, not sandboxes. Source expansion does not imply automatic migration support for every SDK or MCP call style.
+The shared status encoder is imported from `keepseam-client/protocol`. It validates a small allowlist; an encoder alone does not authenticate installations or prove a reported outcome. The separate Cloud transport authenticates and scopes status delivery. Remote approval/execution, Slack delivery, live provider pilots and public package distribution remain release gates. Model and Git adapters are trusted customer code, not sandboxes. Source expansion does not imply automatic migration support for every SDK or MCP call style.
+
+## Run a persistent worker
+
+Use the [service operation guide](docs/worker-service.md) for complete configuration, least-privilege filesystem preparation, native installation, status, shutdown and upgrade procedures. `keepseam worker-service run --config <absolute-json>` stays in the foreground under systemd, launchd or Windows SCM/WinSW. `render` creates a reviewable supervisor definition; it does not install a service. The private `keepseam-client/cli` export resolves the installed CLI entry point without importing a build path in application code.
+
+The service observes registered OpenAPI and source profiles, creates review jobs and can synchronize explicitly shared status to Cloud. It never grants approvals, executes consumer tests or installs updates. A separate SQLite lock excludes concurrent service ownership and releases on process loss; the native manager owns boot and restart. Logs are sanitized and rotate locally. Long observation batches can delay Cloud heartbeats; supervisor restart is not a hung-process watchdog.
 
 ## Connect worker status to Cloud
 
-Follow the [connection procedure](docs/local-workflow.md#connect-an-approved-worker-to-cloud) for complete identity generation, enrollment, private credential assembly, integration binding and synchronization examples. These operations are public SDK APIs; the product CLI does not yet have identity/enrollment/sync commands. The separate [real API laboratory](dev/real-apis/README.md#connect-the-actual-worker) supplies development-only `cloud-sync` and `worker` helpers.
+Follow the [connection procedure](docs/local-workflow.md#connect-an-approved-worker-to-cloud) for complete identity generation, enrollment, private credential assembly, integration binding and synchronization examples. Identity/enrollment are public SDK APIs; the product CLI does not yet have enrollment commands. The persistent service can synchronize approved metadata using a private credential-file reference. The separate [real API laboratory](dev/real-apis/README.md#connect-the-actual-worker) supplies development-only `cloud-sync` and `worker` helpers.
 
-Generate an identity with `generateCloudWorkerIdentity()` from `plumber`. Keep its `privateJwk` in customer-controlled secret storage. Give the Cloud organization owner/admin only `{ installationId, publicJwk, fingerprint }`. In the worker panel, they enroll the installation using a recently verified passkey, compare the fingerprint independently and activate it. Enrollment returns a client secret **revealed once** and an opaque Cloud project identifier; combine these locally with the private key to create a `CloudCredentials` object. The secret is reusable for token exchange until expiry/revocation, not a single-use token. HTTPS is required; `allowLocalHttp: true` permits only an explicit loopback development origin.
+Generate an identity with `generateCloudWorkerIdentity()` from `keepseam-client`. Keep its `privateJwk` in customer-controlled secret storage. Give the Cloud organization owner/admin only `{ installationId, publicJwk, fingerprint }`. In the worker panel, they enroll the installation using a recently verified passkey, compare the fingerprint independently and activate it. Enrollment returns a client secret **revealed once** and an opaque Cloud project identifier; combine these locally with the private key to create a `CloudCredentials` object. The secret is reusable for token exchange until expiry/revocation, not a single-use token. HTTPS is required; `allowLocalHttp: true` permits only an explicit loopback development origin.
 
-Bind each approved local subscription separately. Its public identifier is `deriveCloudIdentifier(localSubscriptionId, installationId)` from `plumber/protocol`; the Cloud owner associates it with an enabled integration in the same project. This consent does not permit uploading the subscription's documents or code.
+Bind each approved local subscription separately. Its public identifier is `deriveCloudIdentifier(localSubscriptionId, installationId)` from `keepseam-client/protocol`; the Cloud owner associates it with an enabled integration in the same project. This consent does not permit uploading the subscription's documents or code.
 
 ```ts
 import { readFile } from 'node:fs/promises';
-import { syncWorkerToCloud, type CloudCredentials } from 'plumber';
+import { syncWorkerToCloud, type CloudCredentials } from 'keepseam-client';
 
 const credentialPath = process.env.KEEPSEAM_WORKER_CREDENTIAL_FILE;
 const approvedLocalSubscriptionId = process.env.KEEPSEAM_LOCAL_SUBSCRIPTION_ID;

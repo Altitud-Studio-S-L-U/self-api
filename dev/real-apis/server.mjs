@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Client as LegacyNotion } from 'notion-v4';
-import { defineIntegrationBoundary, getIntegrationBoundary } from 'plumber';
+import { defineIntegrationBoundary, getIntegrationBoundary } from 'keepseam-client';
 import { providers, providerManifest } from './catalog.mjs';
 
 export const fixtureContext = Object.freeze({ databaseId: '00000000-0000-4000-8000-000000000001',

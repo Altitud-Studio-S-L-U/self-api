@@ -32,6 +32,10 @@ export { loadJsonSchema, compareJsonSchemas, loadJsonExample, compareJsonExample
 export type { JsonSchema, JsonSchemaSnapshot, JsonSchemaComparison, JsonExampleSnapshot, JsonExampleComparison } from './json-schema.js';
 export { runWorkerLoop } from './worker-loop.js';
 export type { WorkerLoopOptions, WorkerLoopDependencies, WorkerLoopCycle, WorkerLoopResult } from './worker-loop.js';
+export { normalizeWorkerServiceConfig, renderWorkerServiceManifest } from './worker-service-config.js';
+export type { WorkerServiceConfig, WorkerServiceTarget, WorkerServiceManifestOptions } from './worker-service-config.js';
+export { runWorkerService, loadWorkerServiceConfig, readWorkerServiceStatus, requestWorkerServiceStop } from './worker-service.js';
+export type { WorkerServiceStatus, WorkerServiceDependencies } from './worker-service.js';
 export { generateCloudWorkerIdentity, createCloudTransport, CloudConnectionError } from './cloud-connection.js';
 export { syncWorkerToCloud } from './cloud-sync.js';
 export type { CloudSyncOptions,CloudSyncResult } from './cloud-sync.js';

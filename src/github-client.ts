@@ -56,7 +56,7 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
         const response = await transport(url, {
           method, redirect: 'error', cache: 'no-store', signal: controller.signal,
           headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`,
-            'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'plumber-local-runner',
+            'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'keepseam-client/0.1.0',
             ...(encoded === undefined ? {} : { 'Content-Type': 'application/json' }) },
           ...(encoded === undefined ? {} : { body: encoded }),
         });

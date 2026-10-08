@@ -10,6 +10,8 @@ import { PlumberError } from './errors.js';
 
 export interface CloudSyncOptions {
   readonly statePath:string;readonly cloudStatePath:string;readonly credentials:CloudCredentials;
+  /** Cancellation interrupts transport, retains unacknowledged outbox entries and releases sync ownership. */
+  readonly signal?:AbortSignal;
   /** Only these explicitly approved local subscriptions may contribute metadata. */
   readonly integrationIds:readonly string[];
 }
@@ -77,7 +79,7 @@ export function summarizeCloudJob(job:WorkerJob,execution:ExecutionIntent|undefi
 }
 
 export async function syncWorkerToCloud(options:CloudSyncOptions):Promise<CloudSyncResult> {
-  const transport=createCloudTransport(options.credentials);
+  const transport=createCloudTransport(options.credentials,options.signal === undefined ? {} : {signal:options.signal});
   return sync(options,transport);
 }
 

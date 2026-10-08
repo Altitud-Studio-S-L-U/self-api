@@ -1,0 +1,140 @@
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { constants, closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join, parse, sep } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
+import { PlumberError } from './errors.js';
+
+function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
+export const serviceFiles = Object.freeze({ lock: 'worker-service.sqlite3', status: 'worker-service.status.json', stop: 'worker-service.stop.json', log: 'worker-service.log', archive: 'worker-service.previous.log' });
+const MAX_LOG_BYTES = 1024 * 1024;
+const flags = constants.O_WRONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK);
+
+/** These checks supplement, rather than replace, the dedicated OS account and operator-provisioned directory ACL. */
+export function checkServicePath(path: string, kind: 'directory' | 'config' | 'secret'): void {
+  const root = parse(path).root;
+  let current = root;
+  for (const part of path.slice(root.length).split(sep)) {
+    current = join(current, part);
+    const info = lstatSync(current);
+    if (info.isSymbolicLink() || (current !== path && !info.isDirectory())) invalid('Service files and ancestors cannot be links.');
+  }
+  const info = lstatSync(path);
+  if (kind === 'directory' ? !info.isDirectory() : !info.isFile() || info.nlink !== 1) invalid('Service paths require local directories or singly linked regular files.');
+  if (process.platform !== 'win32') {
+    if (![0, process.getuid!()].includes(info.uid) || (info.mode & (kind === 'config' ? 0o022 : 0o077)) !== 0) {
+      invalid('Service configuration must not be group/world writable; state and credentials must be private to the service account.');
+    }
+  }
+}
+
+/** Windows has no meaningful POSIX mode bits. Inspect native DACLs without modifying the user's permissions. */
+export function checkWindowsServiceAcl(path: string, privateAccess: boolean): void {
+  if (process.platform !== 'win32') return;
+  const script = `
+$ErrorActionPreference = 'Stop'
+$path = $env:KEEPSEAM_ACL_PATH
+$acl = Get-Acl -LiteralPath $path
+$allowed = @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544')
+$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+if ($allowed -notcontains $owner) { exit 2 }
+foreach ($rule in $acl.Access) {
+  if ($rule.AccessControlType -ne 'Allow') { continue }
+  $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+  if ($allowed -contains $sid) { continue }
+  if ($env:KEEPSEAM_ACL_PRIVATE -eq '1') { exit 2 }
+  $write = [System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+  if (($rule.FileSystemRights -band $write) -ne 0) { exit 2 }
+}
+`;
+  try {
+    execFileSync(join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { env: { ...process.env, PSModulePath: join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
+        KEEPSEAM_ACL_PATH: path, KEEPSEAM_ACL_PRIVATE: privateAccess ? '1' : '0' }, windowsHide: true, stdio: 'pipe', timeout: 30_000, maxBuffer: 4096 });
+  } catch { invalid('The service account requires restricted native ACLs on configuration, state and credentials.'); }
+}
+
+function assertRegularIfPresent(path: string): boolean {
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) invalid('Service runtime files cannot be links or special files.');
+    if (process.platform !== 'win32' && ((info.mode & 0o077) !== 0 || info.uid !== process.getuid!())) invalid('Service runtime files must be private to their owner.');
+    return true;
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+}
+
+function ownedWrite(path: string, bytes: string, append = false): void {
+  const exists = assertRegularIfPresent(path);
+  const fd = openSync(path, flags | (append ? constants.O_APPEND : constants.O_TRUNC) | (exists ? 0 : constants.O_CREAT | constants.O_EXCL), 0o600);
+  try { writeFileSync(fd, bytes); } finally { closeSync(fd); }
+}
+
+export function writeServiceSnapshot(directory: string, filename: string, value: unknown): void {
+  const path = join(directory, filename);
+  assertRegularIfPresent(path);
+  const temporary = `${path}.next`;
+  // A previous crash may leave this one bounded, private intermediate; no arbitrary temporary files are removed.
+  ownedWrite(temporary, `${JSON.stringify(value)}\n`);
+  renameSync(temporary, path);
+}
+
+export function appendServiceLog(directory: string, value: unknown): void {
+  const path = join(directory, serviceFiles.log);
+  const line = `${JSON.stringify(value)}\n`;
+  if (Buffer.byteLength(line) > 16_384) invalid('Service log entry exceeds its fixed limit.');
+  if (assertRegularIfPresent(path) && statSync(path).size + Buffer.byteLength(line) > MAX_LOG_BYTES) {
+    const archive = join(directory, serviceFiles.archive);
+    if (assertRegularIfPresent(archive)) unlinkSync(archive);
+    renameSync(path, archive);
+  }
+  ownedWrite(path, line, true);
+}
+
+export function readServiceRecord(directory: string, filename: string): unknown {
+  const path = join(directory, filename);
+  if (!assertRegularIfPresent(path)) return undefined;
+  if (statSync(path).size > 16_384) invalid('Service runtime record exceeds its fixed limit.');
+  return JSON.parse(readFileSync(path, 'utf8')) as unknown;
+}
+
+/** A separate SQLite exclusive transaction is released by the OS on crash; it does not block subscription databases. */
+export async function lockWorkerService(statePath: string): Promise<{ readonly directory: string; readonly runId: string; close(): void }> {
+  checkServicePath(statePath, 'directory');
+  checkWindowsServiceAcl(statePath, true);
+  const directory = realpathSync(statePath);
+  const path = join(directory, serviceFiles.lock);
+  if (!assertRegularIfPresent(path)) {
+    try { closeSync(openSync(path, flags | constants.O_CREAT | constants.O_EXCL, 0o600)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  }
+  for (const name of [...Object.values(serviceFiles), `${serviceFiles.status}.next`, `${serviceFiles.stop}.next`, `${serviceFiles.lock}-journal`]) {
+    const existing = join(directory, name);
+    if (assertRegularIfPresent(existing)) checkWindowsServiceAcl(existing, true);
+  }
+  const { DatabaseSync } = await import('node:sqlite');
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(path, { enableDoubleQuotedStringLiterals: false, allowExtension: false });
+    db.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;');
+    // Touch a page so the operating system retains the exclusive lock until rollback/exit.
+    db.exec('CREATE TABLE IF NOT EXISTS service_lock (id INTEGER PRIMARY KEY CHECK(id = 1)); INSERT OR IGNORE INTO service_lock(id) VALUES(1);');
+  } catch {
+    db?.close();
+    invalid('A worker service already owns this state, or its local lock database is unavailable.');
+  }
+  let closed = false;
+  return { directory, runId: randomUUID(), close(): void {
+    if (closed) return;
+    closed = true;
+    try { db!.exec('ROLLBACK'); } finally { db!.close(); }
+  } };
+}
+
+export function hasServiceDatabase(directory: string, filename: 'worker.sqlite3' | 'source-observations.sqlite3'): boolean {
+  const path = join(directory, filename);
+  if (!existsSync(path)) return false;
+  checkServicePath(path, 'secret');
+  checkWindowsServiceAcl(path, true);
+  return true;
+}

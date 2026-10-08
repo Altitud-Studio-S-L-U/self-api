@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { captureHttpSource, prepareHttpSource, registerHttpSourceSubscription, registerLocalSubscription, scanConsumer } from 'plumber';
+import { captureHttpSource, prepareHttpSource, registerHttpSourceSubscription, registerLocalSubscription, scanConsumer } from 'keepseam-client';
 import { providers, providerManifest } from './catalog.mjs';
 
 export const repositoryRoot = resolve(import.meta.dirname, '../..');

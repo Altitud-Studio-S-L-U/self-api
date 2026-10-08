@@ -81,7 +81,7 @@
         "Bind publication to a reviewed repository, base commit, remote destination, permitted files and validation evidence.",
         "Require separate publication scope, isolate credentials from consumer execution and preserve human commits.",
         "Create a branch and draft pull request directly from the local runner with idempotent reconciliation after uncertain responses.",
-        "Demonstrate the flow in an explicitly authorized test repository without automatic merge, deployment or code transmission to Plumber Cloud."
+        "Demonstrate the flow in an explicitly authorized test repository without automatic merge, deployment or code transmission to Keepseam Cloud."
       ]
     },
     {
@@ -125,7 +125,7 @@
       "pullRequest": "https://github.com/Altitud-Studio-S-L-U/plumber/pull/9",
       "acceptance": [
         "Run finite explicit worker cycles with cooperative cancellation, no overlap and no automatic replay of failed execution.",
-        "Validate exact status wire shapes through plumber/protocol, rejecting code, logs, prompts, schemas, commands and arbitrary labels.",
+        "Validate exact status wire shapes through keepseam-client/protocol, rejecting code, logs, prompts, schemas, commands and arbitrary labels.",
         "Verify installed package imports, NodeNext types and CLI without import-time workers, database creation or networking."
       ]
     },
@@ -144,7 +144,7 @@
     },
     {
       "id": "connected-cloud",
-      "title": "Connect the local workflow to Plumber Cloud",
+      "title": "Connect the local workflow to Keepseam Cloud",
       "status": "planned",
       "acceptance": [
         "Consume a versioned shared protocol in the separate cloud repository, including runner enrollment and revocation.",
