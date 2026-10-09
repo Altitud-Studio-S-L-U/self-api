@@ -155,6 +155,39 @@
       ]
     },
     {
+      "id": "customer-installation",
+      "title": "Install and configure the client without the development checkout",
+      "status": "planned",
+      "acceptance": [
+        "Deliver an immutable private artifact with documented runtime, dependency and engine acquisition; require no access to the source repository or pre-populated developer cache.",
+        "Provide installed preflight and guided repository/source/test configuration, with explicit permissions and locally generated worker identity for existing Cloud enrollment.",
+        "Verify installation, observation, stop/restart and state preservation on a clean Linux x64 host; retain separate native Windows/macOS and validation-platform limits."
+      ]
+    },
+    {
+      "id": "customer-maintenance",
+      "title": "Turn observed provider changes into validated customer migration proposals",
+      "status": "planned",
+      "acceptance": [
+        "Generate at least one supported migration through the installed client without requiring the customer to author an exact-edit recipe or model transport implementation for each job.",
+        "Connect impact, local plan approval, isolated baseline/candidate validation and separately authorized draft publication using the existing durable state and adapters.",
+        "Verify one real provider transition, then distinct SDK and MCP consumers; preserve internal call/parser contracts and stop on unresolved business assumptions.",
+        "Reconcile adoption against verified repository contents, preserve human edits and avoid duplicate migrations after process restart or repeated source observations; PR creation never means deployment.",
+        "Retain code, patches, private schemas and raw logs locally; Cloud receives only the approved versioned metadata contract."
+      ]
+    },
+    {
+      "id": "client-upgrades",
+      "title": "Upgrade the worker independently from customer API integrations",
+      "status": "planned",
+      "acceptance": [
+        "Verify explicit upgrades before offering opt-in automatic channels and maintenance windows; authenticate release artifacts and enforce metadata freshness and rollback policy.",
+        "Drain work, preserve credentials and durable state, check runtime/protocol/schema compatibility and verify health before resuming observations.",
+        "Exercise failed download, invalid artifact, incompatible state, crash during switch and compatible executable rollback without restoring stale approvals or losing outbox sequences.",
+        "Keep application-installed SDK updates as version-pinned repository changes; importing the SDK never updates running application dependencies."
+      ]
+    },
+    {
       "id": "connected-cloud",
       "title": "Complete connected maintenance release gates",
       "status": "planned",

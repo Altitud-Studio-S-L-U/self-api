@@ -68,6 +68,22 @@ Shared contracts cover subscriptions, source references, change evidence, runner
 
 Version protocol changes explicitly. An incompatible runner should report an upgrade requirement and preserve pending work, rather than partially accepting a job.
 
+### Customer installation and update contract (planned)
+
+Keep the worker installation separate from dependencies loaded by the customer's application. Installing the worker must not require importing the SDK, adding decorators, routing production calls through Keepseam or granting access to the private source repository. The SDK remains an optional programmatic interface to the same implementation; separate installations do not require separate codebases.
+
+The first delivery target is a versioned private Linux x64 artifact that works from a clean environment with only its documented prerequisites. Package acquisition, runtime dependencies, the pinned comparison engine and license notices must be available without borrowing files or caches from the development checkout. An installed preflight should explain missing prerequisites without silently installing or executing them. Windows and macOS service packaging require their own installation and recovery acceptance; observation support must not be presented as support for the Linux-only validation runner.
+
+Initial setup should select local repositories, provider sources and effective versions, validation targets, permitted execution resources, optional model configuration and publication destination. Generate the worker identity locally and guide the existing public-key enrollment and fingerprint approval without exposing private credentials. Inspect first and request confirmation for unresolved integration mappings; annotation is optional. A new customer must not write an exact-edit recipe or a model transport implementation for every provider change. Deliver at least one supported proposal path through the installed client before advertising autonomous maintenance.
+
+Treat updates as three separate operations:
+
+- **Application SDK dependency:** pin it in the customer's package manifest and lockfile. An update is a reviewed repository change with its own tests; an imported library never replaces itself while the application runs.
+- **Resident worker runtime:** initially support explicit upgrades, then an opt-in release channel and maintenance window. Stage and authenticate an immutable artifact, validate runtime/protocol/state compatibility, drain work, switch versions and check health before resuming. Preserve identity, subscription state, outbox sequences and approval/recovery records. Roll back the executable only when the retained state is compatible; never restore an old database over new execution evidence or replay consumed approvals automatically. Use established update tooling and trust metadata rather than inventing a signing protocol; signatures, metadata expiry and rollback protection solve different problems. [TUF overview](https://theupdateframework.io/docs/overview/)
+- **Customer API integration:** select a supported provider transition, generate call/SDK/parser changes, validate in isolation and publish an authorized draft PR. Neither updating Keepseam nor installing a newer provider SDK proves that the remote API migration is complete.
+
+The initial acceptance is one real provider transition from installed client to reviewed draft PR, without developer-authored per-job recipes, followed by an SDK-based consumer and an MCP consumer. Keep fixture replay, live provider checks and simulated scenarios labeled separately. Record the analyzed repository revision and selected evidence, validate preserved internal behavior, and reconcile adoption only from verified repository contents after merge. A PR or a new observation does not establish deployment or advance the adopted baseline by itself.
+
 ## 6. Local state and privacy boundary
 
 Persist source snapshots, consumer baselines, plans, approvals, execution attempts, validation evidence, and Git references in customer-controlled state. Keep state and secrets outside the mutable consumer checkout. Honor an existing project work location for isolated intermediate artifacts; otherwise use an explicitly managed location. Cleanup targets only artifacts owned by a recorded run.
@@ -179,6 +195,8 @@ Use `pnpm dev` to resume implementation. It reads the ordered milestones in [`to
 At the start of a development session, inspect the current branch, local changes, pending reviews, and the active milestone. Continue the smallest change that addresses an unmet criterion, preserving the product and authorization boundaries above. Run the appropriate focused checks while editing, then `pnpm dev:check` before requesting review. The first setup still requires `pnpm install --frozen-lockfile` and `pnpm engine:setup` as described in the README.
 
 Update the manifest in the same reviewed change when scope or milestone status changes. `in-progress` identifies the single implementation focus; `in-review` means code is awaiting review and does not block displaying the next implementation item. A passing test run does not change either state. Use `completed` only after the acceptance criteria and associated review are satisfied; it does not claim release or production deployment. The manifest is a short delivery index, while the phases below retain the wider release gates. Do not store session logs or repeated test transcripts in either file.
+
+The immediate product priority is the customer maintenance loop: finish the direct publication proof, make acquisition/setup reproducible without a source checkout, and connect observation to generated proposals, authorized validation and publication through the installed client. Runtime auto-updates follow a verified explicit upgrade path. Additional Cloud management features do not satisfy these client release gates. Measure completed migrations and human review effort, not the number of documentation pages fetched or providers listed.
 
 | Phase | Deliverable | Exit criterion |
 | --- | --- | --- |
