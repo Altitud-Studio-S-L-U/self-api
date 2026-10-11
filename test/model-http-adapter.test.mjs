@@ -81,6 +81,42 @@ for (const provider of ['openai', 'anthropic', 'google', 'local-openai-compatibl
   });
 }
 
+for (const provider of ['openai', 'anthropic', 'google', 'local-openai-compatible']) {
+  test(`${provider} binds editable output paths to source files and rejects test edits and no-op replacements`, async () => {
+    const testText = 'import assert from "node:assert/strict"; assert.equal(2, 2);\n';
+    const selectedTest = { path: 'test/order.test.mjs', sha256: createHash('sha256').update(testText).digest('hex'), text: testText, role: 'test' };
+    const selected = { ...context, files: [file, selectedTest] };
+    const requestFor = adapter => {
+      const { propose: _propose, ...identity } = adapter;
+      return prepareModelProposal({ ...selected, adapter: identity });
+    };
+    const fixture = transport(responseFor(provider));
+    const adapter = createHttpModelAdapter(options(provider), fixture.dependencies);
+    const result = await propose(adapter, requestFor(adapter));
+    assert.equal(result.status, 'proposal-ready');
+    assert.equal(result.consumerModified, false);
+    assert.equal(result.consumerExecuted, false);
+    assert.equal(result.authorization, 'not-granted');
+    assert.deepEqual(result.recipe.files.map(value => value.path), [file.path]);
+    const body = fixture.calls[0].body;
+    const schema = provider === 'openai' ? body.text.format.schema : provider === 'anthropic' ? body.output_config.format.schema
+      : provider === 'google' ? body.generationConfig.responseJsonSchema : body.response_format.json_schema.schema;
+    assert.deepEqual(schema.properties.files.items.properties.path.enum, [file.path]);
+    assert(!JSON.stringify(schema).includes(selectedTest.path));
+
+    const unauthorized = { ...recipe, files: [{ path: selectedTest.path, sha256: selectedTest.sha256,
+      edits: [{ before: 'assert.equal(2, 2)', after: 'assert.equal(1, 1)' }] }] };
+    const unchanged = structuredClone(recipe);
+    unchanged.files[0].edits[0].after = unchanged.files[0].edits[0].before;
+    for (const response of [unauthorized, unchanged]) {
+      const rejected = transport(responseFor(provider, JSON.stringify(response)));
+      const rejectedAdapter = createHttpModelAdapter(options(provider), rejected.dependencies);
+      await assert.rejects(propose(rejectedAdapter, requestFor(rejectedAdapter)), { code: 'INVALID_INPUT' });
+      assert.equal(rejected.calls.length, 1);
+    }
+  });
+}
+
 test('the native local adapter talks to an explicitly configured loopback server without credentials or DNS', async t => {
   let requests = 0;
   const server = createServer(async (request, response) => {
@@ -111,6 +147,27 @@ test('endpoint, model and token policy changes invalidate the prepared identity'
     assert.notEqual(prepare(a).id, prepare(b).id);
   }
 });
+
+// Captured policy-v3 identities: disclosure consent must not cross a prompt-policy change.
+for (const [provider, policyId] of [
+  ['openai', 'f4b4493bb9f30e359960cba5beb728e1db665a434ea4f2b2ec977ad9045d85db'],
+  ['anthropic', 'a185b30abac9b05cd8ec2efdd32edc50302924b0efbf06631adae64c1ad73f67'],
+  ['google', 'd6e3ec39c02c74defe097205fc90d3435edaa0b9394237359dd13a2896a4ff72'],
+  ['local-openai-compatible', '1f80add3b02d40a6c8949a013caa956353ebd13ef45bbe02cb3a142abd6495cb'],
+]) {
+  test(`${provider} rejects prior prompt-policy consent before credentials or context disclosure`, async () => {
+    const fixture = transport(responseFor(provider));
+    let keyReads = 0;
+    const adapter = createHttpModelAdapter(options(provider, { getApiKey: () => { keyReads++; return 'fictional-provider-key'; } }), fixture.dependencies);
+    const previous = { id: `${provider}-${policyId.slice(0, 16)}`, location: adapter.location,
+      destination: provider === 'local-openai-compatible' ? `local:http-${policyId}` : adapter.destination, policyId };
+    const request = prepareModelProposal({ ...context, adapter: previous });
+    const consent = approveModelProposal({ request, expectedRequestId: request.id, allowRemote: true });
+    await assert.rejects(proposeMigrationWithModel({ request, consent, adapter }), { code: 'INVALID_INPUT' });
+    assert.equal(keyReads, 0);
+    assert.equal(fixture.calls.length, 0);
+  });
+}
 
 test('a controlled local HTTP response can abstain with explicit decisions without creating an executable recipe', async () => {
   const output = JSON.stringify({ schemaVersion: 1, summary: 'The supplied documentation does not establish the replacement units.',
