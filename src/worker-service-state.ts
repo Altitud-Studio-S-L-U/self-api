@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { constants, closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, parse, sep } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import type { DatabaseSync } from 'node:sqlite';
 import { PlumberError } from './errors.js';
 import { checkWindowsPermissions } from './windows-permissions.js';
@@ -64,10 +65,40 @@ function ownedWrite(path: string, bytes: string, append = false): void {
 export function writeServiceSnapshot(directory: string, filename: string, value: unknown): void {
   const path = join(directory, filename);
   assertRegularIfPresent(path);
+  const previous = process.platform === 'win32' && existsSync(path) ? lstatSync(path, { bigint: true }) : undefined;
   const temporary = `${path}.next`;
   // A previous crash may leave this one bounded, private intermediate; no arbitrary temporary files are removed.
-  ownedWrite(temporary, `${JSON.stringify(value)}\n`);
-  renameSync(temporary, path);
+  const bytes = `${JSON.stringify(value)}\n`;
+  if (Buffer.byteLength(bytes) > 16_384) invalid('Service runtime record exceeds its fixed limit.');
+  ownedWrite(temporary, bytes);
+  const parent = previous ? lstatSync(directory, { bigint: true }) : undefined;
+  const staged = previous ? lstatSync(temporary, { bigint: true }) : undefined;
+  try { renameSync(temporary, path); }
+  catch (error) {
+    if (!previous || !['EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    // MoveFileEx can report access denied while a Windows reader still holds the
+    // destination open. Wait only for that atomic replacement, without deleting
+    // the old snapshot, rewriting staging, or repairing any native permissions.
+    checkWindowsPermissions([directory, path, temporary], true);
+    try { accessSync(path, constants.W_OK); accessSync(temporary, constants.W_OK); }
+    catch { throw error; }
+    // The fixed wait budget starts after the separately bounded native ACL check.
+    const until = performance.now() + 1000;
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    while (performance.now() < until) {
+      assertRegularIfPresent(path); assertRegularIfPresent(temporary);
+      const current = lstatSync(path, { bigint: true }), next = lstatSync(temporary, { bigint: true }), container = lstatSync(directory, { bigint: true });
+      if (current.dev !== previous.dev || current.ino !== previous.ino || next.dev !== staged!.dev || next.ino !== staged!.ino
+        || container.dev !== parent!.dev || container.ino !== parent!.ino || !container.isDirectory() || container.isSymbolicLink()
+        || readFileSync(temporary, 'utf8') !== bytes) invalid('Service snapshot changed during atomic replacement.');
+      try { renameSync(temporary, path); return; }
+      catch (attempt) {
+        if (!['EPERM', 'EACCES'].includes((attempt as NodeJS.ErrnoException).code ?? '')) throw attempt;
+      }
+      Atomics.wait(pause, 0, 0, Math.min(10, Math.max(0, until - performance.now())));
+    }
+    throw error;
+  }
 }
 
 export function appendServiceLog(directory: string, value: unknown): void {
