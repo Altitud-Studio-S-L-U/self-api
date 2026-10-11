@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createServiceFixture } from './service-fixture.mjs';
 import { renderWorkerServiceManifest } from '../dist/worker-service-config.js';
 import { listSourceSubscriptions, listSourceObservations } from '../dist/index.js';
+import { provisionWindowsServiceFixture, readWindowsServiceEvidence } from './service-native-windows-fixture.mjs';
 
 // This acceptance test installs one temporary native service on a disposable
 // hosted runner. It must never install a service on a developer's workstation.
@@ -85,9 +86,25 @@ try {
   fixture = await createServiceFixture(join(directory, 'fixture'));
   const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
   if (target === 'windows') {
-    run('icacls.exe', [fixture.statePath, '/grant:r', '*S-1-5-19:(OI)(CI)F', '/T']);
-    run('icacls.exe', [directory, '/setowner', '*S-1-5-32-544', '/T']);
+    assertOwned();
+    await provisionWindowsServiceFixture(directory, fixture);
   }
+  const sourceSubscriptions = async () => target === 'windows'
+    ? [(await readWindowsServiceEvidence(fixture.statePath, fixture.subscriptionId)).subscription]
+    : listSourceSubscriptions({ statePath: fixture.statePath });
+  const assertUnapprovedObservations = async () => {
+    if (target === 'windows') {
+      const evidence = await readWindowsServiceEvidence(fixture.statePath, fixture.subscriptionId);
+      assert(evidence.observations.length > 0, 'The service must persist real observations');
+      // Administrative read-only inspection must not create execution approval
+      // or open the service's private store under the seeding runner's identity.
+      assert.equal(evidence.jobs, 0);
+      assert.equal(evidence.executionIntents, 0);
+    } else {
+      const observations = await listSourceObservations({ statePath: fixture.statePath, subscriptionId: fixture.subscriptionId });
+      assert(observations.length > 0 && observations.every(item => item.authorization === 'not-granted'));
+    }
+  };
   const manifest = userScope ? run(process.execPath, [join(directory, 'dist', 'cli.js'), 'worker-service', 'render', '--config', fixture.configPath,
     '--target', 'systemd', '--scope', 'user', '--node', process.execPath, '--cli', join(directory, 'dist', 'cli.js'), '--name', name])
     : renderWorkerServiceManifest({ config, configPath: fixture.configPath, target, nodePath: process.execPath,
@@ -169,7 +186,7 @@ try {
     await stop();
     await start();
     const first = await running();
-    const initial = (await listSourceSubscriptions({ statePath: fixture.statePath })).find(item => item.id === fixture.subscriptionId);
+    const initial = (await sourceSubscriptions()).find(item => item.id === fixture.subscriptionId);
     assert(initial?.lastSucceededAt && initial.lastError === null, 'The supervisor must run the real source observer');
     assert(Number.isSafeInteger(first.pid) && first.pid > 0 && first.pid !== process.pid);
     if (userScope) {
@@ -200,11 +217,10 @@ try {
     assert.notEqual(recovered.pid, first.pid);
     await writeFile(fixture.sourcePath, JSON.stringify({ type: 'object', properties: { id: { type: 'string' }, region: { type: 'string' } }, required: ['id', 'region'] }));
     await until(async () => {
-      const current = (await listSourceSubscriptions({ statePath: fixture.statePath })).find(item => item.id === fixture.subscriptionId);
+      const current = (await sourceSubscriptions()).find(item => item.id === fixture.subscriptionId);
       return current?.lastObservedSha !== initial.lastObservedSha && current?.lastError === null;
     }, 'Recovered service did not observe the changed contract');
-    const observations = await listSourceObservations({ statePath: fixture.statePath, subscriptionId: fixture.subscriptionId });
-    assert(observations.length > 0 && observations.every(item => item.authorization === 'not-granted'));
+    await assertUnapprovedObservations();
     if (target === 'windows') {
       // Both losses must recover; this is not a retry of a failed assertion.
       // Keep SCM's configured 30s/60s recovery schedule. A third forced failure
@@ -236,8 +252,7 @@ try {
         assert.notEqual(next.pid, restarted.pid);
         restarted = next;
       }
-      const finalObservations = await listSourceObservations({ statePath: fixture.statePath, subscriptionId: fixture.subscriptionId });
-      assert(finalObservations.length > 0 && finalObservations.every(item => item.authorization === 'not-granted'));
+      await assertUnapprovedObservations();
       process.stdout.write('Windows recovery acceptance: two forced losses and three clean restarts each persisted multiple healthy cycles.\n');
     }
     if (userScope) {

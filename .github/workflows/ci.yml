@@ -20,7 +20,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # Windows serial native-permission checks need a larger bounded budget,
+    # including dependency setup and package validation.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 10 }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -81,6 +83,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - if: runner.os == 'Windows'
+        run: node --test tooling/service-native-windows-fixture.test.mjs
       - run: node tooling/service-native-smoke.mjs
       - if: runner.os == 'Linux'
         run: node tooling/service-native-smoke.mjs --user --expect-namespace-denial
