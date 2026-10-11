@@ -7,6 +7,7 @@ import { decodeCloudStatusEvent,deriveCloudIdentifier,encodeCloudStatusEvent,typ
 import { openExistingWorkerStore } from './worker.js';
 import type { ExecutionIntent,WorkerJob } from './worker-store.js';
 import { PlumberError } from './errors.js';
+import { checkWindowsPermissions } from './windows-permissions.js';
 
 export interface CloudSyncOptions {
   readonly statePath:string;readonly cloudStatePath:string;readonly credentials:CloudCredentials;
@@ -25,25 +26,29 @@ function secureDirectory(value:string):string {
   const tail=process.platform==='win32' && /^[a-z]:[\\/]/iu.test(value)?value.slice(2):value;
   if (tail.includes(':') || /(?:^|[\\/])(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:[. ]|$)/iu.test(tail)) invalid('Cloud state does not support device paths or alternate streams.');
   if (process.platform==='win32' && tail.split(/[\\/]/u).some(part=>part!=='.' && part!=='..' && /[. ]$/u.test(part))) invalid('Cloud state does not support ambiguous path segments.');
-  const path=resolve(value),root=parse(path).root;let current=root;
+  const path=resolve(value),root=parse(path).root;let current=root,created=false;
   for (const part of ['',...path.slice(root.length).split(sep).filter(Boolean)]) {
     if (part) current=join(current,part);
     let info;
     try {info=lstatSync(current);}catch(error){
       if ((error as NodeJS.ErrnoException).code!=='ENOENT') throw error;
-      try {mkdirSync(current,{mode:0o700});}catch(creation){if ((creation as NodeJS.ErrnoException).code!=='EEXIST') throw creation;}
+      try {mkdirSync(current,{mode:0o700});if(current===path)created=true;}catch(creation){if ((creation as NodeJS.ErrnoException).code!=='EEXIST') throw creation;}
       info=lstatSync(current);
     }
     if (!info.isDirectory() || info.isSymbolicLink()) invalid('Cloud state ancestors must be real directories.');
   }
+  if(process.platform!=='win32' && (lstatSync(path).mode&0o077)!==0) invalid('Cloud state must be a private local directory.');
+  checkWindowsPermissions([path],true,created?path:undefined);
   return realpathSync(path);
 }
 async function database(directory:string):Promise<DatabaseSync> {
   const path=join(directory,'cloud.sqlite3');
+  const permissionPaths=[directory];
   for (const suffix of ['','-journal','-wal','-shm']) {
-    try {const info=lstatSync(path+suffix);if (!info.isFile() || info.isSymbolicLink() || info.nlink!==1 || (process.platform!=='win32' && (info.mode&0o077)!==0)) invalid('Cloud state must be a private regular file.');}
+    try {const info=lstatSync(path+suffix);if (!info.isFile() || info.isSymbolicLink() || info.nlink!==1 || (process.platform!=='win32' && (info.mode&0o077)!==0)) invalid('Cloud state must be a private regular file.');permissionPaths.push(path+suffix);}
     catch(error){if ((error as NodeJS.ErrnoException).code!=='ENOENT') throw error;}
   }
+  checkWindowsPermissions(permissionPaths,true);
   try {const fd=openSync(path,'wx',0o600);closeSync(fd);}catch(error){if ((error as NodeJS.ErrnoException).code!=='EEXIST') throw error;}
   const {DatabaseSync}=await import('node:sqlite');
   const db=new DatabaseSync(path,{timeout:1000,allowExtension:false,enableDoubleQuotedStringLiterals:false});
@@ -108,8 +113,19 @@ async function sync(options:CloudSyncOptions,transport:CloudTransport):Promise<C
       const row=db.prepare('SELECT sequence,event FROM outbox ORDER BY sequence LIMIT 1').get();if (!row) break;
       const event=decodeCloudStatusEvent(String(row['event']));
       if (event.body.type==='maintenance-status' && !allowed.has(event.body.integrationId)) invalid('Pending Cloud events require their original sharing approval.');
-      renew();await transport.send(event);renew();
-      db.prepare('DELETE FROM outbox WHERE sequence=?').run(Number(row['sequence']));sent++;
+      renew();await transport.send(event);
+      // Fence acknowledgement removal with the same durable lease renewal;
+      // an interrupted commit retains the event for an idempotent replay.
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        renew();
+        if (Number(db.prepare('DELETE FROM outbox WHERE sequence=?').run(Number(row['sequence'])).changes)!==1)
+          invalid('Acknowledged Cloud event is missing; retain state for review.');
+        db.exec('COMMIT');sent++;
+      } catch(error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        throw error;
+      }
     }
   };
   try {

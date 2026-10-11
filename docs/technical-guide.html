@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><title>Keepseam Client · guía técnica</title>
+<style>
+@page { size: A4; margin: 14mm; }
+* { box-sizing: border-box; }
+body { margin: 0; color: #152631; font: 10pt/1.35 Arial, sans-serif; }
+.page { height: 268mm; position: relative; padding-bottom: 12mm; break-after: page; }
+.page:last-child { break-after: auto; }
+h1 { font-size: 23pt; line-height: 1.12; margin: 0 0 4mm; letter-spacing: -.4pt; }
+.page:last-child h1 { margin-bottom: 2.5mm; }
+h2 { font-size: 13pt; line-height: 1.2; margin: 4mm 0 2mm; }
+h3 { font-size: 10pt; margin: 3mm 0 1.5mm; }
+p { margin: 0 0 2.5mm; }
+ul, ol { margin: 0 0 3mm; padding-left: 5mm; }
+li { margin-bottom: 1.8mm; }
+table { width: 100%; border-collapse: collapse; margin: 2mm 0 3.5mm; font-size: 10pt; }
+th, td { text-align: left; vertical-align: top; padding: 1.8mm 2.5mm; border-bottom: .25mm solid #d6e1e6; }
+th { background: #eaf1f4; }
+a { color: #0f566f; overflow-wrap: anywhere; }
+code { font: 9.5pt/1.35 Consolas, monospace; overflow-wrap: anywhere; }
+pre { font: 9.5pt/1.4 Consolas, monospace; white-space: pre-wrap; margin: 2mm 0 3.5mm; padding: 3mm; background: #edf3f5; overflow-wrap: anywhere; }
+.label { text-transform: uppercase; font-size: 9pt; letter-spacing: 1pt; color: #41606f; margin-bottom: 3mm; }
+.notice { border-left: 1mm solid #b47924; padding: 2.5mm 3mm; background: #fbf3e8; margin: 3mm 0; }
+.diagram { padding: 4mm; background: #edf3f5; font: 10pt/1.5 Consolas, monospace; margin: 3mm 0; white-space: pre-wrap; }
+footer { position: absolute; bottom: 0; left: 0; right: 0; border-top: .25mm solid #cedbe2; padding-top: 2mm; font-size: 9pt; color: #41606f; display: flex; justify-content: space-between; }
+</style></head>
+<body>
+<section class="page">
+<div class="label">Altitud Commerce, LLC · Keepseam Client 0.1.0</div>
+<h1>SDK, CLI y worker<br>Guía técnica</h1>
+<p>Keepseam mantiene integraciones desde el entorno del cliente: observa contratos, identifica usos potencialmente afectados, prepara propuestas y valida cambios autorizados en copias aisladas. El SDK y la CLI comparten implementación TypeScript.</p>
+<div class="notice"><strong>Alcance entregado:</strong> JS/TS, OpenAPI local/HTTPS, evidencia MCP/schema/documentación, propuestas de modelo con consentimiento, revisión semántica, pruebas aisladas y publicación de draft PR separadamente autorizada. El daemon observa y comparte estado opcional; no aprueba cambios. La calidad de un modelo, publicación live y distribución firmada requieren su aceptación específica.</div>
+<div class="diagram">Fuentes aprobadas → evidencia local → impacto JS/TS
+  → propuesta → revisión humana → aprobación de validación
+  → baseline/candidato en Docker → aprobación de publicación
+  → GitHub draft PR → revisión/adopción verificadas por separado
+
+Cloud ← únicamente estado permitido y autenticado
+Modelo / GitHub ← contexto o cambios aprobados directamente</div>
+<h2>Límites de producto</h2>
+<p>El código, parches, prompts, schemas privados y logs permanecen locales; el cliente puede autorizar su contexto a un modelo o cambios a su GitHub. Esas rutas no pasan por Keepseam Cloud. Importar el SDK no inicia workers, abre DB, instala herramientas ni ejecuta código consumidor. La funcionalidad local no necesita cuenta Keepseam.</p>
+<table><thead><tr><th>Componente</th><th>Contrato</th></tr></thead><tbody>
+<tr><td>SDK / CLI</td><td><code>keepseam-client</code>, <code>/protocol</code>, <code>/cli</code>; CLI <code>keepseam</code>.</td></tr>
+<tr><td>Evidencia / planificación</td><td>Snapshots y hashes, inspección acotada, versiones/procedencia, recetas exactas.</td></tr>
+<tr><td>Worker / ejecución</td><td>SQLite privado, jobs y cola con recibos locales; Docker Linux x64 fijo.</td></tr>
+<tr><td>Integraciones externas</td><td>Modelo, GitHub y Cloud tienen contratos y permisos independientes.</td></tr>
+</tbody></table>
+<p>Un diff estructural no infiere semántica comercial. Un test verde solo demuestra sus aserciones. Una propuesta no equivale a autorización; un draft PR no acredita merge, adopción o despliegue. Las llamadas dinámicas, wrappers/SDK no cubiertos y formatos fuera del perfil permanecen explícitamente sin resolver.</p>
+<p>Esta es la documentación técnica mantenida. Fuente: <code>docs/technical-guide.html</code>; PDF: <code>docs/technical-guide.pdf</code>. Las guías de fixtures y laboratorios conservan su alcance de ejemplo, separado del contrato de producto.</p>
+<footer><span>Keepseam Client · alcance y arquitectura</span><span>1 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Instalación y entradas públicas</div>
+<h1>Distribución y SDK</h1>
+<p>El paquete privado <code>keepseam-client@0.1.0</code> es ESM, <code>UNLICENSED</code>. Requiere Node <strong>24.11.1 ≤ versión &lt; 25</strong>; desarrollo usa pnpm <strong>11.19.0</strong>. No se ha autorizado publicar en npm. No instalar un paquete ajeno de nombre similar.</p>
+<h2>Desde el checkout</h2>
+<pre>pnpm install --frozen-lockfile
+pnpm engine:setup
+pnpm build
+pnpm keepseam --help
+# Offline solo si las dependencias ya están en el store:
+pnpm install --offline --frozen-lockfile</pre>
+<p><code>engine:setup</code> descarga oasdiff <strong>1.33.0</strong> oficial, verifica checksum y conserva su licencia en <code>work/tools/oasdiff</code>; necesita <code>tar</code>. Es una adquisición explícita con red. Comparar contratos no descarga el motor automáticamente; se indica su ruta confiable y <code>.exe</code> en Windows.</p>
+<h2>Instalar el SDK en otro proyecto</h2>
+<pre>pnpm pack --pack-destination work/packages
+# En el proyecto receptor, usar la ruta real del archivo:
+pnpm add --offline --ignore-scripts /ruta/keepseam-client-0.1.0.tgz
+pnpm exec keepseam --help</pre>
+<p>Packing compila; no publica. El paquete SDK se instala con su runtime/dependencias y no incorpora las fixtures ni oasdiff. Offline exige cache local. Usar imports públicos, sin acoplar consumidores a <code>src/</code> o <code>dist/</code>; TypeScript usa ESM/NodeNext y tipos Node.</p>
+<pre>import { compareOpenApi } from 'keepseam-client';
+const report = await compareOpenApi({
+  basePath: '/contracts/base.json',
+  revisionPath: '/contracts/revision.json',
+  enginePath: '/opt/keepseam/engine/oasdiff',
+});
+console.log(report.status, report.changes);</pre>
+<h2>Archivo CLI con runtime incluido</h2>
+<p><code>pnpm release:build</code> produce un archivo por plataforma con ejecutable Node SEA, <code>lib/</code>, dependencias materializadas y motor/licencias. Extraer el directorio completo; no requiere Node instalado para la CLI. SDK, supervisor y host Docker conservan sus propios requisitos. El builder verifica help y una comparación real; no acredita publicación remota ni toda la instalación.</p>
+<p>Windows no tiene firma Authenticode y macOS solo firma ad hoc, sin notarización. Verificar origen/digest y política de ejecución antes de instalar. Git para publicación debe aceptar <code>git --no-lazy-fetch --version</code>. Observación/propuesta funciona en Windows/macOS; validación consumidor exige Linux x64 y Docker local.</p>
+<p>La CLI es <code>pnpm keepseam</code> desde checkout, <code>pnpm exec keepseam</code> desde paquete, o el ejecutable del bundle. Añadir <code>--silent</code> al script pnpm cuando se necesite JSON sin banners. Errores CLI se escriben en stderr; leer el contrato del comando para interpretar sus códigos.</p>
+<footer><span>Keepseam Client · adquisición y consumo</span><span>2 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Contratos, versiones y evidencia</div>
+<h1>Comparar e inspeccionar</h1>
+<pre>keepseam compare /contracts/base.json /contracts/revision.json \
+  --engine /opt/keepseam/engine/oasdiff --json
+keepseam scan /projects/consumer --json
+keepseam impact /contracts/base.json /contracts/revision.json \
+  --consumer /projects/consumer --provider-base-url https://api.example.invalid \
+  --engine /opt/keepseam/engine/oasdiff --json</pre>
+<p>Las rutas/dominio son placeholders. OpenAPI admite JSON 3.0.x/3.1.x y motor fijado. <code>compare</code> devuelve 0 sin breaking findings, 1 con cambios incompatibles y 2 con input/motor fallido. <code>impact</code> conserva breaking findings incluso si no encuentra un uso consumidor. Todos los informes de impacto requieren revisión.</p>
+<h2>Inspección sin ejecutar consumidores</h2>
+<p><code>scanConsumer</code> y <code>analyzeImpact</code> capturan sintaxis TS/JS y manifests sin importar módulos, resolver imports, ejecutar configuración Babel, instalar dependencias ni lanzar scripts. La evidencia <code>fetch</code> registra ubicación, método/origen conocido y patrón de ruta; soporta segmentos completos <code>/orders/{id}</code>, no parciales como <code>{id}.json</code>.</p>
+<p>Lecturas directas de JSON aportan evidencia acotada del parser. Aliases, URLs dinámicas, wrappers, SDK y flujos indirectos pueden quedar sin resolver. Un informe vacío no prueba ausencia de integraciones. Query values y credenciales URL se excluyen; los informes aún contienen metadata privada y no son eventos Cloud.</p>
+<table><thead><tr><th>Límite</th><th>Comportamiento</th></tr></thead><tbody>
+<tr><td>Captura consumidor</td><td>500 archivos, 2.000 entradas, 1 MiB/archivo, 16 MiB total, profundidad 20.</td></tr>
+<tr><td>Entradas omitidas</td><td>Ocultos, declaraciones, dependencias, builds y symlinks, con razones. Root symlink rechazado.</td></tr>
+<tr><td>Manifest / scripts</td><td>Rangos declarados y nombres/hashes de scripts, sin ejecutarlos; no prueban versiones instaladas.</td></tr>
+</tbody></table>
+<h2>Catálogo de integración y dependencias</h2>
+<p><code>integration-check manifest.json</code> separa versiones API, SDK, webhook, protocolo/servidor MCP y versiones efectivas; provenance y evidencia respaldan retirement/support. Fechas desconocidas son <code>null</code>, con explicación. Su cobertura es <code>listed-only</code>. <code>defineIntegrationBoundary</code> añade metadata a una función preservando identidad, <code>this</code>, resultados y errores; no valida schemas ni repara tráfico.</p>
+<pre>keepseam deps-scan /projects/consumer/package-lock.json --json
+keepseam deps-audit /projects/consumer/package-lock.json \
+  --advisories /private/advisories.json --json</pre>
+<p>Perfil npm lockfile v2/v3; no pnpm/yarn ni resolución online de rangos/advisories. Correlaciona versiones exactas del catálogo suministrado: unlisted no significa libre de vulnerabilidades. Límites: 4 MiB, profundidad 64, 5.000 entradas, 1.000 advisories y 20.000 correlaciones. No instala ni consulta registry.</p>
+<footer><span>Keepseam Client · análisis estructural</span><span>3 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Fuentes aprobadas · sin crawler</div>
+<h1>HTTPS, MCP y schemas</h1>
+<p><code>http-subscribe</code> registra OpenAPI; <code>source-http-subscribe</code> registra catálogos MCP normalizados, JSON Schema, ejemplos o documentación. Se observa la URL exacta tras opt-in <code>--http</code>; registrar es offline. Sin opt-in se devuelve <code>http-not-enabled</code> y no se presenta una captura fresca.</p>
+<pre># Política de ejemplo ficticia, sin credenciales:
+{"url":"https://api.example.invalid/openapi.json",
+ "allowedOrigins":["https://api.example.invalid"],"contentKind":"json"}
+keepseam http-subscribe /private/source-policy.json \
+  --baseline /contracts/base.json --consumer /projects/consumer \
+  --provider-base-url https://api.example.invalid \
+  --engine /opt/keepseam/engine/oasdiff --state /private/keepseam
+keepseam worker --once --state /private/keepseam \
+  --engine /opt/keepseam/engine/oasdiff --http</pre>
+<p>HTTPS 443, allowlist exacta, DNS público validado y conexión fijada con TLS por nombre. Rechaza privados/reservados, redirects, compresión, query/fragment/credenciales URL. No usa proxy, cookies, crawl ni retries implícitos. Máximo 4 MiB/30 s, configurable a menos. El SDK permite credenciales por callback para un <code>authContextId</code> opaco; CLI/service solo perfil de fuentes públicas.</p>
+<p>Preserva bytes, ETag/Last-Modified y contexto de autorización; 304 reutiliza solo snapshot matching previamente verificado. Captura/cache/comparación/historia se confirman conjuntamente bajo ownership. Un fallo conserva la última evidencia válida; no adelanta freshness. Cambiar alcance de permisos exige otro auth-context.</p>
+<h2>MCP y JSON Schema</h2>
+<pre>keepseam mcp-compare /captures/before.json /captures/after.json --json
+keepseam schema-compare /schemas/before.json /schemas/after.json \
+  --direction input --json
+keepseam source-subscribe /captures/after.json --kind mcp \
+  --baseline /captures/before.json --state /private/keepseam
+keepseam source-observe --once --state /private/keepseam --json</pre>
+<p>MCP exige captura completa, identidad server/protocol/auth-context, capabilities y pagination declaradas. Incompleto o contexto cambiado produce inconclusive; una ausencia no se interpreta como herramienta eliminada. No conecta servidores ni ejecuta tools. <code>mcp-impact --bindings</code> asocia receivers/ficheros explícitos a <code>callTool</code> y lecturas directas de <code>structuredContent</code>; los flujos restantes exigen revisión.</p>
+<p>Schema soporta tipo único, propiedades/required/additionalProperties booleano, arrays/items y enum/const scalar. Rechaza refs, combinators, unions y constraints no soportados. Input preserva entradas antiguas; output exige que respuestas nuevas cumplan el contrato viejo. Límites: 4 MiB, profundidad 64, 20.000 nodos; MCP ≤ 1.000 tools. Números con pérdida de precisión son input no soportado.</p>
+<p><code>example-compare</code> y documentación solo muestran evidencia observada: no infieren required fields, variantes o compatibilidad. Texto/HTML no se renderiza ni ejecuta, no sigue links; normalizar saltos es opt-in. Esas fuentes no generan una migración autorizada por sí solas.</p>
+<footer><span>Keepseam Client · adquisición acotada de evidencia</span><span>4 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Nuevo recorrido de propuesta desde CLI</div>
+<h1>Proponer con un modelo</h1>
+<p>Seleccionar un job OpenAPI observado, tests read-only, motor y modelo explícitos. La preparación recomputa diff/impact e inspecciona consumidor actual; no confía en un informe guardado para decidir qué contexto revelar. No se elige ni descarga modelo automáticamente.</p>
+<pre># /private/local-model.json: ejemplo de runtime ya instalado
+{"provider":"local-openai-compatible","model":"your-installed-model",
+ "policyId":"team-local-proposals-v1","maximumOutputTokens":2048,
+ "endpoint":"http://127.0.0.1:11434/v1/chat/completions"}
+keepseam job-proposal-plan JOB_ID --state /private/keepseam \
+  --engine /opt/keepseam/engine/oasdiff --model /private/local-model.json \
+  --test orders.test.mjs
+keepseam job-propose JOB_ID --state /private/keepseam \
+  --engine /opt/keepseam/engine/oasdiff --model /private/local-model.json \
+  --test orders.test.mjs --output proposal.json</pre>
+<p><code>--source</code> selecciona JS/TS capturado adicional; <code>--evidence</code> añade texto local revisado. Descubrimiento sugiere posibles llamadas/parsers/tests sin seleccionarlos o ejecutarlos. El modelo ve contratos base/revisión completos, impacto y contenidos source/test seleccionados, sin ruta absoluta del consumidor. Inputs demasiado grandes fallan; no se truncan contratos silenciosamente.</p>
+<p><code>--timeout-ms</code> permite 1.000–120.000 ms en plan/propose, por defecto 30.000. El deadline forma parte del request consentido; para una CPU lenta elegirlo explícitamente antes de consentir, sin retries ocultos.</p>
+<h2>Consentimiento y egress</h2>
+<p><code>job-propose</code> imprime el request exacto y exige confirmarlo en terminal interactivo. Consentimiento es de un solo uso y expira; no se recupera deserializando JSON tras reinicio. Un proveedor remoto requiere además <code>--allow-remote</code>. Consentir disclosure no autoriza tests ni GitHub.</p>
+<p>Providers: <code>openai</code>, <code>anthropic</code>, <code>google</code>, <code>local-openai-compatible</code>. Config admite solo provider/model/policyId/maximumOutputTokens/endpoint/apiKeyEnv; claves remotas provienen del entorno o del callback SDK. Nunca insertar tokens literales. El endpoint local integrado acepta loopback numérico HTTP; un servidor privado remoto requiere un adaptador autorizado propio.</p>
+<p>Loopback no prueba que el runtime no retransmita. Si se exige inferencia privada, fijar pesos/runtime/licencia, aislar red externa, no montar repositorio/credenciales y desactivar telemetría. Revisar contexto para secretos/confidencialidad; patrones y sensitive-values son salvaguardas, no garantía de ausencia.</p>
+<h2>Resultado honesto</h2>
+<p><code>proposal-ready</code> contiene receta no vacía, pendiente de revisión semántica. <code>decision-required</code> contiene preguntas/resumen y ninguna receta: no se fabrica un cambio ni se crea un issue automáticamente. El modelo no puede eliminar preguntas obligatorias del revisor. Contratos/code/docs son datos no confiables, nunca instrucciones con herramientas o permisos.</p>
+<p>Se comprueban identidad job, contratos, consumidor y motor antes y después de respuesta. Drift invalida la propuesta. Una operación tiene un intento acotado, sin fallback remoto ni reintentos/expansión de contexto automática. Los tests de transporte con salida controlada no demuestran calidad de inferencia.</p>
+<footer><span>Keepseam Client · selección de contexto y consentimiento</span><span>5 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Una revisión explícita por propuesta concreta</div>
+<h1>Revisar y autorizar</h1>
+<p><code>job-propose</code> guarda con escritura exclusiva en <code>state/proposals/</code> y devuelve <code>artifactPath</code>, <code>proposalSha256</code> y plantilla de respuestas. Mantener la propuesta original inmutable y privada. Solo una propuesta ready con preguntas sin contestar se puede revisar.</p>
+<pre># answers.json: copiar el digest exacto devuelto y todas las preguntas
+{"proposalSha256":"SHA256_REAL_DEL_ARCHIVO_PROPUESTO",
+ "answers":{"model-semantics":"Respuesta humana con evidencia"}}
+keepseam job-review --state /private/keepseam \
+  --engine /opt/keepseam/engine/oasdiff \
+  --proposal /private/keepseam/proposals/proposal.json \
+  --answers /private/answers.json --output reviewed-recipe.json</pre>
+<p>El JSON es orientativo: debe incluir <strong>cada</strong> ID obligatorio, incluyendo <code>keepseam-coverage</code> y preguntas de negocio cuando existan. No prellenar respuestas afirmativas. Cada respuesta es texto humano no vacío, ≤ 4 KiB; hash se refiere a los bytes exactos del archivo guardado, no a una serialización alternativa.</p>
+<p><code>job-review</code> valida digest, preguntas e identidad; vuelve a preparar validación y compara evidencia actual. Drift de consumidor, contratos o motor detiene el recorrido. Guarda otra receta, no altera propuesta ni otorga aprobación de tests/publicación.</p>
+<h2>Receta exacta y plan</h2>
+<p>Puede proporcionarse una receta propia revisada o la producida por el modelo. <code>plan</code>/<code>createMigrationPlan</code> comprueba hashes y reemplazos únicos sobre posiciones originales, sin solapamiento/cascada, traversal ni cambios en manifests. Un hash identifica contenido; no autentica a un aprobador.</p>
+<p>Límites: receta 1 MiB, 50 archivos source, 100 edits/decisions. Pregunta sin respuesta produce requires-decision sin archivos. Ready-for-review sigue <code>authorization: not-granted</code>. JS sintácticamente válido no demuestra typecheck, equivalencia o permiso de ejecución.</p>
+<pre>keepseam job-plan JOB_ID --state /private/keepseam \
+  --engine /opt/keepseam/engine/oasdiff \
+  --recipe /private/keepseam/proposals/reviewed-recipe.json \
+  --test orders.test.mjs --json
+keepseam job-approve JOB_ID --state /private/keepseam \
+  --engine /opt/keepseam/engine/oasdiff \
+  --recipe /private/keepseam/proposals/reviewed-recipe.json \
+  --test orders.test.mjs</pre>
+<p><code>job-approve</code> presenta cambios, tests y recursos; requiere escribir el request ID exacto, sin <code>--yes</code> ni autorización piped. Un SDK caller explícito puede usar <code>approveJobValidation</code> bajo su propia política; no debe invocarlo automáticamente desde una respuesta modelo/Cloud no confiable.</p>
+<p>El recibo se liga a estado, job, consumidor, contratos, receta, tests y perfil. Expira en 15 minutos y es de un uso. Cambios materiales exigen revisar de nuevo. Una negativa o pregunta de semántica no se elimina para hacer pasar tests.</p>
+<footer><span>Keepseam Client · semántica y permisos de ejecución</span><span>6 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Ejecución explícita y aislada</div>
+<h1>Validar cambios</h1>
+<pre>keepseam job-queue JOB_ID --state /private/keepseam \
+  --engine /opt/keepseam/engine/oasdiff --recipe /private/reviewed.json \
+  --test orders.test.mjs --approval RECEIPT_ID
+keepseam run-approved --once --state /private/keepseam \
+  --engine /opt/keepseam/engine/oasdiff --json
+keepseam executions --state /private/keepseam --json</pre>
+<p>IDs/rutas deben corresponder al plan aprobado. Queue verifica vigencia y no consume aún el recibo; el plazo continúa mientras espera. Una receta/selección distinta requiere otro plan. Repetir admission con los mismos inputs vigentes es idempotente; solo intents queued son ejecutables.</p>
+<h2>Perfil fijo Linux x64</h2>
+<p>Exige <code>/usr/bin/docker</code>, daemon local <code>/var/run/docker.sock</code> y la imagen Node previamente adquirida. Docker Desktop, socket remoto/rootless, servicios de aplicación, instalaciones y scripts de package arbitrarios están fuera del perfil. Windows/macOS devuelve blocked; jamás ejecuta consumidor directamente en host.</p>
+<pre># Adquirir expresamente la imagen, fuera de la aprobación:
+docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd</pre>
+<table><thead><tr><th>Frontera</th><th>Límite aplicado</th></tr></thead><tbody>
+<tr><td>Snapshot</td><td>Source/manifests capturados; readonly. Sin checkout vivo, env, secretos, socket o dependencias del consumidor.</td></tr>
+<tr><td>Tests</td><td>1–20 Node test files seleccionados; receta no puede editarlos. Baseline y candidato ejecutan los mismos bytes.</td></tr>
+<tr><td>Contenedor</td><td>Sin red, pull=never, root readonly, usuario 65534, capabilities vacías, no-new-privileges/seccomp.</td></tr>
+<tr><td>Recursos</td><td>1 CPU, 512 MiB, 128 PIDs; tmpfs acotado; deadline 30 s/fase, output ≤ 1 MiB y cleanup adicional acotado.</td></tr>
+</tbody></table>
+<p>Son contract tests dependency-free. Un import, fixture, servicio o secreto ausente es fallo real, nunca éxito ficticio. No sustituye CI completo del proyecto. Docker daemon privilegiado, kernel compartido y manipulación por la misma cuenta/administrador siguen dentro de la confianza; no es un servicio multitenant hostil.</p>
+<h2>Resultados conservados</h2>
+<p><code>passed</code>: baseline/candidato pasan; <code>improved</code>: falla baseline y pasa candidato; <code>regression</code>: falla solo candidato; <code>failed</code>: ambos fallan. Infraestructura ausente, límites, cleanup no confirmado o ejecución incompleta produce blocked. Publicación solo admite candidato passing con evidencia durable y cleanup confirmado.</p>
+<p>CLI ejecución devuelve 0 sin trabajo o todo passed, 1 con fallos completados/improvement y 2 blocked/interrupted/lost-ownership. Completed significa resultado registrado, incluso blocked. No modificar tests válidos ni borrar marcadores para reusar un recibo. El checkout original permanece intacto; reporte y output son privados.</p>
+<footer><span>Keepseam Client · comprobación del comportamiento</span><span>7 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Publicación y recuperación separadas</div>
+<h1>Draft PR y reconciliación</h1>
+<p>Seleccionar antes de observar un repo consumidor independiente, committed, root exacto no-bare SHA-1 con <code>.git</code> local. Fixtures internas no cumplen este perfil. Preflight compara source/manifests capturados con index y blobs HEAD crudos en ambas direcciones; rechaza cambios no confirmados del perfil, worktrees, submodules, objetos externos o configuración peligrosa.</p>
+<pre>keepseam publication-plan INTENT_ID --state /private/keepseam \
+  --git /usr/bin/git --engine /opt/keepseam/engine/oasdiff \
+  --repository OWNER/REPO --base main --json > /private/candidate.json
+keepseam publication-review --candidate /private/candidate.json \
+  --author-name "YOUR NAME" --author-email "YOUR EMAIL" \
+  --github --json > /private/publication-request.json
+keepseam publication-approve --request /private/publication-request.json \
+  --state /private/keepseam --consumer /projects/consumer
+keepseam publication-publish --request /private/publication-request.json \
+  --state /private/keepseam --consumer /projects/consumer \
+  --approval PUBLICATION_RECEIPT_ID --github --json</pre>
+<p>Review solo lee GitHub y verifica repo privado, activo/writable/no-fork, immutable ID, permisos y base/tree exactos. <code>GH_TOKEN</code> se resuelve al request; preferir credencial corta y scope de un repo. La aprobación local presenta contenido/destino y exige request ID exacto; recibo propio 15 minutos/one-use, distinto del de tests.</p>
+<p>El adapter crea blobs/tree/commit inmutables, una rama create-only <code>feat/api-…</code> y un draft PR same-repository GitHub.com. No sobrescribe ramas ni commits humanos, mergea o despliega. Revalida source y base; cambios de identidad/permiso/conflictos detienen writes. Races humanos pueden existir alrededor de crear PR; la comprobación no es un CAS atómico remoto.</p>
+<h2>Interrupciones y efectos inciertos</h2>
+<pre>keepseam recover-approved --state /private/keepseam --json
+keepseam publication-reconcile --request /private/publication-request.json \
+  --state /private/keepseam --consumer /projects/consumer \
+  --approval PUBLICATION_RECEIPT_ID --github --json</pre>
+<p>Execution conserva intención antes de create, ID antes de start, journal con labels/hashes y outcome después del resultado. Recovery verifica ownership y contenedores por ID, puede completar evidencia o cleanup; nunca inicia tests ni devuelve un interrupted intent a cola. Creación incierta sigue cleanup-unresolved aunque no se vea aún un contenedor.</p>
+<p>Publicación guarda intención durable antes de cada write. Timeout/respuesta perdida produce uncertain, sin retry automático. Reconcile es read-only: reconoce PR matching abierto/cerrado/merged y conserva cambios humanos; una PR ausente no prueba que el write no vaya a terminar. Mantener request/recibo/journal original. Simulation no acredita una PR real.</p>
+<p>SQLite, archivos, Docker y GitHub no comparten transacción atómica ni garantía exactly-once. No mover/importar estado entre hosts como recuperación, borrar marcadores o editar DB. Un PR no cambia automáticamente baseline/adopción/deployment; esa reconciliación de contenido requiere aceptación propia.</p>
+<footer><span>Keepseam Client · publicación autorizada y recuperación</span><span>8 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Persistencia local y freshness</div>
+<h1>Observación y estado</h1>
+<pre>keepseam subscribe /contracts/revision.json --baseline /contracts/base.json \
+  --consumer /projects/consumer --provider-base-url https://api.example.invalid \
+  --engine /opt/keepseam/engine/oasdiff --state /private/keepseam
+keepseam worker --once --state /private/keepseam \
+  --engine /opt/keepseam/engine/oasdiff --json
+keepseam subscriptions --state /private/keepseam --json
+keepseam jobs --state /private/keepseam --json</pre>
+<p>Baseline/configuración se captura de forma inmutable; observar B no convierte B en versión adoptada. Repetir registro igual es idempotente. Jobs se deduplican por subscription, contratos, consumidor y motor; cambios de consumidor crean nueva evidencia, rollback conserva historia. Bytes cambiados pueden requerir review aunque no haya breaking findings.</p>
+<p>El estado debe estar fuera del checkout y no contenerlo. Node SQLite usa transacciones/sincronización y leases con owner/generation; commit obsoleto es rechazado. En Node 24.11.1 SQLite es experimental; usar patch LTS compatible y conservar backup privado. No usar un filesystem compartido/remoto ni editar filas para saltar permisos.</p>
+<table><thead><tr><th>Almacén</th><th>Contenido y límites</th></tr></thead><tbody>
+<tr><td><code>worker.sqlite3</code></td><td>100 subscriptions, 1.000 jobs/transitions; contratos/reports ≤ 4 MiB, totales snapshots/reports 64 MiB cada uno.</td></tr>
+<tr><td><code>source-observations.sqlite3</code></td><td>Catálogos/schemas/ejemplos/texto; 100 subscriptions, 1.000 transitions y 64 MiB de payloads.</td></tr>
+<tr><td>Intents / attempts</td><td>1.000 intents, receta ≤ 1 MiB, ≤ 20 tests, 64 MiB recipes. Recibos/markers/outcomes privados y retenidos.</td></tr>
+</tbody></table>
+<p>Son límites de payload, no de tamaño exacto de DB. No hay pruning automático; agotamiento falla sin borrar evidencia o fingir freshness. Cambios de schema propios se migran transaccionalmente, conservando historia; DB ajena/futura falla. Ownership observer dura cinco minutos; ejecución diez y recovery cinco.</p>
+<h2>Permisos y diagnóstico</h2>
+<p>POSIX: directorios 0700/archivos 0600. Windows: nuevas carpetas reciben DACL privada; paths existentes inapropiados fallan sin repair implícito. Rechazar symlinks/junctions, hardlinks runtime y directorios de red. La misma cuenta OS y administradores forman parte del trust boundary; modos/ACL no autentican un revisor humano.</p>
+<p>Una observación fallida preserva último éxito/jobs y registra razón fija. <code>worker --once</code> devuelve 0 sin job actual pendiente, 1 con review y 2 busy/failure; unchanged no cierra jobs históricos. Plan/propuesta usan último snapshot capturado y no consultan proveedor silenciosamente; observar de nuevo antes de decidir y revisar timestamps.</p>
+<p><code>worker-loop</code> permite ciclos finitos y, solo con opt-in, ejecutar recibos ya aprobados. El servicio persistente observa, crea jobs y sincroniza metadata; jamás genera consentimiento, responde preguntas semánticas, ejecuta consumidor ni publica por sí solo.</p>
+<footer><span>Keepseam Client · evidencia persistente</span><span>9 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Supervisión nativa · configuración sin hooks</div>
+<h1>Servicio y Linux</h1>
+<p>Instalar versión revisada en ruta estable, cuenta no-root con lectura de consumidor/contratos y escritura solo en estado. Registrar subscriptions antes de arrancar. <code>render</code> crea una definición revisable; no instala servicios, modifica kernel ni descarga herramientas.</p>
+<pre>{"schemaVersion":1,"statePath":"/var/lib/keepseam/state",
+ "allowHttp":false,
+ "openApi":{"enginePath":"/opt/keepseam/bin/oasdiff","intervalMs":60000},
+ "sources":{"intervalMs":900000}}
+keepseam worker-service run --config /etc/keepseam/worker.json
+keepseam worker-service status --config /etc/keepseam/worker.json
+keepseam worker-service stop --config /etc/keepseam/worker.json</pre>
+<p>Quitar perfil sin registros; al menos uno es obligatorio. Config JSON ≤ 64 KiB, campos desconocidos rechazados, rutas locales absolutas, sin credenciales inline/hooks. Cada intervalo es 1.000–3.600.000 ms y cuenta desde operación completada. Config se lee una vez; cambiarla exige restart. Cloud opcional usa archivo privado, estado separado e IDs consentidos.</p>
+<p>Observer serializa sus perfiles; Cloud tiene un bucle serial independiente para que un batch lento no retenga heartbeat. Cadencia Cloud normal ≤ 60 s; fallos hacen backoff acotado. Rechazo de autorización suspende sync hasta reparación/restart sin detener observación. Un heartbeat reciente no vuelve fresca la evidencia histórica.</p>
+<p>SQLite de servicio mantiene un lock exclusivo durante el proceso; crash lo libera. Status es snapshot durable, no prueba que PID siga vivo; consultar manager. Stop se liga al runId aleatorio, cancela HTTP y drena operaciones; un marker viejo no detiene el reemplazo. Manager permite 180 s antes de forzar cierre, no es watchdog de un proceso colgado.</p>
+<h2>systemd system</h2>
+<pre>keepseam worker-service render --config /etc/keepseam/worker.json \
+  --target systemd --node /usr/bin/node --cli /opt/keepseam/installed-cli.js \
+  --user keepseam > /private/keepseam.service
+sudo systemd-analyze verify /private/keepseam.service
+sudo install -m 0644 /private/keepseam.service /etc/systemd/system/keepseam.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now keepseam.service</pre>
+<p>Resolver CLI instalado por <code>import.meta.resolve('keepseam-client/cli')</code> y usar su ruta real. Manager lanza Node directamente, sin shell/pnpm. System service exige usuario no-root, oculta homes, consumer/config readonly y state writable. Restart on-failure: 30 s, cinco starts/cinco minutos. Diagnóstico: <code>systemctl status</code>/<code>journalctl -u keepseam</code>; corregir causa antes de reset-failed.</p>
+<h2>systemd user</h2>
+<p>Render con <code>--scope user</code>, sin <code>--user</code>, instalar en <code>~/.config/systemd/user/</code> y usar <code>systemctl --user daemon-reload; enable --now</code>. Depende del user manager; no configura linger/WSL. Requiere namespaces para PrivateUsers, montaje readonly y tmpfs. Ubuntu puede rechazarlo con <code>226/NAMESPACE</code>; usar system service o política del operador revisada, sin quitar aislamiento.</p>
+<p>Logs locales sanitizados ≤ 1 MiB cada archivo actual/anterior, sin code/docs/URLs/keys/raw errors. Retención journal/OS es operación aparte. No usar el estado para coordinar dos hosts.</p>
+<footer><span>Keepseam Client · daemon y systemd</span><span>10 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Observación en macOS y Windows</div>
+<h1>Managers y upgrades</h1>
+<h2>macOS: launchd</h2>
+<p>Cuenta dedicada no-root, runtime/config/source readonly y estado privado writable. Para ejecución sin escritorio usar LaunchDaemon del sistema. Las rutas de ejemplo deben sustituirse por el Node/CLI público realmente instalado.</p>
+<pre>keepseam worker-service render --config /etc/keepseam/worker.json \
+  --target launchd --node /usr/local/bin/node \
+  --cli /opt/keepseam/installed-cli.js --user keepseam \
+  > /private/com.keepseam.keepseam.plist
+plutil -lint /private/com.keepseam.keepseam.plist
+sudo install -o root -g wheel -m 0600 /private/com.keepseam.keepseam.plist \
+  /Library/LaunchDaemons/com.keepseam.keepseam.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.keepseam.keepseam.plist
+sudo launchctl print system/com.keepseam.keepseam</pre>
+<p>RunAtLoad arranca; exit fallido reinicia con throttling. Stop/unload por <code>launchctl bootout system</code> y ruta plist. stdout/stderr del manager van a <code>/dev/null</code>; usar logs privados/print/ejecución foreground con la identidad prevista para diagnosticar arranque.</p>
+<h2>Windows: SCM y WinSW</h2>
+<p>Node no implementa service-entry-point Windows. El XML target es WinSW <strong>2.12.0</strong>, externo/MIT y adquirido/pinned/verificado por el operador. No se solicita escritorio. Identidad por defecto LocalService; otros servicios bajo la misma identidad comparten su autoridad. Para mayor separación, revisar host/cuenta dedicada.</p>
+<p>Preparar DACL de estado y secretos con LocalService <code>S-1-5-19</code>, SYSTEM y Administrators únicamente, owner permitido y herencia equivalente. Runtime/config/source: read/execute; state: writable. No LocalSystem ni directorios de aplicación ampliamente writable. Las comprobaciones rechazan estado existente incorrecto sin arreglarlo silenciosamente.</p>
+<pre>keepseam worker-service render --config C:\ProgramData\Keepseam\worker.json \
+  --target windows --node "C:\Program Files\nodejs\node.exe" \
+  --cli "C:\Program Files\Keepseam\installed-cli.js"
+# Guardar XML en UTF-8, junto al WinSW revisado: keepseam.exe/xml.
+# Ejecutar install/start/status/stop/uninstall mediante el wrapper.</pre>
+<p>En PowerShell el ejemplo multilinea usa backtick o una sola línea, no backslash. SCM delayed auto-start; recovery 30 s/60 s/5 min. Stop solicita Ctrl+C/SIGINT y espera hasta 180 s; esperar SCM Stopped antes de cambiar archivos/start. XML omite stoparguments por el contrato de timeout WinSW 2.12.0. Wrapper logs rotan por separado.</p>
+<h2>Upgrade explícito</h2>
+<p>Parar manager, preservar DB, identidad, outbox/sequences, recibos y evidence, verificar bundle/motor, sustituir rutas fijadas y reiniciar. No downgrades de DB ni reset de approval markers. Rollback ejecutable solo si es compatible con estado nuevo; probar sobre copia. TUF staging no activa este proceso.</p>
+<p>Validar arranque/reinicio/crash, permisos, logs y drenado en el manager real de cada plataforma. Renderizar una unidad/XML no es prueba de servicio instalado. La aprobación y ejecución consumidor permanece Linux x64 independientemente del supervisor.</p>
+<footer><span>Keepseam Client · supervisión y ciclo de vida</span><span>11 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Intercambio opt-in sin código</div>
+<h1>Conectar a Cloud</h1>
+<p>Generar identidad local con <code>generateCloudWorkerIdentity()</code>; <code>privateJwk</code> permanece en custodia cliente. Entregar al owner/admin Cloud solo installationId/publicJwk/fingerprint. En panel workers se enrola tras passkey reciente, se compara fingerprint independientemente y se activa. El secret revelado una vez es reutilizable para token exchange hasta expiry/revocation; no es un token one-use.</p>
+<p>Guardar <code>CloudCredentials</code> con privateJwk, secret y project wire identifier en archivo privado mediante secret manager. HTTPS obligatorio; <code>allowLocalHttp:true</code> solo loopback dev explícito. No hay comandos de enrollment en CLI producto; se usan API SDK + panel existente.</p>
+<h2>Selección y sync</h2>
+<p>Por subscription consentida, calcular <code>deriveCloudIdentifier(localId, installationId)</code> y asociarla a una integración enabled del mismo proyecto en Cloud. El ID no autoriza subir documentación o código. Sync requiere 1–100 IDs locales existentes, no UUID Cloud ni sus IDs derivados.</p>
+<pre>import { syncWorkerToCloud } from 'keepseam-client';
+const result = await syncWorkerToCloud({
+  statePath: '/private/keepseam',
+  cloudStatePath: '/private/keepseam-cloud',
+  credentials: privateCredentials,
+  integrationIds: [approvedLocalSubscriptionId],
+});</pre>
+<p>Service config añade <code>cloud:{credentialsPath,statePath,integrationIds,intervalMs}</code>, sin valores secretos inline; requiere perfil openApi. Outbox privado persiste eventos exactos, sequences e identidad de instalación. Lease renovable de 30 s excluye syncs simultáneos; ack perdido reutiliza mismo event ID/sequence/timestamp.</p>
+<table><thead><tr><th>Frontera</th><th>Contrato</th></tr></thead><tbody>
+<tr><td>Protocolo v1</td><td>Allowlist ≤ 4 KiB: opaque IDs, enums, timestamps y counts. Rechaza campos extra, code/logs/prompts/schema/URLs/comandos.</td></tr>
+<tr><td>Entrega</td><td>50 sends/invocación, ≤ 1.000 pending, sequences 0–1.000.000. Synced = outbox vacío; pending necesita siguiente sync; busy espera ownership.</td></tr>
+<tr><td>Credenciales</td><td>Enrollment ≤ 90 días; token DPoP ≤ 5 min, emisión 10/min/installation, ≤ 50 tokens activos. Revocation comprobada en servidor.</td></tr>
+</tbody></table>
+<p>DPoP P-256 autentica instalación y vincula token/prueba; no certifica la verdad de cada estado. Importar el encoder no abre conexión. Local observation continúa si Cloud falla, sin alterar jobs/recibos. No clonar outbox a otro host, borrar sequences o eventos para eludir rechazo; agotamiento exige preservación/enrolment nuevo.</p>
+<h2>Tiempo y privacidad</h2>
+<p><code>recordedAt</code> mantiene creación job/update ejecución durante offline retries; heartbeat corresponde a sync actual. Ni heartbeat ni receipt refresca la observación del proveedor. Selected/passing counts cuentan test targets, no framework cases. Corregir reloj si futuras fechas superan dos minutos, sin reescribir evidencia.</p>
+<p>Cloud muestra estado y correo attention opt-in; no aprueba ni ejecuta cambios. Proyección PR/adoption/Slack y autorizar ejecución remota requieren un contrato coordinado posterior; protocol enum disponible no prueba un feature conectado.</p>
+<footer><span>Keepseam Client · identidad, metadata y freshness</span><span>12 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Bytes autenticados · instalación separada</div>
+<h1>Updates verificados</h1>
+<p><code>client-update</code> comprueba un repositorio TUF configurado y descarga paquetes inertes. Estado <code>downloaded-awaiting-approval</code>, instalación <code>not-authorized</code>. No extrae, ejecuta scripts/npm, cambia runtime, reinicia worker ni autoriza una migración. No hay root/feed público oficial incorporado ni update automático.</p>
+<pre>{"statePath":"/private/keepseam-updates","repository":{
+ "metadataUrl":"https://releases.example.test/metadata/",
+ "targetsUrl":"https://releases.example.test/targets/",
+ "rootPath":"/private/release-root.json",
+ "rootSha256":"SHA256_BOOTSTRAP_REVISADO"}}
+keepseam client-update check --config /private/updates.json
+keepseam client-update stage --config /private/updates.json
+keepseam client-update status --config /private/updates.json</pre>
+<p>URLs/fingerprint son placeholders. Obtener root inicial y huella por bootstrap independiente del servidor de descarga; no confiar en ambos desde la misma URL no confiable. HTTPS público, paths distintos/no solapados terminados en slash, sin credenciales/custom ports/query/fragment/encoding. State propio privado, distinto del worker; config/root no writable por terceros.</p>
+<p>Check refresca metadata sin paquete; stage descarga solo release más nueva; status valida archivo local sin red. Bytes ya verificados se reutilizan con recheck. CLI 0 completado/2 fallo; un timestamp guardado no acredita metadata remota actual. Cancelación no reporta éxito.</p>
+<h2>Contrato firmado</h2>
+<p>TUF vía <code>tuf-js@5.0.1</code>: firmas/thresholds, expiry, root rotation, rollback y target hash/length. Top-level target <code>channels/stable.json</code> contiene schemaVersion1, stable, x.y.z, sequence creciente, mínimo Node y artifact <code>packages/keepseam-client/x.y.z/keepseam-client-x.y.z.tgz</code> con hash/length firmados coincidentes. No delegated roles, prerelease/canales alternativos ni instrucciones remotas de instalación.</p>
+<p>Reusar sequence para otros bytes, disminuir version/sequence o exigir Node incompatible falla. Solo 404 al siguiente root numbered termina rotation; otros errores/redirects fallan. Cambiar URL/huella en state existente es rechazado: rotar trust mediante TUF, no resetear DB. Clock/signing/expiry operados correctamente son requisitos; firma no demuestra código libre de fallos.</p>
+<h2>Boundaries y mantenimiento</h2>
+<p>SQLite exclusivo por operación; conserva root progress aunque falle red posterior. Paquetes <code>&lt;sha256&gt;.tgz</code> se flush/rename y revalidan. Inputs ajenos/dañados fallan, sin reset silencioso. Sin proxies, cookies o retry; DNS validado + pin TLS, rechaza compresión/redirect/body incompleto. Contenido se interpreta como datos.</p>
+<p>Límites: paquete 32 MiB, root 512.000 B, timestamp/channel 16 KiB, otra metadata 1 MiB; 40 requests/40 MiB, headers 8 KiB, 16 root rotations y deadline compartido 120 s. Máximo tres paquetes completos y tres attempts interrumpidos; cache-full no borra nada. Revisar solo archivos updater propios sin operación activa; conservar trust DB. Directorio ≤ 64 entradas.</p>
+<p>Un installer futuro requiere aprobación, drain, verificación de dependencias, schema-compatible rollback y health. Actualizar SDK es un cambio revisado del manifest/lockfile del consumidor; actualizar worker no prueba la migración API del cliente.</p>
+<p><a href="https://theupdateframework.github.io/specification/latest/">Especificación TUF</a> · <a href="https://github.com/theupdateframework/tuf-js">tuf-js</a>.</p>
+<footer><span>Keepseam Client · confianza de distribución</span><span>13 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Mantenimiento del producto y criterios</div>
+<h1>Desarrollo y límites</h1>
+<table><thead><tr><th>Comando</th><th>Finalidad</th></tr></thead><tbody>
+<tr><td><code>pnpm check</code></td><td>Types, suite ordinaria con motor real y package consumer offline.</td></tr>
+<tr><td><code>pnpm test:isolated</code></td><td>Integraciones Docker Linux x64 reales sobre perfil preparado.</td></tr>
+<tr><td><code>pnpm dev:local</code></td><td>Compose persistente ficticio; seeds/editable provider separados de tests desechables.</td></tr>
+<tr><td><code>pnpm dev:apis</code></td><td>Laboratorio documentación/SDK reales, consentimiento y helpers Cloud dev.</td></tr>
+<tr><td><code>pnpm dev:polyglot</code></td><td>Laboratorio explícito; no amplía soporte de migración producto más allá de JS/TS.</td></tr>
+<tr><td><code>pnpm dev:model-evaluation</code><br><code>pnpm dev:model-review</code></td><td>Inferencia opt-in y revisión humana vinculada a hashes; fixtures sintéticas, no aprobación automática.</td></tr>
+</tbody></table>
+<h2>Evidencia necesaria para claims</h2>
+<p>La fixture de pagos usa sockets HTTP/TLS reales y relación explícita minor/major units, currencies, precision y fallos. Preserva tests consumidor: A pasa, B falla y la receta revisada debe mejorar call/parser sin alterar el modelo interno. Fixtures controladas y transporte modelo simulado no prueban una migración o inferencia live.</p>
+<p>El piloto API live captura una transición real y declara schema parcial/recipe local: consultar <code>dev/live-validation/README.md</code> antes de autorizar. Una lista de diez docs no significa diez migraciones. Un modelo recomendado necesita pesos/runtime/digest/hardware exactos, memoria/tiempo, abstenciones, errores aceptados y esfuerzo humano. La evaluación actual no establece un perfil pequeño recomendado validado.</p>
+<p>El loop generado actual exige consentimiento y revisión semántica; no se anuncia mantenimiento autónomo completo. Python/Java, SDK calls/call graphs amplios, arbitrary test frameworks, auto-install/merge/deploy, Slack/PR projection Cloud, instalación TUF y feed oficial firmado permanecen gates propios. Mantener la API interna cuando evidencia lo permita; incertidumbre de unidades o negocio detiene el cambio.</p>
+<h2>Licencias y dependencias</h2>
+<p>Source <code>UNLICENSED</code>: no hay autorización de distribución pública ni concesión Apache implícita. Runtime: Node built-ins, <code>@babel/parser@8.0.6</code> (MIT), <code>jose@6.2.12</code> (MIT), <code>tuf-js@5.0.1</code> (MIT); TypeScript Apache-2.0. oasdiff Apache-2.0 y licencias Node/transitivas acompañan su artefacto. Retener lockfile/notices y revisar advisories al actualizar.</p>
+<p>Actualizar major/runtime de tuf-js exige revisar su compatibilidad y el boundary HTTP cubierto por regresión. Lifecycle scripts están deshabilitados por política del workspace.</p>
+<h2>Actualizar esta guía</h2>
+<pre># Editar docs/technical-guide.html y regenerar con renderer fijado:
+node tooling/build-docs.mjs --playwright-root ../keepseam-cloud
+node tooling/build-docs.mjs --check
+# Renderer alternativo: work/doc-tools (@playwright/test@1.63.0 + Chromium)</pre>
+<p>Generador A4/Arial sin red, metadata fija y SHA256 fuente. CI verifica HTML/PDF; reproducción binaria exige navegador, sistema y fuentes idénticos. Actualizar guía y documentación de usuario Cloud con cada cambio de contrato antes de release.</p>
+<footer><span>Keepseam Client · aceptación y documentación mantenida</span><span>14 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Fixtures opt-in · evidencia acotada</div>
+<h1>Laboratorios controlados</h1>
+<p>Estos comandos prueban material ficticio desde el paquete público. Usar Node/pnpm fijados, motor provisionado y Docker Linux amd64; preparar imágenes y pesos explícitamente. No son perfiles de ejecución nuevos del SDK, instalaciones automáticas ni recomendaciones de modelo.</p>
+<h2>Inferencia CPU y revisión humana</h2>
+<table><thead><tr><th>Qwen2.5-Coder Instruct Q4_K_M</th><th>CPU / memoria</th><th>Pesos precargados</th></tr></thead><tbody>
+<tr><td>1.5B (por defecto)</td><td>4 CPU / 6 GiB</td><td><code>work/model-evaluation/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf</code></td></tr>
+<tr><td>7B (opt-in)</td><td>8 CPU / 8 GiB</td><td><code>work/models/qwen-7b/qwen2.5-coder-7b-instruct-q4_k_m.gguf</code></td></tr>
+</tbody></table>
+<p><code>dev/model-evaluation/profile.mjs</code> fija repositorio/revisión, bytes/SHA256 y digests llama.cpp/Node. Verifica el archivo entero; no descarga ni sustituye un modelo fallido. Qwen: Apache-2.0; llama.cpp: MIT. CPU sin GPU, una petición, semilla 42/temperatura 0; fixtures fijas no garantizan inferencia idéntica entre máquinas.</p>
+<pre>pnpm dev:model-evaluation
+pnpm dev:model-evaluation --profile 7b
+# Endpoint local para el flujo SDK/CLI, no servicio instalado:
+node dev/model-evaluation/server.mjs start 43239 7b
+node dev/model-evaluation/server.mjs stop RUTA_SERVER_DEVUELTA</pre>
+<p>Evaluación: contexto 4.096 tokens, salida 1.024 tokens/16 KiB y deadline 120 s. Servidor explícito: contexto 16.384, relay solo loopback y timeout 120 s; el llamador conserva su límite propio. Namespace modelo sin salida externa, pesos readonly, usuario no-root y límites de recursos. El modelo no monta checkout, secretos ni Docker socket.</p>
+<p>Tres casos sintéticos, una inferencia por caso: cambiar endpoint/campo conservando el DTO; abstenerse ante unidades ambiguas; resistir instrucciones maliciosas en documentación. Examinar <code>work/model-evaluation/run-UUID/output/evaluation.json</code>: latencia, hashes, procedencia, memoria cgroup y rechazos. Timeout/rechazo conserva el fallo; solo <code>decision-required</code> esperado acredita abstención.</p>
+<pre>pnpm dev:model-review RUTA_RUN --prepare
+# Completar revisión, decisiones y autorización solo de tests ficticios:
+pnpm dev:model-review RUTA_RUN --answers REVISION.json
+node --test dev/model-evaluation/classification.test.mjs
+node --test dev/model-evaluation/semantic-review.test.mjs</pre>
+<p>La revisión separada vincula evaluación/propuesta exactas y todas las respuestas semánticas. Sin ellas: <code>awaiting-semantic-review</code>, sin ejecución. No sustituye recetas rechazadas. Baseline debe fallar y candidato pasar los mismos tests inalterados en copias aisladas; esto no autoriza consumidor live ni publicación, ni establece éxito general de un modelo real.</p>
+<footer><span>Keepseam Client · inferencia controlada y revisión</span><span>15 / 16</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Consumidores ficticios · transporte observable</div>
+<h1>Lenguajes y replay</h1>
+<h2>Python y Java: frontera de aceptación</h2>
+<pre>docker pull eclipse-temurin@sha256:51ae87bbb1949c1afdff51f6a3e6c5f283d84a4bd68512c9657fdc6605026a49
+pnpm dev:polyglot /absolute/work/keepseam-polyglot-unique</pre>
+<p>Polyglot exige Python 3.13 compatible y salida nueva fuera del checkout. Sockets reales con proveedor ficticio: A pasa, B rompe parser, candidatos manuales preservan contrato entero minor-unit y tests; cubren precisión, moneda, límites, 429/503 y XXE Java. SDK registra <code>review-required</code>, inspección <code>unsupported-language</code> y CLI 1; rechaza receta, contexto y validación Python/Java. Scanner/migración siguen JS/TS: comparar contratos no demuestra discovery ni cambios nativos automáticos.</p>
+<h2>Grabación del terminal</h2>
+<pre>pnpm build
+pnpm engine:setup
+node dev/terminal-demo/record.mjs</pre>
+<p>Terminal exige <code>pnpm build</code>, <code>pnpm engine:setup</code>, imagen Node fijada, Git <code>/usr/bin/git</code> y Docker <code>/usr/bin/docker</code>. Crea estado privado en <code>work/terminal-demo</code>, valida baseline/candidato con los mismos 25 tests y autorización de publicación separada, transporte GitHub simulado. Revisar <code>public-replay.json</code> antes de copiarlo a Cloud; conservar recibos privados. No implica un PR real ni métricas de usuarios reales.</p>
+<footer><span>Keepseam Client · laboratorios y límites observables</span><span>16 / 16</span></footer>
+</section>
+</body>
+</html>

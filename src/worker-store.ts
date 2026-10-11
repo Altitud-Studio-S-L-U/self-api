@@ -6,6 +6,7 @@ import { isProxy } from 'node:util/types';
 import type { SnapshotMetadata } from './contracts.js';
 import type { ImpactReport } from './impact.js';
 import { PlumberError } from './errors.js';
+import { checkWindowsPermissions } from './windows-permissions.js';
 import { validateValidationOutcome, type ValidationOutcome } from './validation-outcome.js';
 import { prepareHttpSource, validateHttpSourceSnapshot } from './http-source.js';
 import type { HttpSourcePolicy, HttpSourceSnapshot } from './http-source.js';
@@ -148,7 +149,7 @@ function localPath(value: string): string {
   return resolve(value);
 }
 
-function directoryPath(path: string, create = false): string {
+function directoryPath(path: string, create = false, onCreate?: (path: string) => void): string {
   const root = parse(path).root;
   const parts = path.slice(root.length).split(sep).filter(Boolean);
   let current = root;
@@ -158,7 +159,7 @@ function directoryPath(path: string, create = false): string {
     try { attributes = lstatSync(current); }
     catch (error) {
       if (!create || index < 0 || errorCode(error) !== 'ENOENT') throw error;
-      try { mkdirSync(current, { mode: 0o700 }); }
+      try { mkdirSync(current, { mode: 0o700 }); onCreate?.(current); }
       catch (creationError) { if (errorCode(creationError) !== 'EEXIST') throw creationError; }
       attributes = lstatSync(current);
     }
@@ -298,20 +299,24 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
   try {
     const absolute = localPath(statePath);
     if (absolute === parse(absolute).root || /\.sqlite(?:3)?$/iu.test(absolute)) invalid('Provide a dedicated worker state directory, not a database file.');
-    const state = directoryPath(absolute, true);
+    let created = false;
+    const state = directoryPath(absolute, true, path => { if (path === absolute) created = true; });
     if (process.platform !== 'win32' && (lstatSync(state).mode & 0o077) !== 0) {
       invalid('Existing worker state must already have private owner-only POSIX permissions.');
     }
     const databasePath = join(state, 'worker.sqlite3');
+    const permissionPaths = [state];
     for (const suffix of ['', '-journal', '-wal', '-shm']) {
       try {
         const attributes = lstatSync(`${databasePath}${suffix}`);
-        if (attributes.isSymbolicLink() || !attributes.isFile()) invalid('Worker database files and journals must be regular local files.');
+        if (attributes.isSymbolicLink() || !attributes.isFile() || attributes.nlink !== 1) invalid('Worker database files and journals must be singly linked regular local files.');
+        permissionPaths.push(`${databasePath}${suffix}`);
         if (process.platform !== 'win32' && (attributes.mode & 0o077) !== 0) {
           invalid('Existing worker database files must already have private owner-only POSIX permissions.');
         }
       } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
     }
+    checkWindowsPermissions(permissionPaths, true, created ? state : undefined);
     try { closeSync(openSync(databasePath, 'wx', 0o600)); }
     catch (error) { if (errorCode(error) !== 'EEXIST') throw error; }
     const { DatabaseSync } = await import('node:sqlite');

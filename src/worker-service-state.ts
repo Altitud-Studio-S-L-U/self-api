@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants, closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, parse, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { PlumberError } from './errors.js';
+import { checkWindowsPermissions } from './windows-permissions.js';
 
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
 export const serviceFiles = Object.freeze({ lock: 'worker-service.sqlite3', status: 'worker-service.status.json', stop: 'worker-service.stop.json', log: 'worker-service.log', archive: 'worker-service.previous.log' });
@@ -43,29 +43,7 @@ export function checkServicePath(path: string, kind: 'directory' | 'config' | 's
 
 /** Windows has no meaningful POSIX mode bits. Inspect native DACLs without modifying the user's permissions. */
 export function checkWindowsServiceAcl(path: string, privateAccess: boolean): void {
-  if (process.platform !== 'win32') return;
-  const script = `
-$ErrorActionPreference = 'Stop'
-$path = $env:KEEPSEAM_ACL_PATH
-$acl = Get-Acl -LiteralPath $path
-$allowed = @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544')
-$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-if ($allowed -notcontains $owner) { exit 2 }
-foreach ($rule in $acl.Access) {
-  if ($rule.AccessControlType -ne 'Allow') { continue }
-  $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-  if ($allowed -contains $sid) { continue }
-  if ($env:KEEPSEAM_ACL_PRIVATE -eq '1') { exit 2 }
-  $write = [System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership
-  if (($rule.FileSystemRights -band $write) -ne 0) { exit 2 }
-}
-`;
-  try {
-    execFileSync(join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-      { env: { ...process.env, PSModulePath: join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
-        KEEPSEAM_ACL_PATH: path, KEEPSEAM_ACL_PRIVATE: privateAccess ? '1' : '0' }, windowsHide: true, stdio: 'pipe', timeout: 30_000, maxBuffer: 4096 });
-  } catch { invalid('The service account requires restricted native ACLs on configuration, state and credentials.'); }
+  checkWindowsPermissions([path], privateAccess);
 }
 
 function assertRegularIfPresent(path: string): boolean {

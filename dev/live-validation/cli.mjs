@@ -7,11 +7,13 @@ import { prepareJobValidation, approveJobValidation, queueJobValidation, runAppr
   publishPublication, reconcilePublication, createGitHubPublicationAdapter,
   generateCloudWorkerIdentity, syncWorkerToCloud } from 'keepseam-client';
 import { deriveCloudIdentifier } from 'keepseam-client/protocol';
+import { runCli } from 'keepseam-client/cli';
 import { seedPilot, openPilot, observePilot, validationInput, repository, baseBranch, enginePath } from './environment.mjs';
 import { captureGitHub } from './capture.mjs';
 
 const [command, root, argument, ...extra] = process.argv.slice(2);
-const arities = { seed: 1, observe: 0, plan: 0, validate: 1, candidate: 1, review: 0, publish: 1, reconcile: 1, identity: 0, sync: 1, 'verify-live': 1 };
+const arities = { seed: 1, observe: 0, plan: 0, validate: 1, 'model-plan': 1, 'model-propose': 2, 'model-review': 1,
+  'model-validation-plan': 0, 'model-validate': 1, candidate: 1, review: 0, publish: 1, reconcile: 1, identity: 0, sync: 1, 'verify-live': 1 };
 const output = value => console.log(JSON.stringify(value, null, 2));
 const save = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 const load = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -20,8 +22,8 @@ const adapter = () => createGitHubPublicationAdapter({ getToken: () => {
   return process.env.GH_TOKEN;
 } });
 try {
-  assert(root && Object.hasOwn(arities, command) && !extra.length && Number(argument !== undefined) === arities[command],
-    'Usage: node dev/live-validation/cli.mjs <seed|observe|plan|validate|candidate|review|publish|reconcile|identity|sync|verify-live> <owned-root> [argument]');
+  assert(root && Object.hasOwn(arities, command) && Number(argument !== undefined) + extra.length === arities[command],
+    'Usage: node dev/live-validation/cli.mjs <seed|observe|plan|validate|model-plan|model-propose|model-review|model-validation-plan|model-validate|candidate|review|publish|reconcile|identity|sync|verify-live> <owned-root> [arguments]');
   if (command === 'seed') { output(await seedPilot(root, argument)); }
   else {
     const paths = await openPilot(root);
@@ -29,9 +31,23 @@ try {
       const { subscription, cycle, job } = await observePilot(paths);
       output({ subscriptionId: subscription.id, jobId: job.id, cycle, comparison: job.report.comparison.status,
         changes: job.report.comparison.changes.map(change => ({ id: change.id, text: change.text })), authorization: 'not-granted' });
-    } else if (command === 'plan' || command === 'validate') {
-      const input = await validationInput(paths), request = await prepareJobValidation(input);
-      if (command === 'plan') output(request);
+    } else if (command === 'model-plan' || command === 'model-propose') {
+      const { job } = await observePilot(paths), propose = command === 'model-propose';
+      process.exitCode = await runCli([propose ? 'job-propose' : 'job-proposal-plan', job.id,
+        '--state', paths.state, '--engine', enginePath, '--model', propose ? extra[0] : argument,
+        '--source', 'github-contents.mjs', '--test', 'github-contents.test.mjs', '--evidence', join(paths.root, 'provider-evidence.txt'), '--timeout-ms', '120000',
+        ...(propose ? ['--output', 'model-proposal.json'] : [])], {
+        confirm: async requestId => { assert.equal(argument, requestId, 'Inspect this exact model request before one-use consent'); return true; },
+      });
+    } else if (command === 'model-review') {
+      process.exitCode = await runCli(['job-review', '--state', paths.state, '--engine', enginePath,
+        '--proposal', join(paths.state, 'proposals/model-proposal.json'), '--answers', argument,
+        '--output', 'model-reviewed-recipe.json', '--json']);
+    } else if (['plan', 'validate', 'model-validation-plan', 'model-validate'].includes(command)) {
+      const generated = command.startsWith('model-');
+      const input = await validationInput(paths, generated ? join(paths.state, 'proposals/model-reviewed-recipe.json') : undefined);
+      const request = await prepareJobValidation(input);
+      if (command === 'plan' || command === 'model-validation-plan') output(request);
       else {
         assert.equal(process.platform, 'linux'); assert.equal(process.arch, 'x64');
         assert.equal(argument, request.id, 'Review the exact current plan before approval');

@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { consumeApproval } from '../dist/approval-store.js';
 import { approveJobValidation, prepareJobValidation, queueJobValidation } from '../dist/job-validation.js';
 import { prepareJobPublicationCandidate } from '../dist/publication-plan.js';
+import { preparePublicationRequest } from '../dist/publication-runner.js';
 import { persistValidationOutcome } from '../dist/validation-outcome.js';
 import { observeOnce, registerLocalSubscription } from '../dist/worker.js';
 import { openWorkerStore } from '../dist/worker-store.js';
@@ -177,6 +178,30 @@ test('a simulated passing validation produces only a deterministic, unapproved l
   assert.equal(JSON.stringify(candidate).includes(credential), false);
   assert.deepEqual(await treeContents(context.consumerRoot), before, 'The checkout and all Git files, including the index, remain unchanged');
   assert.equal(networkCalls, 0);
+});
+
+test('the generated candidate passes publication normalization with the same digest and no remote mutation', async t => {
+  const context = await fixture(t);
+  await completeSimulation(context);
+  const candidate = await prepareJobPublicationCandidate(context.publication);
+  let reads = 0;
+  const adapter = {
+    id: 'controlled-candidate-review', host: 'github.com', mode: 'simulation',
+    readSnapshot: async () => { reads++; return { repositoryId: 'controlled-repository', private: true,
+      owner: candidate.destination.owner, name: candidate.destination.name, baseBranch: candidate.destination.baseBranch,
+      headSha: candidate.git.headSha, treeSha: candidate.git.treeSha }; },
+    readBranch: async () => assert.fail('Preparing publication only reads its base snapshot.'),
+    findPullRequests: async () => assert.fail('Preparing publication only reads its base snapshot.'),
+    createCommit: async () => assert.fail('Preparation cannot write.'),
+    createBranch: async () => assert.fail('Preparation cannot write.'),
+    createDraftPullRequest: async () => assert.fail('Preparation cannot write.'),
+  };
+  const request = await preparePublicationRequest({ candidate, adapter,
+    author: { name: 'Controlled fixture', email: 'fixture@example.invalid' } });
+  assert.equal(request.candidate.id, candidate.id);
+  assert.deepEqual(request.candidate, candidate);
+  assert.equal(request.authorization, 'not-granted');
+  assert.equal(reads, 1);
 });
 
 test('a simulated improved outcome retains the baseline failure in the proposed PR', async t => {

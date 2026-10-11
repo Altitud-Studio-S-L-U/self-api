@@ -27,7 +27,11 @@ export type { IntegrationManifest, IntegrationVersionAxis, IntegrationSourceKind
 export { loadMcpCatalog, compareMcpCatalogs } from './mcp-catalog.js';
 export type { McpJsonSchema, McpToolContract, McpCatalog, McpCatalogSnapshot, McpChange, McpComparisonReport } from './mcp-catalog.js';
 export { prepareModelProposal, approveModelProposal, proposeMigrationWithModel } from './model-harness.js';
-export type { ModelAdapterIdentity, ModelContextFile, ModelProposalLimits, ModelProposalContext, PrepareModelProposalOptions, ModelProposalRequest, ModelProposalConsent, ModelProposalAdapter, ModelMigrationProposal } from './model-harness.js';
+export { prepareJobProposal, proposeJobMigration } from './job-proposal.js';
+export type { JobProposalOptions, JobProposalBinding, JobProposalRequest, JobMigrationProposal, JobNoProposal, JobProposalOutcome } from './job-proposal.js';
+export type { ModelAdapterIdentity, ModelContextFile, ModelProposalLimits, ModelProposalContext, PrepareModelProposalOptions, ModelProposalRequest, ModelProposalConsent, ModelProposalAdapter, ModelMigrationProposal, ModelNoProposal, ModelProposalOutcome } from './model-harness.js';
+export { createHttpModelAdapter } from './model-http-adapter.js';
+export type { HttpModelProvider, HttpModelAdapterOptions, HttpModelAdapterDependencies } from './model-http-adapter.js';
 export { loadJsonSchema, compareJsonSchemas, loadJsonExample, compareJsonExamples } from './json-schema.js';
 export type { JsonSchema, JsonSchemaSnapshot, JsonSchemaComparison, JsonExampleSnapshot, JsonExampleComparison } from './json-schema.js';
 export { runWorkerLoop } from './worker-loop.js';
@@ -52,3 +56,5 @@ export { prepareHttpSource, captureHttpSource, HttpSourceError } from './http-so
 export type { HttpSourcePolicy, HttpSourceSnapshot, HttpSourceCredentials, CaptureHttpSourceOptions, HttpSourceAddress, HttpSourceTransportRequest, HttpSourceTransportResponse, HttpSourceDependencies, HttpSourceCapture, HttpSourceFailure } from './http-source.js';
 export { analyzeMcpImpact } from './mcp-impact.js';
 export type { McpClientBinding, McpImpactOptions, McpConsumerCall, McpImpactReport } from './mcp-impact.js';
+export { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from './client-update.js';
+export type { ClientUpdateOptions, ClientUpdateRepository, ClientRelease, ClientUpdateStatus, ClientUpdateReason, ClientUpdateDependencies } from './client-update.js';

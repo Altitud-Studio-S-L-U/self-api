@@ -11,7 +11,7 @@ import { openWorkerStore } from '../dist/worker-store.js';
 
 const opaque=()=>randomBytes(32).toString('hex');
 async function receiver(t,identity) {
-  let baseUrl,drop=false,reject=false,hold;const access=opaque(),events=[],proofs=new Set();let tokens=0;
+  let baseUrl,drop=false,reject=false,hold,beforeAck;const access=opaque(),events=[],proofs=new Set();let tokens=0;
   const server=createServer(async(req,res)=>{
     try {
       const verified=await jwtVerify(req.headers.dpop,await importJWK(identity.publicJwk,'ES256'),{algorithms:['ES256']});
@@ -29,6 +29,7 @@ async function receiver(t,identity) {
       assert.equal(req.headers.authorization,`DPoP ${access}`);assert.equal(verified.payload.ath,createHash('sha256').update(access).digest('base64url'));
       if(reject){res.statusCode=401;res.end('{}');return;}
       const event=JSON.parse(raw),duplicate=events.some(existing=>existing.eventId===event.eventId);events.push(event);
+      if(beforeAck){const hook=beforeAck;beforeAck=undefined;await hook(event);}
       if(hold){const notify=hold;hold=undefined;notify();return;}
       if(drop){drop=false;res.destroy();return;}
       res.end(JSON.stringify({eventId:event.eventId,sequence:event.sequence,status:duplicate?'duplicate':'accepted'}));
@@ -37,7 +38,7 @@ async function receiver(t,identity) {
   const errors=[];server.on('fixture-error',error=>errors.push(error));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));baseUrl=`http://127.0.0.1:${server.address().port}`;
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));assert.deepEqual(errors,[]);});
-  return {baseUrl,events,drop(){drop=true;},holdNext(notify){hold=notify;},revoke(){reject=true;},get tokens(){return tokens;}};
+  return {baseUrl,events,drop(){drop=true;},holdNext(notify){hold=notify;},beforeAckOnce(hook){beforeAck=hook;},revoke(){reject=true;},get tokens(){return tokens;}};
 }
 
 test('client signs scoped key-bound requests, caches token, rejects remote HTTP and fails closed on revocation',async t=>{
@@ -86,6 +87,49 @@ test('canceled synchronization retains the exact outbox event and immediately re
   const first=server.events[0],resumed=await syncWorkerToCloud(options);
   assert.equal(resumed.state,'synced');assert.equal(resumed.pending,0);
   assert.deepEqual(server.events[1],first,'Lost acknowledgement must replay the same event, ID and sequence.');
+});
+
+test('an acknowledged event retains its exact outbox entry when the sync lease expires before acknowledgement',async t=>{
+  const work=resolve('work/test-cloud-ack-lease');await mkdir(work,{recursive:true});
+  const owned=await mkdtemp(join(work,'case-'));
+  t.after(async()=>{const path=relative(work,owned);assert(!isAbsolute(path)&&path.startsWith('case-')&&!path.includes('..'));await rm(owned,{recursive:true,force:true});});
+  const statePath=join(owned,'state'),cloudStatePath=join(owned,'cloud'),consumerRoot=join(owned,'consumer');await mkdir(consumerRoot);
+  const sourcePath=join(owned,'private-source.json'),label='Private lease fixture label';
+  const bytes=Buffer.from(JSON.stringify({openapi:'3.0.3',info:{title:label,version:'1'},paths:{}}));
+  const subscriptionId=opaque(),store=await openWorkerStore(statePath);
+  try{store.register({id:subscriptionId,label,sourcePath,consumerRoot,providerBaseUrl:'https://private-provider.example.invalid',
+    baseline:{bytes,metadata:{sha256:createHash('sha256').update(bytes).digest('hex'),byteLength:bytes.length,specificationVersion:'3.0.3',apiVersion:'1'}}});}finally{store.close();}
+  const identity=await generateCloudWorkerIdentity(),server=await receiver(t,identity);
+  const credentials={...identity,baseUrl:server.baseUrl,projectId:opaque(),clientSecret:opaque(),allowLocalHttp:true};
+  const options={statePath,cloudStatePath,credentials,integrationIds:[subscriptionId]};
+  const {DatabaseSync}=await import('node:sqlite');
+  const cloudDatabasePath=join(cloudStatePath,'cloud.sqlite3');
+  let expired=0,original;
+  server.beforeAckOnce(event=>{
+    const db=new DatabaseSync(cloudDatabasePath);
+    try{
+      const lease=db.prepare('SELECT lease_owner,lease_until FROM identity WHERE id=1 AND installation=? AND project=?').get(identity.installationId,credentials.projectId);
+      assert(lease&&typeof lease.lease_owner==='string'&&lease.lease_until>Date.now());
+      const pending=db.prepare('SELECT sequence,event FROM outbox ORDER BY sequence').all();assert.equal(pending.length,1);
+      original=pending[0].event;assert.deepEqual(JSON.parse(original),event);assert.equal(pending[0].sequence,event.sequence);
+      // Mutate only this owned fixture, after a valid receive and before its ACK.
+      assert.equal(Number(db.prepare('UPDATE identity SET lease_until=0 WHERE id=1 AND installation=? AND project=? AND lease_owner=?').run(identity.installationId,credentials.projectId,lease.lease_owner).changes),1);
+      expired++;
+    }finally{db.close();}
+  });
+  await assert.rejects(syncWorkerToCloud(options),{code:'INVALID_INPUT'});
+  assert.equal(expired,1);assert.equal(server.events.length,1);
+  const retained=new DatabaseSync(cloudDatabasePath);
+  try{
+    const pending=retained.prepare('SELECT event FROM outbox ORDER BY sequence').all();assert.equal(pending.length,1);assert.equal(pending[0].event,original);
+    const lease=retained.prepare('SELECT lease_owner,lease_until FROM identity WHERE id=1').get();assert.equal(lease.lease_owner,null);assert.equal(lease.lease_until,null);
+  }finally{retained.close();}
+  const first=server.events[0],resumed=await syncWorkerToCloud(options);
+  assert.equal(resumed.state,'synced');assert.equal(resumed.pending,0);assert.equal(resumed.sent,2);
+  assert.deepEqual(server.events[1],first,'An ACK with an expired lease must retain the same event, ID, sequence and timestamp for replay.');
+  assert.equal(expired,1);assert.deepEqual(server.events.map(event=>event.sequence),[0,0,1]);
+  const sent=JSON.stringify(server.events);
+  for(const forbidden of [label,sourcePath,consumerRoot,'private-provider.example.invalid',credentials.clientSecret,identity.privateJwk.d,'sourcePath','consumerRoot','report','diff','prompt'])assert(!sent.includes(forbidden));
 });
 
 test('actual local jobs publish only allowlisted summaries and retry a lost acknowledgement with the same sequence',async t=>{

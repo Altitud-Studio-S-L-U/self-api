@@ -58,7 +58,11 @@ export function scanCapturedConsumer(captured: ConsumerCapture): ConsumerInvento
       .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0),
     calls: inspections.flatMap(item => item.calls),
     imports: inspections.flatMap(item => item.imports),
-    issues: inspections.flatMap(item => item.issues),
+    issues: [
+      ...inspections.flatMap(item => item.issues),
+      ...captured.skipped.filter(entry => entry.reason === 'unsupported-extension' && /\.(?:py|java)$/iu.test(entry.path))
+        .map(entry => ({ code: 'unsupported-language', location: { file: entry.path, line: 1, column: 1 } })),
+    ],
     skipped: captured.skipped,
     packages,
     validationCandidates,

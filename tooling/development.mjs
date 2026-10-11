@@ -50,7 +50,7 @@ function renderStatus(delivery) {
     lines.push('No implementation milestone is pending. Review any open pull requests separately.');
   }
   lines.push('', 'Validation: pnpm dev:check',
-    'Resume: review the current branch and diff, then continue this milestone using docs/implementation-plan.md section 12.',
+    'Resume: review the current branch and diff, then continue this milestone using docs/technical-guide.pdf.',
     'Delivery status is reviewed manually; passing checks does not complete a milestone.');
   return `${lines.join('\n')}\n`;
 }

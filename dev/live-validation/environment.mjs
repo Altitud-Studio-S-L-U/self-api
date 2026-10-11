@@ -31,7 +31,8 @@ export async function seedPilot(root, captureRoot) {
   const paths = pathsFor(root);
   await mkdir(paths.root, { mode: 0o700 });
   assert.equal(await realpath(paths.root), paths.root, 'Use a canonical owned directory');
-  for (const path of [paths.consumer, paths.state, paths.contracts]) await mkdir(path, { mode: 0o700 });
+  // Let the worker create and initialize its private native state directory.
+  for (const path of [paths.consumer, paths.contracts]) await mkdir(path, { mode: 0o700 });
   const bodies = [];
   for (const version of versions) {
     const bytes = await readFile(join(captureRoot, version + '.json'));
@@ -60,6 +61,13 @@ export async function seedPilot(root, captureRoot) {
   }
   await writeFile(join(paths.root, 'pilot.json'), json({ kind: 'keepseam-live-github-pilot', schemaVersion: 1, root: paths.root,
     platform: process.platform, captureSummary: JSON.parse(await readFile(join(captureRoot, 'summary.json'), 'utf8')) }), { flag: 'wx', mode: 0o600 });
+  await writeFile(join(paths.root, 'provider-evidence.txt'),
+    'Reviewed public provider evidence: https://docs.github.com/en/rest/about-the-rest-api/breaking-changes#version-2026-03-10\n'
+    + 'GitHub 2026-03-10 changes directory-listing submodules from type file to type submodule. Select the new X-GitHub-Api-Version header. '
+    + 'The supplied partial OpenAPI projection is locally authored from this documentation and version-confirmed live captures; it is not the complete provider schema. '
+    + 'The same source tree was captured with both versions. Preserve the application-facing listing, with submodule directory false and downloadable false. '
+    + 'Do not follow a submodule, edit tests, modify repository contents or authorize an action. The reviewer separately checks these semantics.\n',
+    { flag: 'wx', mode: 0o600 });
   return paths;
 }
 
@@ -83,8 +91,12 @@ export async function observePilot(paths) {
   return { subscription, cycle, job: jobs[0] };
 }
 
-export async function validationInput(paths) {
+export async function validationInput(paths, reviewedRecipePath) {
   const { job } = await observePilot(paths);
+  if (reviewedRecipePath !== undefined) {
+    const recipe = JSON.parse(await readFile(reviewedRecipePath, 'utf8'));
+    return { statePath: paths.state, enginePath, jobId: job.id, testPaths: ['github-contents.test.mjs'], recipe };
+  }
   const before = await readFile(join(import.meta.dirname, 'consumer/github-contents.mjs'), 'utf8');
   return { statePath: paths.state, enginePath, jobId: job.id, testPaths: ['github-contents.test.mjs'], recipe: {
     schemaVersion: 1, summary: 'Accept the documented GitHub submodule type while preserving the internal listing',

@@ -10,38 +10,20 @@ import { loadWorkerServiceConfig, requestWorkerServiceStop, runWorkerService } f
 import { appendServiceLog, serviceFailureDetails, serviceFiles } from '../dist/worker-service-state.js';
 import { listSourceObservations } from '../dist/source-observer.js';
 import { runWorkerServiceCli } from '../dist/worker-service-cli.js';
+import { checkWindowsPermissions } from '../dist/windows-permissions.js';
 
 const parent = resolve('work/test-worker-service');
 const cli = resolve('dist/cli.js');
 function restrictFixture(directory) {
-  if (process.platform !== 'win32') return;
-  const script = `
-$ErrorActionPreference = 'Stop'
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$targets = @((Get-Item -LiteralPath $env:KEEPSEAM_TEST_DIRECTORY)) + @(Get-ChildItem -LiteralPath $env:KEEPSEAM_TEST_DIRECTORY -Recurse -Force)
-foreach ($target in $targets) {
-  $acl = Get-Acl -LiteralPath $target.FullName
-  $acl.SetAccessRuleProtection($true, $false)
-  foreach ($rule in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($rule) }
-  $acl.SetOwner($sid)
-  foreach ($allowed in @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')) {
-    $identity = [System.Security.Principal.SecurityIdentifier]::new($allowed)
-    if ($target.PSIsContainer) { $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow') }
-    else { $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'Allow') }
-    $acl.AddAccessRule($rule)
-  }
-  Set-Acl -LiteralPath $target.FullName -AclObject $acl
-}
-`;
-  execFileSync(join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-    { env: { ...process.env, PSModulePath: join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/Modules'),
-      KEEPSEAM_TEST_DIRECTORY: directory }, windowsHide: true, stdio: 'pipe', timeout: 30000 });
+  // Initialize the newly owned root before creating children. They inherit its
+  // private DACL; independently protected worker state remains untouched.
+  checkWindowsPermissions([directory], true, directory);
 }
 async function fixture(t) {
   await mkdir(parent, { recursive: true });
   const directory = await mkdtemp(join(await realpath(parent), 'service-'));
-  const value = await createServiceFixture(directory);
   restrictFixture(directory);
+  const value = await createServiceFixture(directory);
   t.after(async () => {
     const actual = await realpath(directory);
     assert.equal(dirname(actual), await realpath(parent)); assert(basename(actual).startsWith('service-'));

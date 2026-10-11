@@ -26,6 +26,8 @@ export interface WorkerServiceDependencies {
   readonly observe?: typeof observeOnce;
   readonly observeSources?: typeof observeSourcesOnce;
   readonly sync?: typeof syncWorkerToCloud;
+  /** A trusted scheduler seam; the default is a cancellable Node timer. */
+  readonly wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }
 
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
@@ -76,6 +78,7 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
   if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) invalid('A service requires an AbortSignal for cancellation.');
   const lock = await lockWorkerService(config.statePath);
   const controller = new AbortController();
+  const wait = options.dependencies?.wait ?? ((milliseconds: number, signal: AbortSignal) => delay(milliseconds, undefined, { signal }));
   const abort = (): void => { controller.abort(); };
   options.signal?.addEventListener('abort', abort, { once: true });
   if (options.signal?.aborted) abort();
@@ -117,46 +120,65 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
     if (config.sources) phases.push({ name: 'sources', interval: config.sources.intervalMs, next: 0, failures: 0,
       run: () => (options.dependencies?.observeSources ?? observeSourcesOnce)({ statePath: lock.directory,
         allowHttp: config.allowHttp, signal: controller.signal }) });
-    let cloudAt = 0, cloudFailures = 0;
-    while (!controller.signal.aborted) {
-      let ran = false;
-      for (const phase of phases) {
-        if (controller.signal.aborted || performance.now() < phase.next) continue;
-        let summary: ReturnType<typeof counts> = { observed: 0, unchanged: 0, busy: 0, failed: 1 };
-        try { summary = counts(await phase.run()); } catch { /* Persist only a sanitized phase failure, never source content or credentials. */ }
-        phase.failures = summary.failed > 0 || summary.busy > 0 ? Math.min(phase.failures + 1, 10) : 0;
-        const backoffMs = Math.min(phase.interval * 2 ** phase.failures, Math.max(phase.interval, 300_000));
-        phase.next = performance.now() + backoffMs;
-        log('observation', { profile: phase.name, counts: summary, retryAfterMs: backoffMs });
-        ran = true;
-      }
-      if (!controller.signal.aborted && config.cloud && performance.now() >= cloudAt) {
+    const refresh = (cycle = false): void => {
+      const degraded = phases.some(phase => phase.failures > 0);
+      update({ cycles: status.cycles + (cycle ? 1 : 0), observation: cycle ? degraded ? 'degraded' : 'healthy' : status.observation,
+        state: degraded || ['unavailable', 'reconnect-required'].includes(status.cloud) ? 'degraded' : 'running' });
+    };
+    const synchronize = async (): Promise<void> => {
+      let cloudFailures = 0;
+      while (!controller.signal.aborted) {
+        let terminal = false;
+        let waitMs = Math.min(config.cloud!.intervalMs, 60_000);
         try {
           const result = await (options.dependencies?.sync ?? syncWorkerToCloud)({ statePath: lock.directory,
-            cloudStatePath: config.cloud.statePath, integrationIds: config.cloud.integrationIds, credentials: credentials!, signal: controller.signal });
+            cloudStatePath: config.cloud!.statePath, integrationIds: config.cloud!.integrationIds, credentials: credentials!, signal: controller.signal });
           if (!['synced', 'pending', 'busy'].includes(result.state)) throw new Error('Invalid sync result.');
           status = { ...status, cloud: result.state === 'synced' ? 'synced' : 'pending' };
-          cloudFailures = 0; cloudAt = performance.now() + config.cloud.intervalMs;
-          log('cloud-status', { state: status.cloud });
+          cloudFailures = 0;
         } catch (error) {
-          const terminal = error instanceof CloudConnectionError && ['AUTHORIZATION_REJECTED', 'STATUS_REJECTED', 'INVALID_CONFIGURATION'].includes(error.code);
+          terminal = error instanceof CloudConnectionError && ['AUTHORIZATION_REJECTED', 'STATUS_REJECTED', 'INVALID_CONFIGURATION'].includes(error.code);
           status = { ...status, cloud: terminal ? 'reconnect-required' : 'unavailable' };
           cloudFailures = Math.min(cloudFailures + 1, 10);
-          cloudAt = terminal ? Infinity : performance.now() + Math.min(config.cloud.intervalMs * 2 ** cloudFailures, Math.max(config.cloud.intervalMs, 300_000));
-          log('cloud-status', { state: status.cloud });
+          waitMs = Math.min(waitMs * 2 ** cloudFailures, 300_000);
         }
-        ran = true;
+        log('cloud-status', { state: status.cloud }); refresh();
+        if (controller.signal.aborted) break;
+        if (terminal) {
+          await new Promise<void>(done => controller.signal.addEventListener('abort', () => done(), { once: true }));
+        } else {
+          try { await wait(waitMs, controller.signal); }
+          catch (error) { if (!controller.signal.aborted) throw error; }
+        }
       }
-      if (ran) {
-        const degraded = phases.some(phase => phase.failures > 0);
-        update({ cycles: status.cycles + 1, observation: degraded ? 'degraded' : 'healthy',
-          state: degraded || ['unavailable', 'reconnect-required'].includes(status.cloud) ? 'degraded' : 'running' });
+    };
+    const observe = async (): Promise<void> => {
+      while (!controller.signal.aborted) {
+        let ran = false;
+        for (const phase of phases) {
+          if (controller.signal.aborted || performance.now() < phase.next) continue;
+          let summary: ReturnType<typeof counts> = { observed: 0, unchanged: 0, busy: 0, failed: 1 };
+          try { summary = counts(await phase.run()); } catch { /* Persist only a sanitized phase failure, never source content or credentials. */ }
+          phase.failures = summary.failed > 0 || summary.busy > 0 ? Math.min(phase.failures + 1, 10) : 0;
+          const backoffMs = Math.min(phase.interval * 2 ** phase.failures, Math.max(phase.interval, 300_000));
+          phase.next = performance.now() + backoffMs;
+          log('observation', { profile: phase.name, counts: summary, retryAfterMs: backoffMs });
+          ran = true;
+        }
+        if (ran) refresh(true);
+        if (controller.signal.aborted) break;
+        const next = Math.min(...phases.map(phase => phase.next));
+        try { await wait(Math.max(1, next - performance.now()), controller.signal); }
+        catch (error) { if (!controller.signal.aborted) throw error; }
       }
-      if (controller.signal.aborted) break;
-      const next = Math.min(...phases.map(phase => phase.next), config.cloud ? cloudAt : Infinity);
-      try { await delay(Math.max(1, next - performance.now()), undefined, { signal: controller.signal }); }
-      catch (error) { if (!controller.signal.aborted) throw error; }
-    }
+    };
+    // Cloud contact has its own serial loop: a slow observation cannot withhold
+    // a fresh heartbeat, and no two sync calls share ownership concurrently.
+    let failure: unknown;
+    await Promise.all([observe(), ...(config.cloud ? [synchronize()] : [])].map(async task => {
+      try { await task; } catch (error) { failure ??= error; controller.abort(); }
+    }));
+    if (failure !== undefined) throw failure;
     if (monitorError) throw new Error('Local control state is invalid.');
     update({ state: 'stopping' }); log('stopping');
     update({ state: 'stopped' }); log('stopped');

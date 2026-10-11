@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { Resolver } from 'node:dns/promises';
 import { request as httpsRequest, type RequestOptions } from 'node:https';
-import { BlockList, isIP, type LookupFunction } from 'node:net';
+import { isIP, type LookupFunction } from 'node:net';
 import { isProxy, isSharedArrayBuffer, isUint8Array } from 'node:util/types';
 import { PlumberError } from './errors.js';
+import { publicAddress as checkedPublicAddress, resolveAddresses } from './public-network.js';
 
 export interface HttpSourcePolicy {
   readonly schemaVersion: 1;
@@ -122,23 +122,8 @@ function copyBytes(value: unknown, maximum: number, invalidReason: HttpSourceFai
   // Read intrinsic slots; own accessors must not bypass budgets or run while copying evidence.
   return Buffer.from(new Uint8Array(buffer, offset, length));
 }
-const prohibitedV4 = new BlockList();
-for (const [network, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
-  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.31.196.0', 24],
-  ['192.52.193.0', 24], ['192.88.99.0', 24], ['192.168.0.0', 16], ['192.175.48.0', 24], ['198.18.0.0', 15],
-  ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4]] as const) prohibitedV4.addSubnet(network, prefix, 'ipv4');
-const globalV6 = new BlockList();
-globalV6.addSubnet('2000::', 3, 'ipv6');
-const prohibitedV6 = new BlockList();
-for (const [network, prefix] of [['2001::', 23], ['2001:db8::', 32], ['2002::', 16], ['3fff::', 20]] as const) {
-  prohibitedV6.addSubnet(network, prefix, 'ipv6');
-}
 function publicAddress(address: unknown, family?: unknown): HttpSourceAddress {
-  if (typeof address !== 'string' || address.includes('%') || address.length > 45) fail('address-denied');
-  const actual = isIP(address);
-  if ((family !== undefined && family !== actual) || (actual !== 4 && actual !== 6)) fail('address-denied');
-  if (actual === 4 ? prohibitedV4.check(address, 'ipv4') : !globalV6.check(address, 'ipv6') || prohibitedV6.check(address, 'ipv6')) fail('address-denied');
-  return { address, family: actual };
+  try { return checkedPublicAddress(address, family); } catch { fail('address-denied'); }
 }
 function plain(value: unknown, required: readonly string[], optional: readonly string[] = [], reason: HttpSourceFailure = 'invalid-policy'): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || isProxy(value) || Array.isArray(value) ||
@@ -246,15 +231,8 @@ function validateContent(bytes: Uint8Array, kind: HttpSourcePolicy['contentKind'
 }
 
 async function resolvePublic(hostname: string, signal: AbortSignal): Promise<readonly HttpSourceAddress[]> {
-  const resolver = new Resolver({ timeout: 5_000, tries: 1 });
-  const stop = (): void => { resolver.cancel(); };
-  signal.addEventListener('abort', stop, { once: true });
-  try {
-    if (signal.aborted) fail('aborted');
-    const result = await Promise.allSettled([resolver.resolve4(hostname), resolver.resolve6(hostname)]);
-    return result.flatMap((value, index) => value.status === 'fulfilled'
-      ? value.value.map(address => ({ address, family: index === 0 ? 4 as const : 6 as const })) : []);
-  } finally { signal.removeEventListener('abort', stop); resolver.cancel(); }
+  if (signal.aborted) fail('aborted');
+  return resolveAddresses(hostname, signal);
 }
 function nodeTransport(input: HttpSourceTransportRequest, constructor: typeof httpsRequest): Promise<HttpSourceTransportResponse> {
   return new Promise((resolveResponse, reject) => {

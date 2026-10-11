@@ -20,6 +20,8 @@ import { runWorkerServiceCli } from './worker-service-cli.js';
 import { runSourceObserverCli } from './source-observer-cli.js';
 import { runDependencyCli } from './dependency-cli.js';
 import { runPublicationCommandCli } from './publication-command-cli.js';
+import { runClientUpdateCli } from './client-update-cli.js';
+import { runJobProposalCli } from './job-proposal-cli.js';
 
 interface CliOptions {
   readonly compare?: typeof compareOpenApi;
@@ -59,9 +61,13 @@ const help = `Usage: keepseam compare <base.json> <revision.json> --engine <path
        keepseam worker --once --state <directory> --engine <path> [--subscription <id>] [--http] [--json]
        keepseam worker-loop --state <directory> --engine <path> [--cycles <1-1000>] [--interval-ms <1000-3600000>] [--run-approved] [--http] [--json]
        keepseam worker-service run|status|stop --config <absolute-json>
+       keepseam client-update check|stage|status --config <absolute-json>
        keepseam worker-service render --config <absolute-json> --target systemd|launchd|windows --node <absolute-path> --cli <absolute-path> [--scope system|user] [--user <unix-account>] [--name <service-name>]
        keepseam subscriptions --state <directory> [--json]
        keepseam jobs --state <directory> [--json]
+       keepseam job-proposal-plan <job-id> --state <directory> --engine <path> --model <local-config.json> --test <file> [--source <file>] [--evidence <local-file>] [--timeout-ms <1000-120000>]
+       keepseam job-propose <job-id> --state <directory> --engine <path> --model <local-config.json> --test <file> [--source <file>] [--evidence <local-file>] [--timeout-ms <1000-120000>] [--allow-remote] [--output <name.json>]
+       keepseam job-review --state <directory> --engine <path> --proposal <local-json> --answers <local-json> [--output <name.json>] [--json]
        keepseam job-plan <job-id> --state <directory> --engine <path> --recipe <path> --test <file> [--json]
        keepseam job-approve <job-id> --state <directory> --engine <path> --recipe <path> --test <file>
        keepseam job-queue <job-id> --state <directory> --engine <path> --recipe <path> --test <file> --approval <receipt-id> [--json]
@@ -102,6 +108,8 @@ validate runs approved tests against isolated copies using the fixed Linux x64 D
 validate exits 0 only when both baseline and candidate pass, 1 for completed failures/improvement,
 or 2 for invalid authorization/unavailable execution. It never changes the live consumer or publishes.
 job-approve requires the same explicit terminal review; job-queue only persists existing authorization.
+job-propose confirms one exact model request in an interactive terminal; remote disclosure also needs --allow-remote.
+job-review records explicit answers bound to the saved proposal digest; it neither approves tests nor publishes.
 run-approved defaults to one queued intent and never retries an interrupted attempt.
 recover-approved reconciles expired/interrupted intents; it cannot execute tests or grant approval.
 Execution passes exit 0 for no work or all passing outcomes, 1 for completed failures/improvement,
@@ -154,6 +162,9 @@ function renderInventory(inventory: ConsumerInventory): string {
   for (const call of inventory.calls) {
     lines.push(`- ${escapeTerminal(call.location.file)}:${call.location.line}:${call.location.column} ${call.method ?? '?'} ${escapeTerminal(call.pathPattern ?? '?')} (${call.resolution})`);
   }
+  for (const issue of inventory.issues) {
+    lines.push(`- Inspection issue: ${escapeTerminal(issue.code)} at ${escapeTerminal(issue.location.file)}:${issue.location.line}:${issue.location.column}`);
+  }
   for (const candidate of inventory.validationCandidates) {
     lines.push(`- Validation candidate: ${escapeTerminal(candidate.manifest)} / ${escapeTerminal(candidate.script)}`);
   }
@@ -173,6 +184,12 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   if (args.includes('--help') || args.includes('-h')) {
     (options.stdout ?? ((text: string) => { process.stdout.write(text); }))(help);
     return 0;
+  }
+  if (args[0] === 'client-update') {
+    return runClientUpdateCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (['job-proposal-plan', 'job-propose', 'job-review'].includes(args[0] ?? '')) {
+    return runJobProposalCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}), ...(options.confirm ? { confirm: options.confirm } : {}) });
   }
   if (['subscribe', 'http-subscribe', 'worker', 'subscriptions', 'jobs'].includes(args[0] ?? '')) {
     return runWorkerCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
@@ -309,5 +326,5 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
 }
 
 if (import.meta.main) {
-  process.exitCode = await runCli(process.argv.slice(2));
+  runCli(process.argv.slice(2)).then(code => { process.exitCode = code; });
 }
