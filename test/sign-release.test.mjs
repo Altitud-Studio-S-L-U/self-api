@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -55,7 +55,7 @@ test('release construction rejects metadata that cannot fit the bounded Cloud im
   }
 });
 test('operator signing command produces a real TUF feed and inert import bundle without publishing or exposing keys',async t=>{
-  const input=fixture(),directory=await mkdtemp(join(tmpdir(),'keepseam-release-sign-config-'));checkWindowsPermissions([directory],true,directory);t.after(()=>rm(directory,{recursive:true}));
+  const input=fixture(),directory=await realpath(await mkdtemp(join(tmpdir(),'keepseam-release-sign-config-')));checkWindowsPermissions([directory],true,directory);t.after(()=>rm(directory,{recursive:true}));
   const rootFile=join(directory,'root.json'),keyFile=join(directory,'role.pem'),artifactFile=join(directory,input.artifacts[0].fileName),documentationFile=join(directory,'technical-guide.pdf');
   await writeFile(rootFile,input.rootBytes,{mode:0o600});await writeFile(keyFile,input.roleKeys.targets[0].key.export({format:'pem',type:'pkcs8'}),{mode:0o600});await writeFile(artifactFile,input.artifacts[0].bytes,{mode:0o600});await writeFile(documentationFile,input.documentation,{mode:0o600});
   const config={schemaVersion:1,rootFile,rootSha256:input.rootSha256,roleKeys:Object.fromEntries(['targets','snapshot','timestamp'].map(role=>[role,[{keyid:input.keyid,file:keyFile}]])),version:input.version,sequence:input.sequence,sourceRevision:input.sourceRevision,notes:input.notes,requirements:input.requirements,documentationFile,artifacts:[{os:'any',arch:'any',fileName:input.artifacts[0].fileName,file:artifactFile}]};
