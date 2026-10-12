@@ -9,6 +9,7 @@ import { after, before, test } from 'node:test';
 import { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from '../dist/client-update.js';
 import { ReleaseFetcher, releaseBaseUrl } from '../dist/client-update-fetcher.js';
 import { runClientUpdateCli } from '../dist/client-update-cli.js';
+import { buildSignedRelease } from '../tooling/sign-release.mjs';
 
 const base = resolve('work/test-client-updates');
 let parent;
@@ -120,6 +121,27 @@ test('real signatures gate check and stage; repeated checks preserve pending app
   assert.equal((await stageClientUpdate(options(item), dependencies(connection))).state, 'downloaded-awaiting-approval');
   assert.equal(connection.calls.filter(url => url.endsWith('.tgz')).length, 1);
   assert.ok((await readdir(item.statePath)).every(name => !name.startsWith('check-')));
+});
+
+test('operator release metadata is compatible with public SDK check and staging without installation', async t => {
+  const item = await fixture(t), artifact = Buffer.from('Synthetic inert package: staged, never extracted or executed.');
+  const signed = buildSignedRelease({ rootBytes: root, rootSha256: sha(root),
+    roleKeys: Object.fromEntries(['targets', 'snapshot', 'timestamp'].map(role => [role, [{ keyid, key: privateKey }]])),
+    version: '0.2.0', sequence: 1, sourceRevision: 'a'.repeat(40),
+    notes: { es: 'Prueba sintética', en: 'Synthetic test' }, requirements: { es: 'Node 24.21', en: 'Node 24.21' },
+    artifacts: [{ os: 'any', arch: 'any', fileName: 'keepseam-client-0.2.0.tgz', bytes: artifact }],
+    documentation: Buffer.from('%PDF-1.7 Synthetic inert documentation fixture') });
+  const connection = transport({ files: new Map([
+    ...[...signed.metadata].map(([path, bytes]) => [`${metadataUrl}${path}`, bytes]),
+    ...[...signed.targets].map(([path, bytes]) => [`${targetsUrl}${path}`, bytes]),
+  ]) });
+  const checked = await checkClientUpdate(options(item), dependencies(connection));
+  assert.equal(checked.state, 'available'); assert.equal(checked.release.minimumNodeVersion, '24.21.0');
+  assert.equal(connection.calls.filter(url => url.endsWith('.tgz')).length, 0);
+  const staged = await stageClientUpdate(options(item), dependencies(connection));
+  assert.equal(staged.state, 'downloaded-awaiting-approval'); assert.equal(staged.installation, 'not-authorized');
+  assert.deepEqual(await readFile(staged.artifactPath), artifact);
+  assert.deepEqual(await readClientUpdateStatus({ statePath: item.statePath }), staged);
 });
 
 test('the installed version is up to date and never downloads an unnecessary package', async t => {

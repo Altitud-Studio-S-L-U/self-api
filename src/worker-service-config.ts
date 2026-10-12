@@ -9,6 +9,7 @@ export interface WorkerServiceConfig {
   readonly allowHttp: boolean;
   readonly openApi?: { readonly enginePath: string; readonly intervalMs: number };
   readonly sources?: { readonly intervalMs: number };
+  readonly license?: { readonly credentialsPath: string; readonly trustPath: string; readonly leasePath?: string };
   readonly cloud?: { readonly credentialsPath: string; readonly statePath: string; readonly integrationIds: readonly string[]; readonly intervalMs: number };
 }
 
@@ -54,7 +55,7 @@ function interval(value: unknown, fallback: number): number {
 
 export function normalizeWorkerServiceConfig(value: unknown, target: WorkerServiceTarget = process.platform === 'win32' ? 'windows' : 'systemd'): WorkerServiceConfig {
   if (!['systemd', 'launchd', 'windows'].includes(target)) invalid('Choose systemd, launchd or windows.');
-  const config = record(value, ['schemaVersion', 'statePath', 'allowHttp', 'openApi', 'sources', 'cloud']);
+  const config = record(value, ['schemaVersion', 'statePath', 'allowHttp', 'openApi', 'sources', 'cloud', 'license']);
   if (config['schemaVersion'] !== 1 || (config['allowHttp'] !== undefined && typeof config['allowHttp'] !== 'boolean')) {
     invalid('Service configuration requires schemaVersion 1 and an explicit boolean HTTP policy.');
   }
@@ -88,7 +89,14 @@ export function normalizeWorkerServiceConfig(value: unknown, target: WorkerServi
     cloud = Object.freeze({ credentialsPath: servicePath(input['credentialsPath'], target), statePath: cloudPath,
       integrationIds: Object.freeze([...ids] as string[]), intervalMs: interval(input['intervalMs'], 60_000) });
   }
+  let license: WorkerServiceConfig['license'];
+  if (config['license'] !== undefined) {
+    const input = record(config['license'], ['credentialsPath', 'trustPath', 'leasePath']);
+    license = Object.freeze({ credentialsPath: servicePath(input['credentialsPath'], target), trustPath: servicePath(input['trustPath'], target),
+      ...(input['leasePath'] !== undefined ? { leasePath: servicePath(input['leasePath'], target) } : {}) });
+  }
   return Object.freeze({ schemaVersion: 1, statePath, allowHttp: config['allowHttp'] === true,
+    ...(license ? { license } : {}),
     ...(openApi ? { openApi } : {}), ...(sources ? { sources } : {}), ...(cloud ? { cloud } : {}) });
 }
 

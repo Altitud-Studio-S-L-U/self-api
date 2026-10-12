@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { generateCloudWorkerIdentity, listLocalSubscriptions, normalizeWorkerServiceConfig, readWorkerServiceStatus,
   registerLocalSubscription, runWorkerService } from '../dist/index.js';
 import { checkWindowsPermissions } from '../dist/windows-permissions.js';
+import { createLicenseFixture } from '../tooling/license-fixture.mjs';
 
 test('Cloud heartbeat remains serial and timely while a healthy observer is awaiting a slow source', { timeout: 45000 }, async t => {
   const controller = new AbortController();
@@ -27,10 +28,15 @@ test('Cloud heartbeat remains serial and timely while a healthy observer is awai
   const identity = await generateCloudWorkerIdentity(), credentialsPath = join(directory, 'credentials.json');
   await writeFile(credentialsPath, JSON.stringify({ baseUrl: 'http://127.0.0.1:1', allowLocalHttp: true,
     installationId: identity.installationId, projectId: 'b'.repeat(64), clientSecret: 'c'.repeat(64), privateJwk: identity.privateJwk }), { mode: 0o600 });
-  const config = normalizeWorkerServiceConfig({ schemaVersion: 1, statePath, openApi: { enginePath, intervalMs: 1000 },
+  let config = normalizeWorkerServiceConfig({ schemaVersion: 1, statePath, openApi: { enginePath, intervalMs: 1000 },
     cloud: { statePath: cloudStatePath, credentialsPath, integrationIds: [subscription.id], intervalMs: 3600000 } });
   let elapsed = 0;
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: Date.parse('2026-10-11T12:00:00Z') });
+  const license = await createLicenseFixture(directory, { credentials: { baseUrl: 'http://127.0.0.1:1', allowLocalHttp: true,
+    installationId: identity.installationId, projectId: 'b'.repeat(64), clientSecret: 'c'.repeat(64), privateJwk: identity.privateJwk } });
+  // The licensed-daemon requirement changed; the heartbeat assertions still
+  // exercise the real scheduler, now with independently verified authorization.
+  config = normalizeWorkerServiceConfig({ ...config, license: license.license });
   t.mock.method(performance, 'now', () => elapsed);
   const waits = new Set();
   const advance = ms => {
@@ -52,6 +58,7 @@ test('Cloud heartbeat remains serial and timely while a healthy observer is awai
   let observations = 0, syncs = 0, activeSyncs = 0, maximumActiveSyncs = 0, activeObserver = false, lastSeen;
   running = runWorkerService(config, { signal: controller.signal, dependencies: {
     wait,
+    control: { async poll() { return { schemaVersion: 1, license: await license.sign(), pollAfterMs: 60000 }; } },
     async observe() {
       observations++;
       if (observations === 2) { activeObserver = true; entered(); await slow; activeObserver = false; }

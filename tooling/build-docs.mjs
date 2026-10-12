@@ -11,7 +11,7 @@ const source = readFileSync(path.join(root, 'docs', 'technical-guide.html'));
 const html = new TextDecoder('utf-8', { fatal: true }).decode(source);
 const sourceHash = createHash('sha256').update(source).digest('hex');
 const target = path.join(root, 'docs', 'technical-guide.pdf');
-const pages = 16;
+const pages = 18;
 assert(!/<script\b|<(?:iframe|img|link)\b|@import|url\s*\(/i.test(html), 'Technical source must be self-contained and script-free.');
 const check = (pdf) => {
   const encoded = pdf.toString('latin1');

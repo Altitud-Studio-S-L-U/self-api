@@ -4,6 +4,8 @@ Private SDK, CLI and local worker for maintaining API integrations in the custom
 
 The maintained technical documentation is [technical-guide.pdf](docs/technical-guide.pdf). It contains installation and public SDK examples, the CLI workflow, model context and review, Docker execution and recovery, native services, Cloud status and verified update staging. Fixtures and development laboratories keep their own example instructions.
 
+Manual local SDK/CLI operations remain available without a Cloud license. Every automatic `worker-service` requires a separately trusted, identity-bound signed license; otherwise it starts paused. Connected suspension pauses Keepseam automation, preserving the customer's API and local evidence. Offline authorization lasts at most 24 hours and never outlives its entitlement; revocation and the clock watermark survive restart.
+
 From this checkout, use Node 24.21.0–24.x and pnpm 11.19.0: `pnpm install --frozen-lockfile`, `pnpm engine:setup`, `pnpm build`, then `pnpm keepseam --help`. Engine acquisition needs network access. The separate release builder produces a CLI bundle with its own runtime; extract its whole directory. Consumer validation requires the documented Linux x64 Docker profile. No command installs models, authorizes unreviewed changes or merges/deploys a PR automatically.
 
 Run `pnpm check` and the relevant prepared Linux `pnpm test:isolated` checks. Documentation source is `docs/technical-guide.html`; regenerate with `node tooling/build-docs.mjs --playwright-root ../keepseam-cloud` using Playwright 1.63.0 and its Chromium, then run `node tooling/build-docs.mjs --check`. Keep source and PDF together when Client contracts change.

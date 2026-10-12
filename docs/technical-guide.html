@@ -48,7 +48,7 @@ Modelo / GitHub ← contexto o cambios aprobados directamente</div>
 </tbody></table>
 <p>Un diff estructural no infiere semántica comercial. Un test verde solo demuestra sus aserciones. Una propuesta no equivale a autorización; un draft PR no acredita merge, adopción o despliegue. Las llamadas dinámicas, wrappers/SDK no cubiertos y formatos fuera del perfil permanecen explícitamente sin resolver.</p>
 <p>Esta es la documentación técnica mantenida. Fuente: <code>docs/technical-guide.html</code>; PDF: <code>docs/technical-guide.pdf</code>. Las guías de fixtures y laboratorios conservan su alcance de ejemplo, separado del contrato de producto.</p>
-<footer><span>Keepseam Client · alcance y arquitectura</span><span>1 / 16</span></footer>
+<footer><span>Keepseam Client · alcance y arquitectura</span><span>1 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -80,7 +80,7 @@ console.log(report.status, report.changes);</pre>
 <p><code>pnpm release:build</code> produce un archivo por plataforma con ejecutable Node SEA, <code>lib/</code>, dependencias materializadas y motor/licencias. Extraer el directorio completo; no requiere Node instalado para la CLI. SDK, supervisor y host Docker conservan sus propios requisitos. El builder rechaza runtimes anteriores a 24.21.0, versiones 25+ y prereleases antes de crear artefactos; verifica help y una comparación real; no acredita publicación remota ni toda la instalación.</p>
 <p>Windows no tiene firma Authenticode y macOS solo firma ad hoc, sin notarización. Verificar origen/digest y política de ejecución antes de instalar. Git para publicación debe aceptar <code>git --no-lazy-fetch --version</code>. Observación/propuesta funciona en Windows/macOS; validación consumidor exige Linux x64 y Docker local.</p>
 <p>La CLI es <code>pnpm keepseam</code> desde checkout, <code>pnpm exec keepseam</code> desde paquete, o el ejecutable del bundle. Añadir <code>--silent</code> al script pnpm cuando se necesite JSON sin banners. Errores CLI se escriben en stderr; leer el contrato del comando para interpretar sus códigos.</p>
-<footer><span>Keepseam Client · adquisición y consumo</span><span>2 / 16</span></footer>
+<footer><span>Keepseam Client · adquisición y consumo</span><span>2 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -107,7 +107,7 @@ keepseam impact /contracts/base.json /contracts/revision.json \
 keepseam deps-audit /projects/consumer/package-lock.json \
   --advisories /private/advisories.json --json</pre>
 <p>Perfil npm lockfile v2/v3; no pnpm/yarn ni resolución online de rangos/advisories. Correlaciona versiones exactas del catálogo suministrado: unlisted no significa libre de vulnerabilidades. Límites: 4 MiB, profundidad 64, 5.000 entradas, 1.000 advisories y 20.000 correlaciones. No instala ni consulta registry.</p>
-<footer><span>Keepseam Client · análisis estructural</span><span>3 / 16</span></footer>
+<footer><span>Keepseam Client · análisis estructural</span><span>3 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -135,7 +135,7 @@ keepseam source-observe --once --state /private/keepseam --json</pre>
 <p>MCP exige captura completa, identidad server/protocol/auth-context, capabilities y pagination declaradas. Incompleto o contexto cambiado produce inconclusive; una ausencia no se interpreta como herramienta eliminada. No conecta servidores ni ejecuta tools. <code>mcp-impact --bindings</code> asocia receivers/ficheros explícitos a <code>callTool</code> y lecturas directas de <code>structuredContent</code>; los flujos restantes exigen revisión.</p>
 <p>Schema soporta tipo único, propiedades/required/additionalProperties booleano, arrays/items y enum/const scalar. Rechaza refs, combinators, unions y constraints no soportados. Input preserva entradas antiguas; output exige que respuestas nuevas cumplan el contrato viejo. Límites: 4 MiB, profundidad 64, 20.000 nodos; MCP ≤ 1.000 tools. Números con pérdida de precisión son input no soportado.</p>
 <p><code>example-compare</code> y documentación solo muestran evidencia observada: no infieren required fields, variantes o compatibilidad. Texto/HTML no se renderiza ni ejecuta, no sigue links; normalizar saltos es opt-in. Esas fuentes no generan una migración autorizada por sí solas.</p>
-<footer><span>Keepseam Client · adquisición acotada de evidencia</span><span>4 / 16</span></footer>
+<footer><span>Keepseam Client · adquisición acotada de evidencia</span><span>4 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -161,7 +161,7 @@ keepseam job-propose JOB_ID --state /private/keepseam \
 <h2>Resultado honesto</h2>
 <p><code>proposal-ready</code> contiene receta no vacía, pendiente de revisión semántica. <code>decision-required</code> contiene preguntas/resumen y ninguna receta: no se fabrica un cambio ni se crea un issue automáticamente. El modelo no puede eliminar preguntas obligatorias del revisor. Contratos/code/docs son datos no confiables, nunca instrucciones con herramientas o permisos.</p>
 <p>Se comprueban identidad job, contratos, consumidor y motor antes y después de respuesta. Drift invalida la propuesta. Una operación tiene un intento acotado, sin fallback remoto ni reintentos/expansión de contexto automática. Los tests de transporte con salida controlada no demuestran calidad de inferencia.</p>
-<footer><span>Keepseam Client · selección de contexto y consentimiento</span><span>5 / 16</span></footer>
+<footer><span>Keepseam Client · selección de contexto y consentimiento</span><span>5 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -190,7 +190,7 @@ keepseam job-approve JOB_ID --state /private/keepseam \
   --test orders.test.mjs</pre>
 <p><code>job-approve</code> presenta cambios, tests y recursos; requiere escribir el request ID exacto, sin <code>--yes</code> ni autorización piped. Un SDK caller explícito puede usar <code>approveJobValidation</code> bajo su propia política; no debe invocarlo automáticamente desde una respuesta modelo/Cloud no confiable.</p>
 <p>El recibo se liga a estado, job, consumidor, contratos, receta, tests y perfil. Expira en 15 minutos y es de un uso. Cambios materiales exigen revisar de nuevo. Una negativa o pregunta de semántica no se elimina para hacer pasar tests.</p>
-<footer><span>Keepseam Client · semántica y permisos de ejecución</span><span>6 / 16</span></footer>
+<footer><span>Keepseam Client · semántica y permisos de ejecución</span><span>6 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -217,7 +217,7 @@ docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3
 <h2>Resultados conservados</h2>
 <p><code>passed</code>: baseline/candidato pasan; <code>improved</code>: falla baseline y pasa candidato; <code>regression</code>: falla solo candidato; <code>failed</code>: ambos fallan. Infraestructura ausente, límites, cleanup no confirmado o ejecución incompleta produce blocked. Publicación solo admite candidato passing con evidencia durable y cleanup confirmado.</p>
 <p>CLI ejecución devuelve 0 sin trabajo o todo passed, 1 con fallos completados/improvement y 2 blocked/interrupted/lost-ownership. Completed significa resultado registrado, incluso blocked. No modificar tests válidos ni borrar marcadores para reusar un recibo. El checkout original permanece intacto; reporte y output son privados.</p>
-<footer><span>Keepseam Client · comprobación del comportamiento</span><span>7 / 16</span></footer>
+<footer><span>Keepseam Client · comprobación del comportamiento</span><span>7 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -245,7 +245,7 @@ keepseam publication-reconcile --request /private/publication-request.json \
 <p>Execution conserva intención antes de create, ID antes de start y journal/outcome durable. Perfil, imagen, comando, tests y source quedan ligados a hashes. Recovery usa el perfil aprobado persistido y verifica ID/ownership; nunca inicia tests ni reencola interrupted. Creación incierta conserva cleanup-unresolved incluso sin contenedor visible.</p>
 <p>Publicación guarda intención durable antes de cada write. Timeout/respuesta perdida produce uncertain, sin retry automático. Reconcile es read-only: reconoce PR matching abierto/cerrado/merged y conserva cambios humanos; una PR ausente no prueba que el write no vaya a terminar. Mantener request/recibo/journal original. Simulation no acredita una PR real.</p>
 <p>SQLite, archivos, Docker y GitHub no comparten transacción atómica ni garantía exactly-once. No mover/importar estado entre hosts como recuperación, borrar marcadores o editar DB. Un PR no cambia automáticamente baseline/adopción/deployment; esa reconciliación de contenido requiere aceptación propia.</p>
-<footer><span>Keepseam Client · publicación autorizada y recuperación</span><span>8 / 16</span></footer>
+<footer><span>Keepseam Client · publicación autorizada y recuperación</span><span>8 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -270,7 +270,7 @@ keepseam jobs --state /private/keepseam --json</pre>
 <p>POSIX: directorios 0700/archivos 0600. Windows: nuevas carpetas reciben DACL privada; paths existentes inapropiados fallan sin repair implícito. Rechazar symlinks/junctions, hardlinks runtime y directorios de red. La misma cuenta OS y administradores forman parte del trust boundary; modos/ACL no autentican un revisor humano.</p>
 <p>Una observación fallida preserva último éxito/jobs y registra razón fija. <code>worker --once</code> devuelve 0 sin job actual pendiente, 1 con review y 2 busy/failure; unchanged no cierra jobs históricos. Plan/propuesta usan último snapshot capturado y no consultan proveedor silenciosamente; observar de nuevo antes de decidir y revisar timestamps.</p>
 <p><code>worker-loop</code> permite ciclos finitos y, solo con opt-in, ejecutar recibos ya aprobados. El servicio persistente observa, crea jobs y sincroniza metadata; jamás genera consentimiento, responde preguntas semánticas, ejecuta consumidor ni publica por sí solo.</p>
-<footer><span>Keepseam Client · evidencia persistente</span><span>9 / 16</span></footer>
+<footer><span>Keepseam Client · evidencia persistente</span><span>9 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -299,7 +299,7 @@ sudo systemctl enable --now keepseam.service</pre>
 <h2>systemd user</h2>
 <p>Render con <code>--scope user</code>, sin <code>--user</code>, instalar en <code>~/.config/systemd/user/</code> y usar <code>systemctl --user daemon-reload; enable --now</code>. Depende del user manager; no configura linger/WSL. Requiere namespaces para PrivateUsers, montaje readonly y tmpfs. Ubuntu puede rechazarlo con <code>226/NAMESPACE</code>; usar system service o política del operador revisada, sin quitar aislamiento.</p>
 <p>Logs locales sanitizados ≤ 1 MiB cada archivo actual/anterior, sin code/docs/URLs/keys/raw errors. Retención journal/OS es operación aparte. No usar el estado para coordinar dos hosts.</p>
-<footer><span>Keepseam Client · daemon y systemd</span><span>10 / 16</span></footer>
+<footer><span>Keepseam Client · daemon y systemd</span><span>10 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -329,7 +329,7 @@ sudo launchctl print system/com.keepseam.keepseam</pre>
 <h2>Upgrade explícito</h2>
 <p>Parar manager, preservar DB, identidad, outbox/sequences, recibos y evidence, verificar bundle/motor, sustituir rutas fijadas y reiniciar. No downgrades de DB ni reset de approval markers. Rollback ejecutable solo si es compatible con estado nuevo; probar sobre copia. TUF staging no activa este proceso.</p>
 <p>Validar arranque/reinicio/crash, permisos, logs y drenado en el manager real de cada plataforma. Renderizar una unidad/XML no es prueba de servicio instalado. La aprobación y ejecución consumidor permanece Linux x64 independientemente del supervisor.</p>
-<footer><span>Keepseam Client · supervisión y ciclo de vida</span><span>11 / 16</span></footer>
+<footer><span>Keepseam Client · supervisión y ciclo de vida</span><span>11 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -352,11 +352,11 @@ const result = await syncWorkerToCloud({
 <tr><td>Entrega</td><td>50 sends/invocación, ≤ 1.000 pending, sequences 0–1.000.000. Synced = outbox vacío; pending necesita siguiente sync; busy espera ownership.</td></tr>
 <tr><td>Credenciales</td><td>Enrollment ≤ 90 días; token DPoP ≤ 5 min, emisión 10/min/installation, ≤ 50 tokens activos. Revocation comprobada en servidor.</td></tr>
 </tbody></table>
-<p>DPoP P-256 autentica instalación y vincula token/prueba; no certifica la verdad de cada estado. Importar el encoder no abre conexión. Local observation continúa si Cloud falla, sin alterar jobs/recibos. No clonar outbox a otro host, borrar sequences o eventos para eludir rechazo; agotamiento exige preservación/enrolment nuevo.</p>
+<p>DPoP P-256 autentica instalación y vincula token/prueba; no certifica la verdad de cada estado. Importar el encoder no abre conexión. El SDK manual continúa localmente; el daemon automático necesita licencia firmada vigente, incluso sin conexión. No clonar outbox a otro host ni borrar sequences/eventos para eludir rechazo; agotamiento exige preservación/enrolment nuevo.</p>
 <h2>Tiempo y privacidad</h2>
 <p><code>recordedAt</code> mantiene creación job/update ejecución durante offline retries; heartbeat corresponde a sync actual. Ni heartbeat ni receipt refresca la observación del proveedor. Selected/passing counts cuentan test targets, no framework cases. Corregir reloj si futuras fechas superan dos minutos, sin reescribir evidencia.</p>
 <p>Cloud muestra estado y correo attention opt-in; no aprueba ni ejecuta cambios. Proyección PR/adoption/Slack y autorizar ejecución remota requieren un contrato coordinado posterior; protocol enum disponible no prueba un feature conectado.</p>
-<footer><span>Keepseam Client · identidad, metadata y freshness</span><span>12 / 16</span></footer>
+<footer><span>Keepseam Client · identidad, metadata y freshness</span><span>12 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -381,7 +381,7 @@ keepseam client-update status --config /private/updates.json</pre>
 <p>Límites: paquete 32 MiB, root 512.000 B, timestamp/channel 16 KiB, otra metadata 1 MiB; 40 requests/40 MiB, headers 8 KiB, 16 root rotations y deadline compartido 120 s. Máximo tres paquetes completos y tres attempts interrumpidos; cache-full no borra nada. Revisar solo archivos updater propios sin operación activa; conservar trust DB. Directorio ≤ 64 entradas.</p>
 <p>Un installer futuro requiere aprobación, drain, verificación de dependencias, schema-compatible rollback y health. Actualizar SDK es un cambio revisado del manifest/lockfile del consumidor; actualizar worker no prueba la migración API del cliente.</p>
 <p><a href="https://theupdateframework.github.io/specification/latest/">Especificación TUF</a> · <a href="https://github.com/theupdateframework/tuf-js">tuf-js</a>.</p>
-<footer><span>Keepseam Client · confianza de distribución</span><span>13 / 16</span></footer>
+<footer><span>Keepseam Client · confianza de distribución</span><span>13 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -398,7 +398,7 @@ keepseam client-update status --config /private/updates.json</pre>
 <h2>Evidencia necesaria para claims</h2>
 <p>La fixture de pagos usa sockets HTTP/TLS reales y relación explícita minor/major units, currencies, precision y fallos. Preserva tests consumidor: A pasa, B falla y la receta revisada debe mejorar call/parser sin alterar el modelo interno. Fixtures controladas y transporte modelo simulado no prueban una migración o inferencia live.</p>
 <p>El piloto API live captura una transición real y declara schema parcial/recipe local: consultar <code>dev/live-validation/README.md</code> antes de autorizar. Una lista de diez docs no significa diez migraciones. Un modelo recomendado necesita pesos/runtime/digest/hardware exactos, memoria/tiempo, abstenciones, errores aceptados y esfuerzo humano. La evaluación actual no establece un perfil pequeño recomendado validado.</p>
-<p>El loop generado exige consentimiento y revisión semántica; no acredita mantenimiento autónomo completo. Discovery Python/Java, SDK call graphs amplios, frameworks arbitrarios, auto-install/merge/deploy, proyección Slack/PR Cloud y feed TUF firmado siguen pendientes. Incertidumbre de unidades o negocio detiene el cambio.</p>
+<p>El loop generado exige consentimiento y revisión semántica; no acredita mantenimiento autónomo completo. Discovery Python/Java, SDK call graphs amplios, frameworks arbitrarios, auto-install/merge/deploy y proyección Slack/PR Cloud siguen pendientes. El feed TUF requiere claves y publicación operativa; no se crea confianza por disponer del builder. Incertidumbre de unidades o negocio detiene el cambio.</p>
 <h2>Licencias y dependencias</h2>
 <p>Source <code>UNLICENSED</code>: no hay autorización de distribución pública ni concesión Apache implícita. Runtime: Node built-ins, <code>@babel/parser@8.0.6</code> (MIT), <code>jose@6.2.12</code> (MIT), <code>tuf-js@5.0.1</code> (MIT); TypeScript Apache-2.0. oasdiff Apache-2.0 y licencias Node/transitivas acompañan su artefacto. Retener lockfile/notices y revisar advisories al actualizar.</p>
 <p>Actualizar major/runtime de tuf-js exige revisar su compatibilidad y el boundary HTTP cubierto por regresión. Lifecycle scripts están deshabilitados por política del workspace.</p>
@@ -408,7 +408,7 @@ node tooling/build-docs.mjs --playwright-root ../keepseam-cloud
 node tooling/build-docs.mjs --check
 # Renderer alternativo: work/doc-tools (@playwright/test@1.63.0 + Chromium)</pre>
 <p>Generador A4/Arial sin red, metadata fija y SHA256 fuente. CI verifica HTML/PDF; reproducción binaria exige navegador, sistema y fuentes idénticos. Actualizar guía y documentación de usuario Cloud con cada cambio de contrato antes de release.</p>
-<footer><span>Keepseam Client · aceptación y documentación mantenida</span><span>14 / 16</span></footer>
+<footer><span>Keepseam Client · aceptación y documentación mantenida</span><span>14 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -434,7 +434,7 @@ pnpm dev:model-review RUTA_RUN --answers REVISION.json
 node --test dev/model-evaluation/classification.test.mjs
 node --test dev/model-evaluation/semantic-review.test.mjs</pre>
 <p>La revisión separada vincula evaluación/propuesta exactas y todas las respuestas semánticas. Sin ellas: <code>awaiting-semantic-review</code>, sin ejecución. No sustituye recetas rechazadas. Baseline debe fallar y candidato pasar los mismos tests inalterados en copias aisladas; esto no autoriza consumidor live ni publicación, ni establece éxito general de un modelo real.</p>
-<footer><span>Keepseam Client · inferencia controlada y revisión</span><span>15 / 16</span></footer>
+<footer><span>Keepseam Client · inferencia controlada y revisión</span><span>15 / 18</span></footer>
 </section>
 
 <section class="page">
@@ -453,7 +453,46 @@ pnpm dev:polyglot /absolute/work/keepseam-polyglot-unique</pre>
 pnpm engine:setup
 node dev/terminal-demo/record.mjs</pre>
 <p>Terminal exige <code>pnpm build</code>, <code>pnpm engine:setup</code>, imagen Node fijada, Git <code>/usr/bin/git</code> y Docker <code>/usr/bin/docker</code>. Crea estado privado en <code>work/terminal-demo</code>, valida baseline/candidato con los mismos 25 tests y autorización de publicación separada, transporte GitHub simulado. Revisar <code>public-replay.json</code> antes de copiarlo a Cloud; conservar recibos privados. No implica un PR real ni métricas de usuarios reales.</p>
-<footer><span>Keepseam Client · laboratorios y límites observables</span><span>16 / 16</span></footer>
+<footer><span>Keepseam Client · laboratorios y límites observables</span><span>16 / 18</span></footer>
+</section>
+<section class="page">
+<div class="label">Cloud y automatización · SDK manual disponible</div>
+<h1>Licencia y pausa segura</h1>
+<p>Todo <code>worker-service</code> automático necesita una licencia ES256 con propósito <code>keepseam-worker-license+jwt</code>. Sin ella arranca vivo pero <strong>paused</strong>, sin observar ni sincronizar eventos de negocio. El SDK y los comandos locales manuales no necesitan esta licencia. Pausar Keepseam no detiene procesos, APIs ni bases de datos del cliente.</p>
+<pre>{ "schemaVersion": 1, "statePath": "/var/lib/keepseam",
+  "license": {
+    "credentialsPath": "/etc/keepseam/credentials.json",
+    "trustPath": "/etc/keepseam/license-trust.json",
+    "leasePath": "/etc/keepseam/initial-license.json"
+  }, "sources": {} }</pre>
+<p>Ejemplo parcial: registrar las subscriptions antes de iniciar. Credenciales y lease son archivos privados; el lease contiene una cadena JSON JWS, no un objeto inventado. Trust contiene <code>{schemaVersion:1,issuer,keys:[publicJwk]}</code>, sin claves privadas. Provisionar sus claves públicas por un canal independiente del endpoint que firma; no adoptar automáticamente un <code>kid</code> recibido.</p>
+<h2>Canal limitado de control</h2>
+<p><code>createCloudControlTransport()</code> obtiene tokens DPoP <code>worker:control</code>, distintos de <code>worker:status</code>. POST control cada 60 s, deadline HTTP 10 s, sin redirects. Vincula licencia a worker/org, installation/project, issuer y huella de clave cliente. El cliente confirma revisión y estado <code>active</code>, <code>draining</code> o <code>paused</code>; solo cancela su propia observación pendiente.</p>
+<p>Una suspensión comercial conserva control y ACK, pero bloquea eventos de negocio. Reanudar exige ALLOW firmado nuevo y derechos vigentes. HTTP401 de identidad revocada invalida permiso offline inmediatamente. Fallos de red conservan únicamente un lease anterior válido; firma inválida, binding incorrecto o retroceso de revisión fallan cerrados. Workers anteriores al protocolo muestran <code>update-required</code>, nunca parada confirmada.</p>
+<h2>Tiempo y reinicios</h2>
+<p>ALLOW dura como máximo 86.400 s desde emisión y nunca más que entitlement/billing/credencial. No hay renovación por reiniciar ni por importar otra vez el archivo inicial. SQLite privado FULL conserva token, revisión, emisión, revocación y watermark de reloj. Un reloj anterior al watermark pausa; el host sigue siendo de confianza, no una barrera DRM ante su administrador.</p>
+<p>Renovación automática mantiene derechos existentes; el token control no concede roles ni autorización de consumidor. Jobs, snapshots, recibos y outbox sobreviven pausa/reanudación. El <code>recordedAt</code> histórico no se reescribe: presencia y ACK miden contacto autenticado actual, no observación reciente del proveedor.</p>
+<h2>Rotación de autoridad</h2>
+<p>Cloud provisiona su keyring de licencia separado de auth, DPoP y TUF. La aprobación <code>worker-license.key.rotate</code> selecciona solo <code>kid</code> y SHA256 público ya configurados; no recibe rutas ni secretos. La selección/revisión se persiste. Distribuir confianza pública nueva antes de rotar y conservar la anterior hasta vencer leases previos de 24 h.</p>
+<footer><span>Keepseam Client · licencias y control limitado</span><span>17 / 18</span></footer>
+</section>
+
+<section class="page">
+<div class="label">Distribución verificable · publicación separada</div>
+<h1>Firmar e importar versiones</h1>
+<p><code>pnpm release:build</code> produce archivos portables, SHA256 y recibo <code>*.tar.gz.signing.json</code> ligado al archivo y ejecutable exactos. Linux necesita TUF. Windows sin certificado queda unsigned; macOS ad-hoc queda sin publisher/notarización. Un hash, certificado configurado o borrador GitHub no constituye una firma de editor válida.</p>
+<p>Windows puede configurar certificado de su store mediante <code>KEEPSEAM_WINDOWS_SIGN_CERT_SHA1</code>, SignTool absoluto, <code>KEEPSEAM_WINDOWS_TIMESTAMP_URL</code> HTTPS y publisher esperado. La verificación exige Authenticode Valid y subject exacto. macOS exige firma Developer ID y evaluación <code>Notarized Developer ID</code>; el builder no aprovisiona cuentas/certificados ni realiza notarización. La ruta con certificados debe validarse en su plataforma real.</p>
+<h2>Feed TUF local y paquete de importación</h2>
+<pre>pnpm build
+pnpm release:sign --config /absolute/operator/release.json</pre>
+<p>Configuración privada de operador: <code>schemaVersion:1</code>, rootFile/rootSha256, version, sequence creciente, sourceRevision Git40hex, notes/requirements ES/EN, documentationFile PDF y artifacts. Cada artifact fija os/arch/fileName/file y, para nativos, signingReceiptFile. RoleKeys contiene targets/snapshot/timestamp, cada uno con arrays <code>{keyid,file}</code>: archivos PEM privados Ed25519 que coinciden con las identidades y umbrales del root fijado.</p>
+<p>El comando escribe un directorio nuevo <code>work/releases/signed-VERSION-UUID</code>: metadata root/targets/snapshot/timestamp; targets de SDK, workers, canal stable, manifiesto y PDF; <code>import-bundle.json</code>. No publica ni instala. Root offline se provisiona fuera del comando. Claves de roles no aparecen en bundle/logs. Publicar los mismos bytes del feed es una acción operativa independiente.</p>
+<p>Manifest firma versión, secuencia, commit, texto, archivo/plataforma, SHA/length y recibos nativos. PDF canónico <code>keepseam-client-VERSION-technical-guide.pdf</code> también es target TUF de esa versión. El updater existente selecciona el SDK ≤32 MiB y no instala ejecutables; no enviar tokens Cloud a URLs del feed.</p>
+<h2>Cloud: importación, aprobación y descarga</h2>
+<p>Provisionar directorio de artefactos readonly y root TUF exacto mediante <code>KEEPSEAM_TUF_ROOT_FILE</code> y <code>KEEPSEAM_TUF_ROOT_SHA256</code>. POST <code>/api/v1/platform/releases/import</code> con <code>{requestId,bundle}</code> y scope releases.manage requiere FIDO reciente. Bundle ≤30.000 B. Cloud ejecuta tuf-js real sobre inputs en memoria, sin URL externa, root rotation ni extracción/ejecución.</p>
+<p>Se crea draft tras verificar firmas, expiración, targets y archivos. <code>client-release.publish/withdraw</code> y <code>client-advisory.publish/withdraw</code> usan aprobación separada y revisión/hash exactos. Publicar revalida metadata, bytes/PDF, publisher configurado y secuencia superior; artefactos nativos unsigned permanecen draft. Editar contenido firmado exige otra importación/versionado, no una firma ficticia.</p>
+<p>Solo cuentas con correo verificado descargan releases publicados y PDF correspondiente. Archivo se valida otra vez por SHA/length, responde attachment/no-store y navegador comprueba SHA antes de guardar. Withdrawal impide nuevas descargas; no borra ni revoca automáticamente copias ya distribuidas. Hasta provisionar claves/certificados y publicar una versión aprobada, el catálogo puede seguir vacío.</p>
+<footer><span>Keepseam Client · TUF, editor y documentación versionada</span><span>18 / 18</span></footer>
 </section>
 </body>
 </html>

@@ -62,6 +62,7 @@ jobs:
           path: |
             work/releases/*.tar.gz
             work/releases/*.sha256
+            work/releases/*.signing.json
             work/releases/*.tgz
             docs/technical-guide.pdf
           if-no-files-found: error

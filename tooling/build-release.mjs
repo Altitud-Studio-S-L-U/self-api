@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { inject } from 'postject';
 import engine from '../src/oasdiff-release.json' with { type: 'json' };
 import { assertReleaseRuntime } from './release-runtime.mjs';
+import { nativeSigningReceipt } from './native-signing.mjs';
 
 assertReleaseRuntime(process.versions.node);
 const run = promisify(execFile);
@@ -51,11 +52,17 @@ if (process.platform === 'darwin') await run('codesign', ['--remove-signature', 
 await inject(executable, 'NODE_SEA_BLOB', await readFile(blob), { sentinelFuse: 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2', ...(process.platform === 'darwin' ? { machoSegmentName: 'NODE_SEA' } : {}) });
 if (process.platform === 'darwin') await run('codesign', ['--sign', '-', executable]);
 await chmod(executable, 0o755);
+const nativeSignature=await nativeSigningReceipt(executable);
 // Node distributions carry their own notices; obtain the exact runtime's license explicitly.
 const licenseResponse = await fetch(`https://raw.githubusercontent.com/nodejs/node/v${process.versions.node}/LICENSE`, { signal: AbortSignal.timeout(20000) });
 assert(licenseResponse.ok, 'Node runtime license unavailable');
 await writeFile(join(bundle, 'NODE-LICENSE'), await licenseResponse.text());
-await writeFile(join(bundle, 'INSTALL.txt'), `Keepseam ${info.version}\nExtract this entire directory. Keep keepseam and lib together.\nNo Node installation is required. Use: keepseam --help\nContract comparison uses --engine <this-directory>/engine/${asset.binaryName}.\nConsumer validation requires the documented Linux x64 Docker profile.\nWindows executable is unsigned; macOS is ad-hoc signed, not notarized.\nSDK package remains separately version-pinned.\n`);
+const signingNotice = nativeSignature.verified && nativeSignature.publisher
+  ? `Native publisher verification: ${nativeSignature.kind}; ${nativeSignature.publisher}.`
+  : process.platform === 'win32' ? 'Windows executable has no verified publisher signature.'
+    : process.platform === 'darwin' ? 'macOS executable is ad-hoc signed, not notarized.'
+      : 'Linux archive authenticity requires the separately trusted signed release metadata.';
+await writeFile(join(bundle, 'INSTALL.txt'), `Keepseam ${info.version}\nExtract this entire directory. Keep keepseam and lib together.\nNo Node installation is required. Use: keepseam --help\nContract comparison uses --engine <this-directory>/engine/${asset.binaryName}.\nConsumer validation requires the documented Linux x64 Docker profiles.\n${signingNotice}\nAutomatic worker services require a signed Cloud license; manual SDK tools remain available locally.\nSDK package remains separately version-pinned.\n`);
 const archiveName = `keepseam-${info.version}-${platform}.tar.gz`;
 const stagedArchive = join(staging, archiveName);
 await run('tar', ['-czf', stagedArchive, '-C', staging, `keepseam-${info.version}-${platform}`], { windowsHide: true });
@@ -97,4 +104,5 @@ const digest = createHash('sha256').update(await readFile(stagedArchive)).digest
 await copyFile(stagedArchive, join(output, archiveName));
 if (process.platform === 'linux' && process.arch === 'x64') await copyFile(archive, join(output, `${info.name}-${info.version}.tgz`));
 await writeFile(join(output, `${archiveName}.sha256`), `${digest}  ${archiveName}\n`);
+await writeFile(join(output,`${archiveName}.signing.json`),JSON.stringify({schemaVersion:1,fileName:archiveName,archiveSha256:digest,executableSha256:createHash('sha256').update(await readFile(executable)).digest('hex'),nativeSignature},null,2)+'\n');
 console.log(JSON.stringify({ archive: archiveName, sha256: digest, node: process.versions.node, engine: engine.version, smoke: 'extracted archive outside checkout: help, unchanged and breaking comparisons passed' }));

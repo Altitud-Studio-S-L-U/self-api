@@ -40,7 +40,9 @@ export { normalizeWorkerServiceConfig, renderWorkerServiceManifest } from './wor
 export type { WorkerServiceConfig, WorkerServiceTarget, WorkerServiceManifestOptions } from './worker-service-config.js';
 export { runWorkerService, loadWorkerServiceConfig, readWorkerServiceStatus, requestWorkerServiceStop } from './worker-service.js';
 export type { WorkerServiceStatus, WorkerServiceDependencies } from './worker-service.js';
-export { generateCloudWorkerIdentity, createCloudTransport, CloudConnectionError } from './cloud-connection.js';
+export { generateCloudWorkerIdentity, createCloudTransport, createCloudControlTransport, CloudConnectionError } from './cloud-connection.js';
+export { normalizeWorkerLicenseTrust, verifyWorkerLicense, WorkerLicenseStore, WORKER_CONTROL_INTERVAL_MS, WORKER_OFFLINE_LIMIT_SECONDS } from './worker-license.js';
+export type { WorkerLicenseTrust, WorkerLicenseClaims, WorkerControlRequest, WorkerControlResponse, WorkerControlTransport } from './worker-license.js';
 export { syncWorkerToCloud } from './cloud-sync.js';
 export type { CloudSyncOptions,CloudSyncResult } from './cloud-sync.js';
 export type { CloudWorkerIdentity, CloudCredentials, CloudStatusReceipt, CloudTransport } from './cloud-connection.js';
