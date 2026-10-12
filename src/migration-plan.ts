@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { analyzeImpact } from './impact.js';
 import type { ImpactOptions, ImpactReport } from './impact.js';
-import { captureConsumer } from './consumer-files.js';
+import { captureConsumer, isJavaScriptConsumerPath } from './consumer-files.js';
 import { previewRecipe } from './migration-recipe.js';
 import type { MigrationRecipe } from './migration-recipe.js';
 import { PlumberError } from './errors.js';
@@ -67,7 +67,7 @@ export async function createMigrationPlan(options: MigrationPlanOptions): Promis
     requirements: preview.requirements,
     files: preview.files,
     authorization: 'not-granted',
-    validation: preview.status === 'ready-for-review' ? 'syntax-only' : 'not-run',
+    validation: preview.status === 'ready-for-review' && preview.files.every(file => isJavaScriptConsumerPath(file.path)) ? 'syntax-only' : 'not-run',
     consumerModified: false,
     consumerExecuted: false,
   };

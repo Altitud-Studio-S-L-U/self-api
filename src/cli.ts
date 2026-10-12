@@ -87,7 +87,7 @@ Options:
   --consumer <directory>  Consumer repository to inspect without executing code.
   --provider-base-url <url>  Explicit HTTP(S) provider origin and optional base path.
   --recipe <path>  Explicit local migration decisions and exact edits.
-  --test <path>    Captured Node test file; repeat to select multiple tests.
+  --test <path>    Captured JS/TS, Python or Java test entrypoint; one runtime per request.
   --state <path>   Private local state outside the consumer checkout.
   --approval <id>  Single-use approval from an explicit approve action.
   --json           Write the comparison report as JSON to stdout.

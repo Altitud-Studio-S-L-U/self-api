@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isProxy } from 'node:util/types';
-import { isCapturedConsumerPath } from './consumer-files.js';
+import { isCapturedConsumerPath, isConsumerTestPath } from './consumer-files.js';
 import { PlumberError } from './errors.js';
 import { previewRecipe, serializeMigrationRecipe } from './migration-recipe.js';
 import type { MigrationRecipe, RecipePreview } from './migration-recipe.js';
@@ -186,13 +186,13 @@ function limits(value: unknown): ModelProposalLimits {
 }
 
 function testPath(path: string): boolean {
-  return /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|\.(?:test|spec)\.[^.]+$/iu.test(path);
+  return isConsumerTestPath(path);
 }
 
 function sourcePath(value: unknown): string {
   const path = text(value, 1024);
-  if (!isCapturedConsumerPath(path) || !/\.(?:tsx?|jsx?|mts|cts|mjs|cjs)$/iu.test(path)
-    || /[:\u0000-\u001f\u007f]/u.test(path)) invalid('Model context requires relative captured JavaScript or TypeScript source paths.');
+  if (!isCapturedConsumerPath(path) || !/\.(?:tsx?|jsx?|mts|cts|mjs|cjs|py|java)$/iu.test(path)
+    || /[:\u0000-\u001f\u007f]/u.test(path)) invalid('Model context requires relative captured JS, TS, Python or Java source paths.');
   return path;
 }
 

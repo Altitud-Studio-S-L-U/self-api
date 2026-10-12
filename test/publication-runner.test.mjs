@@ -15,7 +15,7 @@ const hash = digit => digit.repeat(64);
 const oid = digit => digit.repeat(40);
 const invalid = error => error.code === 'INVALID_INPUT';
 
-async function fixture(t, overrides = {}) {
+async function fixture(t, overrides = {}, source = {}) {
   await mkdir(work, { recursive: true });
   const directory = await mkdtemp(join(work, 'case-'));
   t.after(async () => {
@@ -26,9 +26,10 @@ async function fixture(t, overrides = {}) {
   const consumerRoot = join(directory, 'consumer');
   const statePath = join(directory, 'state');
   await mkdir(consumerRoot);
-  const before = 'export const total = order => order.total;\n';
-  const after = 'export const total = order => order.amount;\n';
-  await writeFile(join(consumerRoot, 'orders.mjs'), before);
+  const path = source.path ?? 'orders.mjs';
+  const before = source.before ?? 'export const total = order => order.total;\n';
+  const after = source.after ?? 'export const total = order => order.amount;\n';
+  await writeFile(join(consumerRoot, path), before);
   const canonical = await realpath(consumerRoot);
   const candidateContent = {
     schemaVersion: 1, status: 'requires-remote-verification', authorization: 'not-granted', publication: 'not-started',
@@ -37,7 +38,7 @@ async function fixture(t, overrides = {}) {
     evidence: { planId: hash('3'), executionDigest: hash('4'), policyDigest: hash('5'), outcomeDigest: hash('6') },
     git: { canonicalRootId: digest(process.platform === 'win32' ? canonical.toLowerCase() : canonical), headSha: oid('a'), treeSha: oid('b'), consumerDigest: (await captureConsumer(consumerRoot)).digest },
     destination: { host: 'github.com', owner: 'fixture-owner', name: 'fixture-repo', baseBranch: 'main', verified: false },
-    files: [{ path: 'orders.mjs', beforeSha256: digest(before), afterSha256: digest(after), before, after, mode: '100644',
+    files: [{ path, beforeSha256: digest(before), afterSha256: digest(after), before, after, mode: '100644',
       gitBlobId: createHash('sha1').update(`blob ${Buffer.byteLength(before)}\0`).update(before).digest('hex') }],
     pullRequest: { title: 'Update API integration', body: 'Fixture migration from a simulated passed validation.', draft: true }, consumerModified: false,
   };
@@ -57,7 +58,7 @@ async function fixture(t, overrides = {}) {
       memory.calls.push('createCommit');
       assert.equal(input.parentSha, candidate.git.headSha);
       assert.equal(input.baseTreeSha, candidate.git.treeSha);
-      assert.deepEqual(input.files, [{ path: 'orders.mjs', mode: '100644', content: after, beforeBlobId: candidate.files[0].gitBlobId }]);
+      assert.deepEqual(input.files, [{ path, mode: '100644', content: after, beforeBlobId: candidate.files[0].gitBlobId }]);
       assert.equal(input.author.name, 'Fixture Maintainer');
       assert(Date.parse(input.expiresAt) > Date.now());
       return { commitSha: memory.commitSha, treeSha: memory.treeSha };
@@ -143,6 +144,39 @@ test('validation authorization cannot be reused as publication authorization', a
   await assert.rejects(publishPublication(context.operation(executionApproval.id)), invalid);
   assert(!context.memory.calls.some(call => call.startsWith('create')));
 });
+
+for (const source of [
+  { language: 'Python', path: 'payment_client.py', before: 'def total(order):\n    return order["total"]\n', after: 'def total(order):\n    return order["amount"]\n' },
+  { language: 'Java', path: 'PaymentClient.java', before: 'class PaymentClient { static int total() { return 1; } }\n', after: 'class PaymentClient { static int total() { return 2; } }\n' },
+]) {
+  test(`${source.language} publication simulation requires separate approval and preserves byte-bound source`, async t => {
+    const context = await fixture(t, {}, source);
+    assert.equal(context.request.candidate.files[0].path, source.path);
+    assert.equal(context.request.authorization, 'not-granted');
+    assert(context.memory.calls.every(call => call === 'readSnapshot'));
+    const executionApproval = await issueApproval({ statePath: context.statePath, consumerRoot: context.consumerRoot,
+      planId: context.candidate.evidence.planId, executionDigest: context.candidate.evidence.executionDigest,
+      policyDigest: context.candidate.evidence.policyDigest, origin: 'explicit-sdk-caller' });
+    await assert.rejects(publishPublication(context.operation(executionApproval.id)), invalid);
+    assert(!context.memory.calls.some(call => call.startsWith('create')));
+    const approval = await context.approve();
+    assert.equal(approval.action, 'publish-draft-pr');
+    const published = await publishPublication(context.operation(approval.id));
+    assert.equal(published.status, 'published');
+    assert.equal(published.mode, 'simulation');
+    assert.equal(published.pullRequest.draft, true);
+    assert.equal(published.consumerModified, false);
+    assert.equal(await readFile(join(context.consumerRoot, source.path), 'utf8'), source.before);
+    assert.deepEqual(context.memory.calls.filter(call => call.startsWith('create')), ['createCommit', 'createBranch', 'createDraftPullRequest']);
+    await assert.rejects(publishPublication(context.operation(approval.id)), invalid);
+    const changed = await fixture(t, {}, source);
+    const changedApproval = await changed.approve();
+    await writeFile(join(changed.consumerRoot, source.path), `${source.before}\n// synthetic concurrent edit\n`);
+    await assert.rejects(changed.approve(), invalid);
+    await assert.rejects(publishPublication(changed.operation(changedApproval.id)), invalid);
+    assert(!changed.memory.calls.some(call => call.startsWith('create')));
+  });
+}
 
 test('changed request, wrong confirmation, wrong consumer and nested state cannot be approved', async t => {
   const context = await fixture(t);

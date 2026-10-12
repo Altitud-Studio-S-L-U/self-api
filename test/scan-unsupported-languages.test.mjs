@@ -23,8 +23,10 @@ for (const name of ['payments.py', 'Payments.java']) {
   test(`a ${name} consumer cannot be reported as a successful empty scan`, async t => {
     const root = await fixture(t, { [name]: 'This source must not be parsed as JavaScript.' });
     const inventory = await scanConsumer(root);
-    assert.deepEqual(inventory.files, []);
-    assert.deepEqual(inventory.skipped, [{ path: name, reason: 'unsupported-extension' }]);
+    assert.equal(inventory.files.length, 1, 'Explicit proposals retain hashed foreign source without claiming automatic call discovery.');
+    assert.equal(inventory.files[0].path, name);
+    assert.match(inventory.files[0].sha256, /^[a-f0-9]{64}$/u);
+    assert.deepEqual(inventory.skipped, []);
     assert.deepEqual(inventory.issues, [{ code: 'unsupported-language', location: { file: name, line: 1, column: 1 } }]);
     let stdout = '', stderr = '';
     const code = await runCli(['scan', root], { stdout: text => { stdout += text; }, stderr: text => { stderr += text; } });
@@ -46,7 +48,7 @@ test('mixed repositories retain supported calls while surfacing unsupported Pyth
   const inventory = await scanConsumer(root);
   assert.equal(inventory.calls.length, 1);
   assert.equal(inventory.calls[0].resolution, 'resolved');
-  assert.deepEqual(inventory.files.map(file => file.path), ['payments.mjs']);
+  assert.deepEqual(inventory.files.map(file => file.path), ['Payments.java', 'payments.mjs', 'payments.py']);
   assert.deepEqual(inventory.issues.map(issue => [issue.code, issue.location.file]), [
     ['unsupported-language', 'Payments.java'], ['unsupported-language', 'payments.py'],
   ]);

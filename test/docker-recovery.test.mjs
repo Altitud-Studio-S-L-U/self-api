@@ -5,7 +5,7 @@ import { access, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, syml
 import { basename, dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { after, test } from 'node:test';
-import { createDockerRecoveryRunner, createDockerValidationRunner, DOCKER_PROFILE } from '../dist/docker-runner.js';
+import { createDockerRecoveryRunner, createDockerValidationRunner, DOCKER_PROFILE, JAVA_DOCKER_PROFILE, PYTHON_DOCKER_PROFILE } from '../dist/docker-runner.js';
 
 const parent = resolve('work/test-docker-recovery');
 await mkdir(parent, { recursive: true });
@@ -18,6 +18,30 @@ const imageId = `sha256:${'e'.repeat(64)}`;
 const readJson = async path => JSON.parse(await readFile(path, 'utf8'));
 const daemonInfo = { os: 'linux', arch: 'x86_64', security: ['name=seccomp,profile=builtin'], memory: true, swap: true, cpuPeriod: true, cpuQuota: true, pids: true };
 
+for (const profile of [PYTHON_DOCKER_PROFILE, JAVA_DOCKER_PROFILE]) {
+  test(`${profile.id}: recovery requires the approved profile and verifies its exact image, command and entrypoint`, async () => {
+    const context = await fixture(profile);
+    let owned = true;
+    const docker = fakeDocker({ start: () => { owned = false; return { code: 0 }; } });
+    const interrupted = await docker.run()( { ...context.input('baseline'), guard: () => { if (!owned) throw new Error('Controlled lease loss.'); } });
+    assert.equal(interrupted.status, 'cleanup-failed');
+    const journal = await readJson(join(context.statePath, 'containers/baseline.intent.json'));
+    assert.equal(journal.profileSha256, jsonHash(profile));
+    const recover = profileId => docker.recover()({ statePath: context.statePath, execution: context.execution, profileId, guard: () => {} });
+    assert.equal((await recover(DOCKER_PROFILE.id)).cleanup, 'failed', 'A different approved runtime cannot be substituted during recovery.');
+    assert.equal(docker.containers.size, 1);
+    const container = [...docker.containers.values()][0];
+    const originalEntrypoint = container.entrypoint;
+    container.entrypoint = ['/unapproved/runtime'];
+    assert.equal((await recover(profile.id)).cleanup, 'failed');
+    assert.equal(docker.containers.size, 1);
+    container.entrypoint = originalEntrypoint;
+    assert.equal((await recover(profile.id)).cleanup, 'removed');
+    assert.equal(docker.containers.size, 0);
+    assert.equal(docker.calls.filter(call => call.args[0] === 'start').length, 1, 'Recovery never reexecutes consumer tests.');
+  });
+}
+
 after(async () => {
   const target = await realpath(temporary);
   assert.equal(dirname(target), realParent);
@@ -25,12 +49,13 @@ after(async () => {
   await rm(target, { recursive: true, force: false });
 });
 
-async function fixture() {
+async function fixture(profile = DOCKER_PROFILE) {
   const statePath = join(temporary, `attempt-${fixtureNumber++}`);
   await mkdir(statePath, { mode: 0o700 });
+  const testPath = profile === PYTHON_DOCKER_PROFILE ? 'test_example.py' : profile === JAVA_DOCKER_PROFILE ? 'ExampleTest.java' : 'example.test.mjs';
   for (const phase of ['baseline', 'candidate']) {
     await mkdir(join(statePath, phase));
-    await writeFile(join(statePath, phase, 'example.test.mjs'), 'throw new Error("never executed by unit tests");');
+    await writeFile(join(statePath, phase, testPath), 'not executed by the synthetic Docker fixture');
   }
   const receiptId = randomUUID();
   const execution = { intentId: digest(receiptId), receiptId, requestId: 'b'.repeat(64) };
@@ -39,7 +64,7 @@ async function fixture() {
   await writeFile(join(statePath, 'request.json'), JSON.stringify({ id: execution.requestId }), { mode: 0o600 });
   return {
     statePath, execution, marker,
-    input: phase => ({ statePath, snapshotPath: join(statePath, phase), testPaths: ['example.test.mjs'], execution: { ...execution, phase } }),
+    input: phase => ({ statePath, snapshotPath: join(statePath, phase), testPaths: [testPath], execution: { ...execution, phase } }),
   };
 }
 
@@ -71,10 +96,12 @@ function fakeDocker(hooks = {}) {
           });
           const source = args[args.indexOf('--mount') + 1].match(/^type=bind,source=(.+),target=\/workspace,/u)[1];
           const id = digest(randomUUID());
+          const entrypointIndex = args.indexOf('--entrypoint');
+          const image = args[entrypointIndex + 2];
           pending = {
-            id, name: `/${args[args.indexOf('--name') + 1]}`, imageId, image: DOCKER_PROFILE.image,
-            labels: containerLabels, command: args.slice(args.indexOf(DOCKER_PROFILE.image) + 1),
-            entrypoint: ['/usr/local/bin/node'], user: '65534:65534', workingDir: '/workspace',
+            id, name: `/${args[args.indexOf('--name') + 1]}`, imageId, image,
+            labels: containerLabels, command: args.slice(entrypointIndex + 3),
+            entrypoint: [args[entrypointIndex + 1]], user: '65534:65534', workingDir: '/workspace',
             readonly: true, network: 'none', privileged: false, capAdd: null, capDrop: ['ALL'],
             securityOpt: ['no-new-privileges=true', 'seccomp=builtin'],
             mounts: [{ Type: 'bind', Source: source, Destination: '/workspace', RW: false }],

@@ -7,8 +7,8 @@ import { captureConsumer } from './consumer-files.js';
 import type { ConsumerCapture } from './consumer-files.js';
 import { issueApproval, consumeApproval } from './approval-store.js';
 import type { ApprovalReceipt } from './approval-store.js';
-import { DOCKER_PROFILE, isSupportedDockerTestPath, runDockerValidation } from './docker-runner.js';
-import type { DockerValidationResult } from './docker-runner.js';
+import { dockerProfileForTests, isSupportedDockerTestPath, runDockerValidation } from './docker-runner.js';
+import type { DockerProfile, DockerValidationResult } from './docker-runner.js';
 import { PlumberError } from './errors.js';
 import { persistValidationOutcome } from './validation-outcome.js';
 
@@ -23,7 +23,7 @@ export interface MigrationValidationRequest {
   readonly spec: {
     readonly planId: string;
     readonly consumerDigest: string;
-    readonly profile: typeof DOCKER_PROFILE;
+    readonly profile: DockerProfile;
     readonly testPaths: readonly string[];
     readonly actions: readonly ['baseline', 'candidate'];
   };
@@ -61,12 +61,15 @@ async function prepare(options: MigrationValidationOptions): Promise<{
   captured: ConsumerCapture;
 }> {
   if (!Array.isArray(options.testPaths) || options.testPaths.length === 0 || options.testPaths.length > 20) {
-    invalid('Select between 1 and 20 captured Node test files explicitly.');
+    invalid('Select between 1 and 20 captured test files from one runtime explicitly.');
   }
   const testPaths = [...options.testPaths];
   if (testPaths.some(path => !isSupportedDockerTestPath(path)) || new Set(testPaths).size !== testPaths.length) {
     invalid('Validation paths must be unique relative source paths without traversal.');
   }
+  let profile: DockerProfile;
+  try { profile = dockerProfileForTests(testPaths); }
+  catch { invalid('A validation request must select tests from exactly one supported runtime profile.'); }
   const plan = await createMigrationPlan(options);
   if (plan.status !== 'ready-for-review' || plan.files.length === 0) {
     invalid('Resolve migration decisions and provide a nonempty proposal before requesting validation.');
@@ -83,14 +86,14 @@ async function prepare(options: MigrationValidationOptions): Promise<{
   const spec: MigrationValidationRequest['spec'] = {
     planId: plan.id,
     consumerDigest: captured.digest,
-    profile: DOCKER_PROFILE,
+    profile,
     testPaths,
     actions: ['baseline', 'candidate'],
   };
   const executionDigest = digest(spec);
   const policyDigest = digest({
     version: 1,
-    profile: DOCKER_PROFILE,
+    profile,
     snapshots: 'captured-source-and-package-manifests-only',
     dependencyInstallation: false,
     selectedTestMutation: false,

@@ -63,7 +63,7 @@ function parseArray(output: string): unknown[] {
 }
 
 function parseChanges(output: string): ApiChange[] {
-  return parseArray(output).map((value): ApiChange => {
+  const changes = parseArray(output).map((value): ApiChange => {
     if (
       value === null || typeof value !== 'object' ||
       !('id' in value) || typeof value.id !== 'string' ||
@@ -81,6 +81,11 @@ function parseChanges(output: string): ApiChange[] {
       ...('operation' in value ? { operation: value.operation as string } : {}),
       ...('path' in value ? { path: value.path as string } : {}),
     };
+  });
+  // Engine traversal order is not evidence: consent must bind the same findings identically on every review.
+  return changes.sort((left, right) => {
+    const a = JSON.stringify(left), b = JSON.stringify(right);
+    return a < b ? -1 : a > b ? 1 : 0;
   });
 }
 

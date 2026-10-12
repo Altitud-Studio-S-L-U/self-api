@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { inspectApproval } from './approval-store.js';
 import type { ApprovalReceipt } from './approval-store.js';
 import { captureConsumer } from './consumer-files.js';
-import { recoverDockerValidation } from './docker-runner.js';
+import { dockerProfileForTests, recoverDockerValidation } from './docker-runner.js';
 import { PlumberError } from './errors.js';
 import { readLocalBytes } from './local-file.js';
 import { serializeMigrationRecipe } from './migration-recipe.js';
@@ -237,6 +237,7 @@ export async function recoverApprovedJobs(input: {
           continue;
         }
         const recovered = await recoverDockerValidation({ statePath: bindings.attemptPath,
+          profileId: dockerProfileForTests(intent.testPaths).id,
           execution: { intentId: intent.id, receiptId: intent.receiptId, requestId: intent.requestId },
           guard: () => { store.assertRecoveryOwnership(claim); } });
         if (recovered.cleanup === 'removed' || recovered.cleanup === 'not-created') {

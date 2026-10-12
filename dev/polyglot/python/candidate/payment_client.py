@@ -1,4 +1,4 @@
-"""Manually reviewed candidate fixture. Keepseam does not yet propose Python edits."""
+"""Operator-authored synthetic candidate; this does not establish AI proposal quality."""
 import json
 import re
 from decimal import Decimal

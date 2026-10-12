@@ -11,10 +11,19 @@ const MAXIMUM_FILES = 500;
 const MAXIMUM_ENTRIES = 2000;
 const MAXIMUM_DEPTH = 20;
 const EXCLUDED_DIRECTORIES = new Set([
-  'node_modules', '.git', '.plumber', 'work', 'dist', 'build', 'coverage', 'vendor', '.next',
+  'node_modules', '.git', '.plumber', 'work', 'dist', 'build', 'coverage', 'vendor', '.next', '__pycache__',
 ]);
-const SOURCE_EXTENSION = /\.(?:tsx?|jsx?|mts|cts|mjs|cjs)$/i;
+const SOURCE_EXTENSION = /\.(?:tsx?|jsx?|mts|cts|mjs|cjs|py|java)$/i;
 const DECLARATION_EXTENSION = /\.d\.(?:ts|mts|cts)$/i;
+
+export function isJavaScriptConsumerPath(path: string): boolean {
+  return /\.(?:tsx?|jsx?|mts|cts|mjs|cjs)$/iu.test(path);
+}
+
+export function isConsumerTestPath(path: string): boolean {
+  return /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|\.(?:test|spec)\.[^.]+$/iu.test(path)
+    || /(?:^|\/)test_[^/]+\.py$|(?:^|\/)[^/]+_test\.py$|(?:^|\/)[^/]*(?:Test|Tests)\.java$/u.test(path);
+}
 
 function capturedFilename(name: string): boolean {
   return !name.startsWith('.') && !DECLARATION_EXTENSION.test(name)

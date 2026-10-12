@@ -55,6 +55,8 @@ jobs:
       - run: pnpm engine:setup
       # Explicit trusted setup; the runtime itself uses --pull=never.
       - run: docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd
+      - run: docker pull python@sha256:f040863673aea2570c3ff6a5c3fb4c673a016cbc5375005ad145915922b6b78a
+      - run: docker pull eclipse-temurin@sha256:51ae87bbb1949c1afdff51f6a3e6c5f283d84a4bd68512c9657fdc6605026a49
       - run: pnpm test:isolated
   native-supervision:
     name: native service (${{ matrix.os }})

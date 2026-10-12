@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { compareOpenApi } from './compare.js';
-import { captureConsumer } from './consumer-files.js';
+import { captureConsumer, isConsumerTestPath } from './consumer-files.js';
 import { PlumberError } from './errors.js';
 import { analyzeCapturedImpact } from './impact.js';
 import { readLocalBytes } from './local-file.js';
@@ -72,7 +72,7 @@ export type JobProposalOutcome = JobMigrationProposal | JobNoProposal;
 
 const prepared = new WeakMap<JobProposalRequest, JobProposalOptions>();
 const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex');
-const testPath = (path: string): boolean => /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|\.(?:test|spec)\.[^.]+$/iu.test(path);
+const testPath = isConsumerTestPath;
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
 function stale(): never { invalid('Job proposal evidence changed; observe and review the current source and consumer again.'); }
 
@@ -127,7 +127,7 @@ export async function prepareJobProposal(options: JobProposalOptions): Promise<J
       .filter(path => !testPath(path)).sort();
     const suggestedTests = captured.files.filter(file => testPath(file.path)).map(file => file.path).sort();
     const sources = sourcePaths ?? suggestedSources;
-    if (!sources.length) invalid('No matched editable source was found; explicitly select captured JavaScript or TypeScript files after reviewing the impact.');
+    if (!sources.length) invalid('No matched editable source was found; explicitly select captured supported source files after reviewing the impact.');
     if (sources.some(path => testPaths.includes(path))) invalid('Selected tests are read-only and cannot also be editable source.');
     const files = [...sources.map(path => ({ path, role: 'source' as const })), ...testPaths.map(path => ({ path, role: 'test' as const }))]
       .map(selection => {

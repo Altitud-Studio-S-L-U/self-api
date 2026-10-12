@@ -30,7 +30,7 @@ footer { position: absolute; bottom: 0; left: 0; right: 0; border-top: .25mm sol
 <div class="label">Altitud Commerce, LLC · Keepseam Client 0.1.0</div>
 <h1>SDK, CLI y worker<br>Guía técnica</h1>
 <p>Keepseam mantiene integraciones desde el entorno del cliente: observa contratos, identifica usos potencialmente afectados, prepara propuestas y valida cambios autorizados en copias aisladas. El SDK y la CLI comparten implementación TypeScript.</p>
-<div class="notice"><strong>Alcance entregado:</strong> JS/TS, OpenAPI local/HTTPS, evidencia MCP/schema/documentación, propuestas de modelo con consentimiento, revisión semántica, pruebas aisladas y publicación de draft PR separadamente autorizada. El daemon observa y comparte estado opcional; no aprueba cambios. La calidad de un modelo, publicación live y distribución firmada requieren su aceptación específica.</div>
+<div class="notice"><strong>Alcance entregado:</strong> discovery JS/TS; selección explícita Python/Java; OpenAPI local/HTTPS, evidencia MCP/schema/documentación, propuestas con consentimiento, revisión semántica, pruebas aisladas y draft PR separadamente autorizado. El daemon no aprueba cambios. Calidad IA, publicación live y distribución firmada requieren aceptación específica.</div>
 <div class="diagram">Fuentes aprobadas → evidencia local → impacto JS/TS
   → propuesta → revisión humana → aprobación de validación
   → baseline/candidato en Docker → aprobación de publicación
@@ -54,7 +54,7 @@ Modelo / GitHub ← contexto o cambios aprobados directamente</div>
 <section class="page">
 <div class="label">Instalación y entradas públicas</div>
 <h1>Distribución y SDK</h1>
-<p>El paquete privado <code>keepseam-client@0.1.0</code> es ESM, <code>UNLICENSED</code>. Requiere Node <strong>24.11.1 ≤ versión &lt; 25</strong>; desarrollo usa pnpm <strong>11.19.0</strong>. No se ha autorizado publicar en npm. No instalar un paquete ajeno de nombre similar.</p>
+<p>El paquete privado <code>keepseam-client@0.1.0</code> es ESM, <code>UNLICENSED</code>. Requiere Node <strong>24.21.0 ≤ versión &lt; 25</strong>; desarrollo usa pnpm <strong>11.19.0</strong>. No se ha autorizado publicar en npm. No instalar un paquete ajeno de nombre similar.</p>
 <h2>Desde el checkout</h2>
 <pre>pnpm install --frozen-lockfile
 pnpm engine:setup
@@ -77,7 +77,7 @@ const report = await compareOpenApi({
 });
 console.log(report.status, report.changes);</pre>
 <h2>Archivo CLI con runtime incluido</h2>
-<p><code>pnpm release:build</code> produce un archivo por plataforma con ejecutable Node SEA, <code>lib/</code>, dependencias materializadas y motor/licencias. Extraer el directorio completo; no requiere Node instalado para la CLI. SDK, supervisor y host Docker conservan sus propios requisitos. El builder verifica help y una comparación real; no acredita publicación remota ni toda la instalación.</p>
+<p><code>pnpm release:build</code> produce un archivo por plataforma con ejecutable Node SEA, <code>lib/</code>, dependencias materializadas y motor/licencias. Extraer el directorio completo; no requiere Node instalado para la CLI. SDK, supervisor y host Docker conservan sus propios requisitos. El builder rechaza runtimes anteriores a 24.21.0, versiones 25+ y prereleases antes de crear artefactos; verifica help y una comparación real; no acredita publicación remota ni toda la instalación.</p>
 <p>Windows no tiene firma Authenticode y macOS solo firma ad hoc, sin notarización. Verificar origen/digest y política de ejecución antes de instalar. Git para publicación debe aceptar <code>git --no-lazy-fetch --version</code>. Observación/propuesta funciona en Windows/macOS; validación consumidor exige Linux x64 y Docker local.</p>
 <p>La CLI es <code>pnpm keepseam</code> desde checkout, <code>pnpm exec keepseam</code> desde paquete, o el ejecutable del bundle. Añadir <code>--silent</code> al script pnpm cuando se necesite JSON sin banners. Errores CLI se escriben en stderr; leer el contrato del comando para interpretar sus códigos.</p>
 <footer><span>Keepseam Client · adquisición y consumo</span><span>2 / 16</span></footer>
@@ -152,7 +152,7 @@ keepseam job-proposal-plan JOB_ID --state /private/keepseam \
 keepseam job-propose JOB_ID --state /private/keepseam \
   --engine /opt/keepseam/engine/oasdiff --model /private/local-model.json \
   --test orders.test.mjs --output proposal.json</pre>
-<p><code>--source</code> selecciona JS/TS capturado adicional; <code>--evidence</code> añade texto local revisado. Descubrimiento sugiere posibles llamadas/parsers/tests sin seleccionarlos o ejecutarlos. El modelo ve contratos base/revisión completos, impacto y contenidos source/test seleccionados, sin ruta absoluta del consumidor. Inputs demasiado grandes fallan; no se truncan contratos silenciosamente.</p>
+<p><code>--source</code> selecciona JS/TS, Python o Java capturado; <code>--evidence</code> añade texto local revisado. Discovery automático de llamadas/parsers sigue JS/TS. Python/Java conservan <code>unsupported-language</code> y la decisión de cobertura. El modelo ve contratos completos y roles source/test explícitos, sin ruta absoluta. Inputs grandes fallan; no se truncan contratos.</p>
 <p><code>--timeout-ms</code> permite 1.000–120.000 ms en plan/propose, por defecto 30.000. El deadline forma parte del request consentido; para una CPU lenta elegirlo explícitamente antes de consentir, sin retries ocultos.</p>
 <h2>Consentimiento y egress</h2>
 <p><code>job-propose</code> imprime el request exacto y exige confirmarlo en terminal interactivo. Consentimiento es de un solo uso y expira; no se recupera deserializando JSON tras reinicio. Un proveedor remoto requiere además <code>--allow-remote</code>. Consentir disclosure no autoriza tests ni GitHub.</p>
@@ -203,17 +203,17 @@ keepseam run-approved --once --state /private/keepseam \
   --engine /opt/keepseam/engine/oasdiff --json
 keepseam executions --state /private/keepseam --json</pre>
 <p>IDs/rutas deben corresponder al plan aprobado. Queue verifica vigencia y no consume aún el recibo; el plazo continúa mientras espera. Una receta/selección distinta requiere otro plan. Repetir admission con los mismos inputs vigentes es idempotente; solo intents queued son ejecutables.</p>
-<h2>Perfil fijo Linux x64</h2>
-<p>Exige <code>/usr/bin/docker</code>, daemon local <code>/var/run/docker.sock</code> y la imagen Node previamente adquirida. Docker Desktop, socket remoto/rootless, servicios de aplicación, instalaciones y scripts de package arbitrarios están fuera del perfil. Windows/macOS devuelve blocked; jamás ejecuta consumidor directamente en host.</p>
+<h2>Perfiles cerrados Linux x64</h2>
+<p>Exige <code>/usr/bin/docker</code>, daemon local <code>/var/run/docker.sock</code> e imagen del runtime adquirida explícitamente. Tests seleccionados determinan un único perfil; mezclar JS/TS, Python y Java se rechaza. Windows/macOS devuelve blocked; jamás ejecuta consumidor en host. Socket remoto/rootless y scripts de instalación están fuera del perfil.</p>
 <pre># Adquirir expresamente la imagen, fuera de la aprobación:
 docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd</pre>
 <table><thead><tr><th>Frontera</th><th>Límite aplicado</th></tr></thead><tbody>
 <tr><td>Snapshot</td><td>Source/manifests capturados; readonly. Sin checkout vivo, env, secretos, socket o dependencias del consumidor.</td></tr>
-<tr><td>Tests</td><td>1–20 Node test files seleccionados; receta no puede editarlos. Baseline y candidato ejecutan los mismos bytes.</td></tr>
+<tr><td>Tests</td><td>1–20 archivos de un runtime; receta no puede editarlos. Node --test; Python unittest; Java main con -ea. Mismos bytes en ambas copias.</td></tr>
 <tr><td>Contenedor</td><td>Sin red, pull=never, root readonly, usuario 65534, capabilities vacías, no-new-privileges/seccomp.</td></tr>
 <tr><td>Recursos</td><td>1 CPU, 512 MiB, 128 PIDs; tmpfs acotado; deadline 30 s/fase, output ≤ 1 MiB y cleanup adicional acotado.</td></tr>
 </tbody></table>
-<p>Son contract tests dependency-free. Un import, fixture, servicio o secreto ausente es fallo real, nunca éxito ficticio. No sustituye CI completo del proyecto. Docker daemon privilegiado, kernel compartido y manipulación por la misma cuenta/administrador siguen dentro de la confianza; no es un servicio multitenant hostil.</p>
+<p>Tests sin dependencias externas: Python compila source y carga cada suite unittest una vez; Java 25 usa <code>javac -proc:none</code>, clases en <code>/tmp</code> y assertions habilitadas. Sin pip, Maven, Gradle ni pytest/JUnit externos. Foreign preview indica <code>validation:not-run</code> hasta aprobar. No sustituye CI completo; daemon/kernel y misma cuenta/administrador siguen dentro de la confianza.</p>
 <h2>Resultados conservados</h2>
 <p><code>passed</code>: baseline/candidato pasan; <code>improved</code>: falla baseline y pasa candidato; <code>regression</code>: falla solo candidato; <code>failed</code>: ambos fallan. Infraestructura ausente, límites, cleanup no confirmado o ejecución incompleta produce blocked. Publicación solo admite candidato passing con evidencia durable y cleanup confirmado.</p>
 <p>CLI ejecución devuelve 0 sin trabajo o todo passed, 1 con fallos completados/improvement y 2 blocked/interrupted/lost-ownership. Completed significa resultado registrado, incluso blocked. No modificar tests válidos ni borrar marcadores para reusar un recibo. El checkout original permanece intacto; reporte y output son privados.</p>
@@ -242,7 +242,7 @@ keepseam publication-publish --request /private/publication-request.json \
 keepseam publication-reconcile --request /private/publication-request.json \
   --state /private/keepseam --consumer /projects/consumer \
   --approval PUBLICATION_RECEIPT_ID --github --json</pre>
-<p>Execution conserva intención antes de create, ID antes de start, journal con labels/hashes y outcome después del resultado. Recovery verifica ownership y contenedores por ID, puede completar evidencia o cleanup; nunca inicia tests ni devuelve un interrupted intent a cola. Creación incierta sigue cleanup-unresolved aunque no se vea aún un contenedor.</p>
+<p>Execution conserva intención antes de create, ID antes de start y journal/outcome durable. Perfil, imagen, comando, tests y source quedan ligados a hashes. Recovery usa el perfil aprobado persistido y verifica ID/ownership; nunca inicia tests ni reencola interrupted. Creación incierta conserva cleanup-unresolved incluso sin contenedor visible.</p>
 <p>Publicación guarda intención durable antes de cada write. Timeout/respuesta perdida produce uncertain, sin retry automático. Reconcile es read-only: reconoce PR matching abierto/cerrado/merged y conserva cambios humanos; una PR ausente no prueba que el write no vaya a terminar. Mantener request/recibo/journal original. Simulation no acredita una PR real.</p>
 <p>SQLite, archivos, Docker y GitHub no comparten transacción atómica ni garantía exactly-once. No mover/importar estado entre hosts como recuperación, borrar marcadores o editar DB. Un PR no cambia automáticamente baseline/adopción/deployment; esa reconciliación de contenido requiere aceptación propia.</p>
 <footer><span>Keepseam Client · publicación autorizada y recuperación</span><span>8 / 16</span></footer>
@@ -259,7 +259,7 @@ keepseam worker --once --state /private/keepseam \
 keepseam subscriptions --state /private/keepseam --json
 keepseam jobs --state /private/keepseam --json</pre>
 <p>Baseline/configuración se captura de forma inmutable; observar B no convierte B en versión adoptada. Repetir registro igual es idempotente. Jobs se deduplican por subscription, contratos, consumidor y motor; cambios de consumidor crean nueva evidencia, rollback conserva historia. Bytes cambiados pueden requerir review aunque no haya breaking findings.</p>
-<p>El estado debe estar fuera del checkout y no contenerlo. Node SQLite usa transacciones/sincronización y leases con owner/generation; commit obsoleto es rechazado. En Node 24.11.1 SQLite es experimental; usar patch LTS compatible y conservar backup privado. No usar un filesystem compartido/remoto ni editar filas para saltar permisos.</p>
+<p>El estado debe estar fuera del checkout y no contenerlo. Node SQLite usa transacciones/sincronización y leases con owner/generation; commit obsoleto es rechazado. Usar una versión LTS compatible y conservar backup privado. No usar un filesystem compartido/remoto ni editar filas para saltar permisos.</p>
 <table><thead><tr><th>Almacén</th><th>Contenido y límites</th></tr></thead><tbody>
 <tr><td><code>worker.sqlite3</code></td><td>100 subscriptions, 1.000 jobs/transitions; contratos/reports ≤ 4 MiB, totales snapshots/reports 64 MiB cada uno.</td></tr>
 <tr><td><code>source-observations.sqlite3</code></td><td>Catálogos/schemas/ejemplos/texto; 100 subscriptions, 1.000 transitions y 64 MiB de payloads.</td></tr>
@@ -392,13 +392,13 @@ keepseam client-update status --config /private/updates.json</pre>
 <tr><td><code>pnpm test:isolated</code></td><td>Integraciones Docker Linux x64 reales sobre perfil preparado.</td></tr>
 <tr><td><code>pnpm dev:local</code></td><td>Compose persistente ficticio; seeds/editable provider separados de tests desechables.</td></tr>
 <tr><td><code>pnpm dev:apis</code></td><td>Laboratorio documentación/SDK reales, consentimiento y helpers Cloud dev.</td></tr>
-<tr><td><code>pnpm dev:polyglot</code></td><td>Laboratorio explícito; no amplía soporte de migración producto más allá de JS/TS.</td></tr>
+<tr><td><code>pnpm dev:polyglot</code></td><td>SDK instalado: recetas Python/Java revisadas y tests aislados; API ficticia.</td></tr>
 <tr><td><code>pnpm dev:model-evaluation</code><br><code>pnpm dev:model-review</code></td><td>Inferencia opt-in y revisión humana vinculada a hashes; fixtures sintéticas, no aprobación automática.</td></tr>
 </tbody></table>
 <h2>Evidencia necesaria para claims</h2>
 <p>La fixture de pagos usa sockets HTTP/TLS reales y relación explícita minor/major units, currencies, precision y fallos. Preserva tests consumidor: A pasa, B falla y la receta revisada debe mejorar call/parser sin alterar el modelo interno. Fixtures controladas y transporte modelo simulado no prueban una migración o inferencia live.</p>
 <p>El piloto API live captura una transición real y declara schema parcial/recipe local: consultar <code>dev/live-validation/README.md</code> antes de autorizar. Una lista de diez docs no significa diez migraciones. Un modelo recomendado necesita pesos/runtime/digest/hardware exactos, memoria/tiempo, abstenciones, errores aceptados y esfuerzo humano. La evaluación actual no establece un perfil pequeño recomendado validado.</p>
-<p>El loop generado actual exige consentimiento y revisión semántica; no se anuncia mantenimiento autónomo completo. Python/Java, SDK calls/call graphs amplios, arbitrary test frameworks, auto-install/merge/deploy, Slack/PR projection Cloud, instalación TUF y feed oficial firmado permanecen gates propios. Mantener la API interna cuando evidencia lo permita; incertidumbre de unidades o negocio detiene el cambio.</p>
+<p>El loop generado exige consentimiento y revisión semántica; no acredita mantenimiento autónomo completo. Discovery Python/Java, SDK call graphs amplios, frameworks arbitrarios, auto-install/merge/deploy, proyección Slack/PR Cloud y feed TUF firmado siguen pendientes. Incertidumbre de unidades o negocio detiene el cambio.</p>
 <h2>Licencias y dependencias</h2>
 <p>Source <code>UNLICENSED</code>: no hay autorización de distribución pública ni concesión Apache implícita. Runtime: Node built-ins, <code>@babel/parser@8.0.6</code> (MIT), <code>jose@6.2.12</code> (MIT), <code>tuf-js@5.0.1</code> (MIT); TypeScript Apache-2.0. oasdiff Apache-2.0 y licencias Node/transitivas acompañan su artefacto. Retener lockfile/notices y revisar advisories al actualizar.</p>
 <p>Actualizar major/runtime de tuf-js exige revisar su compatibilidad y el boundary HTTP cubierto por regresión. Lifecycle scripts están deshabilitados por política del workspace.</p>
@@ -440,10 +440,14 @@ node --test dev/model-evaluation/semantic-review.test.mjs</pre>
 <section class="page">
 <div class="label">Consumidores ficticios · transporte observable</div>
 <h1>Lenguajes y replay</h1>
-<h2>Python y Java: frontera de aceptación</h2>
+<h2>Python y Java: selección explícita</h2>
 <pre>docker pull eclipse-temurin@sha256:51ae87bbb1949c1afdff51f6a3e6c5f283d84a4bd68512c9657fdc6605026a49
+docker pull python@sha256:f040863673aea2570c3ff6a5c3fb4c673a016cbc5375005ad145915922b6b78a
 pnpm dev:polyglot /absolute/work/keepseam-polyglot-unique</pre>
-<p>Polyglot exige Python 3.13 compatible y salida nueva fuera del checkout. Sockets reales con proveedor ficticio: A pasa, B rompe parser, candidatos manuales preservan contrato entero minor-unit y tests; cubren precisión, moneda, límites, 429/503 y XXE Java. SDK registra <code>review-required</code>, inspección <code>unsupported-language</code> y CLI 1; rechaza receta, contexto y validación Python/Java. Scanner/migración siguen JS/TS: comparar contratos no demuestra discovery ni cambios nativos automáticos.</p>
+<p>Linux x64; Python host 3.13 compatible para el laboratorio y salida nueva fuera del checkout. El paquete instalado captura source y tests, compara contratos, registra jobs y valida recetas manuales mediante SDK público: aprobación → cola → baseline falla → candidato pasa. Source live intacto, tests idénticos y cleanup verificado. Proveedor ficticio con sockets reales; cubre precisión, moneda, unidades, límites, 429/503 y XXE Java.</p>
+<p>Perfiles <code>python313-linux-amd64-v1</code> (Python 3.13.16) y <code>java25-linux-amd64-v1</code> (Temurin 25.0.4.1+1). Python importa cada suite unittest una vez y exige ≥1 caso por archivo; cero casos, funciones pytest o SystemExit durante import no pasan. No ejecuta bloque <code>__main__</code> ni scripts arbitrarios. Java compila sin annotation processors y ejecuta main con <code>-ea</code>. Sin instalaciones ni Maven/Gradle. Seleccionar <code>--source payment_client.py --test test_payment.py</code> o <code>--source PaymentClient.java --test PaymentTest.java</code>; tests autocontenidos para el contrato nuevo.</p>
+<p>El escáner informa <code>unsupported-language</code>, CLI 1 y cobertura a revisar: no deduce llamadas Python/Java. La propuesta acepta roles y edits explícitos; sintaxis foreign se valida en contenedor tras autorización, nunca en preview. Tests <code>test_*.py</code>, <code>*_test.py</code> y <code>*Test.java</code> son evidencia readonly. Hashes incluyen estos archivos; jobs/aprobaciones anteriores a este perfil requieren observación y revisión nuevas. Findings se ordenan por contenido completo para que el mismo contrato conserve identidad de aprobación.</p>
+<p>Las recetas del laboratorio son manuales y no prueban calidad IA. La evaluación real Qwen conserva su resultado parcial y las abstenciones; no se afirma soporte para todos los lenguajes, frameworks o APIs ni aprobación/publicación automática.</p>
 <h2>Grabación del terminal</h2>
 <pre>pnpm build
 pnpm engine:setup

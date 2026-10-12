@@ -8,7 +8,7 @@ import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.w3c.dom.*;
 
-// Manually reviewed candidate fixture. Keepseam does not yet propose Java edits.
+// Operator-authored synthetic candidate; this does not establish AI proposal quality.
 public class PaymentClient {
     public record Payment(String id, BigInteger amountMinor, String currency) {}
 
