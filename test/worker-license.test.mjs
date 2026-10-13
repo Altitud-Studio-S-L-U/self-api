@@ -51,3 +51,36 @@ test('known credential rejection invalidates offline permission and startup impo
   await assert.rejects(store.apply(f.token), { code: 'INVALID_INPUT' });
   await store.apply(await f.sign(), Date.now(), 'authenticated-control'); assert.equal((await store.status()).allowed, true);
 });
+
+test('a concurrent status read cannot turn signature verification into a false clock rollback', async t => {
+  const f = await fixture(t), store = await f.open(), now = Date.now();
+  await store.apply(f.token, now);
+  const renewed = await f.sign({ revision: 2 });
+  const [claims, status] = await Promise.all([
+    store.apply(renewed, now + 1, 'authenticated-control'),
+    store.status(now + 2),
+  ]);
+  assert.equal(claims.revision, 2); assert.equal(status.revision, 2); assert.equal(status.reason, 'allowed');
+  assert.equal((await store.status(now + 1)).reason, 'clock-rollback', 'A real backwards clock must still be denied.');
+  await assert.rejects(store.apply(renewed, now + 1, 'authenticated-control'), { code: 'INVALID_INPUT' });
+});
+
+test('revocation during asynchronous verification cannot be overwritten by an older control response', async t => {
+  const f = await fixture(t), store = await f.open(), now = Date.now();
+  await store.apply(f.token, now);
+  const renewed = await f.sign({ revision: 2 });
+  const applying = store.apply(renewed, now + 1, 'authenticated-control');
+  store.revoke(now + 1);
+  await assert.rejects(applying, { code: 'INVALID_INPUT' });
+  assert.equal((await store.status(now + 1)).reason, 'revoked');
+  await store.apply(renewed, now + 2, 'authenticated-control');
+  assert.equal((await store.status(now + 2)).reason, 'allowed', 'A subsequently authenticated control response can restore permission.');
+});
+
+test('a cold status verification cannot grant permission after concurrent revocation', async t => {
+  const f = await fixture(t), now = Date.now(); let store = await f.open();
+  await store.apply(f.token, now); store.close(); store = await f.open();
+  const status = store.status(now + 1);
+  store.revoke(now + 1);
+  assert.equal((await status).reason, 'revoked');
+});

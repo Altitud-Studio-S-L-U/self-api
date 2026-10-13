@@ -83,6 +83,8 @@ export async function verifyWorkerLicense(token: string, input: WorkerLicenseTru
 export class WorkerLicenseStore {
   private closed = false;
   private verified: { token: string; claims: WorkerLicenseClaims } | undefined;
+  private operations: Promise<unknown> = Promise.resolve();
+  private revocation = 0;
   private constructor(private readonly db: DatabaseSync, private readonly credentials: CloudCredentials, private readonly trust: WorkerLicenseTrust) {}
   static async open(directory: string, credentials: CloudCredentials, trust: WorkerLicenseTrust): Promise<WorkerLicenseStore> {
     checkServicePath(directory, 'directory'); checkWindowsServiceAcl(directory, true);
@@ -108,22 +110,43 @@ export class WorkerLicenseStore {
       return new WorkerLicenseStore(db, credentials, normalizeWorkerLicenseTrust(trust));
     } catch (error) { db.close(); throw error; }
   }
-  async apply(token: string, now = Date.now(), source: 'offline-import' | 'authenticated-control' = 'offline-import'): Promise<WorkerLicenseClaims> {
+  private serial<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operations.then(operation);
+    this.operations = result.catch(() => {});
+    return result;
+  }
+  apply(token: string, now = Date.now(), source: 'offline-import' | 'authenticated-control' = 'offline-import'): Promise<WorkerLicenseClaims> {
+    const revocation = this.revocation;
+    // Signature verification yields to other daemon loops. Keep their clock
+    // writes ordered with this operation, without forgiving real rollback.
+    return this.serial(() => this.applyOrdered(token, now, source, revocation));
+  }
+  private async applyOrdered(token: string, now: number, source: 'offline-import' | 'authenticated-control', revocation: number): Promise<WorkerLicenseClaims> {
     const claims = await verifyWorkerLicense(token, this.trust, this.credentials, now, source === 'offline-import');
+    const existing = this.db.prepare('SELECT token,revision FROM license WHERE id=1').get()!;
+    const previous = claims.revision === Number(existing['revision']) && existing['token']
+      ? { token: String(existing['token']), claims: this.verified?.token === existing['token'] ? this.verified.claims
+        : await verifyWorkerLicense(String(existing['token']), this.trust, this.credentials, now, true) } : undefined;
+    // Never yield while a SQLite transaction is open: revoke() must persist
+    // independently even when verification of a previous token is pending.
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const row = this.db.prepare('SELECT * FROM license WHERE id=1').get()!;
-      if (Number(row['revoked']) && source !== 'authenticated-control') invalid();
+      if (revocation !== this.revocation || Number(row['revoked']) && source !== 'authenticated-control') invalid();
       if (now < Number(row['clock']) || claims.revision < Number(row['revision']) || claims.iat < Number(row['issued'])) invalid();
       if (claims.revision === Number(row['revision']) && row['token']) {
-        const previous = this.verified?.token === row['token'] ? this.verified.claims : await verifyWorkerLicense(String(row['token']), this.trust, this.credentials, now, true);
-        if (claims.decision !== previous.decision || claims.entitlementExpiresAt !== previous.entitlementExpiresAt || claims.workerId !== previous.workerId || claims.organizationId !== previous.organizationId) invalid();
+        if (previous?.token !== row['token'] || claims.decision !== previous.claims.decision || claims.entitlementExpiresAt !== previous.claims.entitlementExpiresAt
+          || claims.workerId !== previous.claims.workerId || claims.organizationId !== previous.claims.organizationId) invalid();
       }
       this.db.prepare('UPDATE license SET token=?,revision=?,issued=?,clock=?,revoked=0 WHERE id=1').run(token, claims.revision, claims.iat, now);
       this.db.exec('COMMIT'); this.verified = { token, claims }; return claims;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  async status(now = Date.now()): Promise<{ readonly allowed: boolean; readonly revision: number | null; readonly reason: 'allowed' | 'missing' | 'expired' | 'suspended' | 'revoked' | 'invalid' | 'clock-rollback' }> {
+  status(now = Date.now()) {
+    return this.serial(() => this.statusOrdered(now));
+  }
+  private async statusOrdered(now: number): Promise<{ readonly allowed: boolean; readonly revision: number | null; readonly reason: 'allowed' | 'missing' | 'expired' | 'suspended' | 'revoked' | 'invalid' | 'clock-rollback' }> {
+    const revocation = this.revocation;
     const row = this.db.prepare('SELECT * FROM license WHERE id=1').get()!;
     const revision = Number(row['revision']) || null;
     if (now < Number(row['clock'])) return { allowed: false, revision, reason: 'clock-rollback' };
@@ -131,11 +154,15 @@ export class WorkerLicenseStore {
     if (Number(row['revoked'])) return { allowed: false, revision, reason: Number(row['revoked']) === 1 ? 'revoked' : 'invalid' };
     if (!row['token']) return { allowed: false, revision, reason: 'missing' };
     const claims = this.verified?.token === row['token'] ? this.verified.claims : await verifyWorkerLicense(String(row['token']), this.trust, this.credentials, now, true);
+    if (revocation !== this.revocation) return this.statusOrdered(now);
     this.verified = { token: String(row['token']), claims };
     if (claims.revision !== revision || claims.iat !== Number(row['issued'])) invalid();
     const reason = claims.decision === 'suspended' ? 'suspended' : claims.exp * 1000 <= now ? 'expired' : 'allowed';
     return { allowed: reason === 'allowed', revision, reason };
   }
-  revoke(now = Date.now(), reason: 'revoked' | 'invalid' = 'revoked'): void { this.db.prepare('UPDATE license SET revoked=?,clock=max(clock,?) WHERE id=1').run(reason === 'revoked' ? 1 : 2, now); }
+  revoke(now = Date.now(), reason: 'revoked' | 'invalid' = 'revoked'): void {
+    this.revocation++;
+    this.db.prepare('UPDATE license SET revoked=?,clock=max(clock,?) WHERE id=1').run(reason === 'revoked' ? 1 : 2, now);
+  }
   close(): void { if (!this.closed) { this.closed = true; this.db.close(); } }
 }

@@ -43,6 +43,23 @@ export interface WorkerServiceDependencies {
 
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
 
+/** Coalesce local changes into the existing serial loop, including changes
+ * arriving during I/O. Failure backoff deliberately uses an ordinary wait. */
+function loopWakeup(wait: NonNullable<WorkerServiceDependencies['wait']>) {
+  let revision = Symbol(), sleeping: AbortController | undefined;
+  return {
+    get revision() { return revision; },
+    notify() { revision = Symbol(); sleeping?.abort(); },
+    async wait(milliseconds: number, signal: AbortSignal, observed: symbol) {
+      if (revision !== observed || signal.aborted) return;
+      const wake = new AbortController(); sleeping = wake;
+      try { await wait(milliseconds, AbortSignal.any([signal, wake.signal])); }
+      catch (error) { if (!signal.aborted && !wake.signal.aborted) throw error; }
+      finally { sleeping = undefined; }
+    },
+  };
+}
+
 export async function loadWorkerServiceConfig(configPath: string): Promise<WorkerServiceConfig> {
   servicePath(configPath, process.platform === 'win32' ? 'windows' : 'systemd');
   checkServicePath(configPath, 'config');
@@ -95,6 +112,7 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
   let activeObservations = 0;
   let licenseAllowed = false;
   const wait = options.dependencies?.wait ?? ((milliseconds: number, signal: AbortSignal) => delay(milliseconds, undefined, { signal }));
+  const controlChanges = loopWakeup(wait), cloudChanges = loopWakeup(wait);
   const abort = (): void => { controller.abort(); workController.abort(); };
   options.signal?.addEventListener('abort', abort, { once: true });
   if (options.signal?.aborted) abort();
@@ -146,16 +164,23 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
     }
     const refreshLicense = async (): Promise<void> => {
       const value = licenseStore ? await licenseStore.status() : { allowed: false, revision: null, reason: 'missing' as const };
+      const automation = value.allowed ? 'active' : activeObservations ? 'draining' : 'paused';
+      const controlChanged = licenseRevision !== value.revision || status.automation !== automation;
+      const authorizationChanged = licenseAllowed !== value.allowed;
       licenseRevision = value.revision;
       if (!value.allowed && licenseAllowed) workController.abort();
       if (value.allowed && !licenseAllowed) workController = new AbortController();
       licenseAllowed = value.allowed;
-      update({ automation: value.allowed ? 'active' : activeObservations ? 'draining' : 'paused', licenseReason: value.reason });
+      update({ automation, licenseReason: value.reason });
+      if (controlChanged) controlChanges.notify();
+      if (authorizationChanged) cloudChanges.notify();
     };
     await refreshLicense();
     const controlLoop = async (): Promise<void> => {
       while (!controller.signal.aborted) {
         const start = performance.now();
+        const observed = controlChanges.revision;
+        let failed = false;
         try {
           if (control && licenseStore) {
             const response = await control.poll({ schemaVersion: 1, requestId: randomUUID(), installationId: licenseCredentials!.installationId,
@@ -164,13 +189,24 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
             await licenseStore.apply(response.license, Date.now(), 'authenticated-control');
           }
         } catch (error) {
+          failed = true;
           if (error instanceof CloudConnectionError && error.code === 'AUTHORIZATION_REJECTED') licenseStore?.revoke();
           else if (error instanceof CloudConnectionError && ['INVALID_RESPONSE', 'INVALID_CONFIGURATION'].includes(error.code) || error instanceof PlumberError) licenseStore?.revoke(Date.now(), 'invalid');
           log('license-control', { state: 'unavailable' });
         }
         await refreshLicense();
         if (!controller.signal.aborted) {
-          try { await wait(Math.max(1, WORKER_CONTROL_INTERVAL_MS - (performance.now() - start)), controller.signal); }
+          try {
+            const remaining = Math.max(1, WORKER_CONTROL_INTERVAL_MS - (performance.now() - start));
+            if (failed) await wait(remaining, controller.signal);
+            else {
+              await controlChanges.wait(remaining, controller.signal, observed);
+              // State acknowledgements share the authenticated control channel;
+              // signed policy churn cannot turn them into an unbounded spin.
+              const minimumDelay = 1000 - (performance.now() - start);
+              if (!controller.signal.aborted && minimumDelay > 0) await wait(minimumDelay, controller.signal);
+            }
+          }
           catch (error) { if (!controller.signal.aborted) throw error; }
         }
       }
@@ -230,9 +266,10 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
     const synchronize = async (): Promise<void> => {
       let cloudFailures = 0;
       while (!controller.signal.aborted) {
+        const observed = cloudChanges.revision;
         await refreshLicense();
         if (!licenseAllowed) {
-          try { await wait(WORKER_CONTROL_INTERVAL_MS, controller.signal); } catch (error) { if (!controller.signal.aborted) throw error; }
+          await cloudChanges.wait(WORKER_CONTROL_INTERVAL_MS, controller.signal, observed);
           continue;
         }
         let terminal = false;
@@ -258,7 +295,13 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
           try { await wait(WORKER_CONTROL_INTERVAL_MS, controller.signal); }
           catch (error) { if (!controller.signal.aborted) throw error; }
         } else {
-          try { await wait(waitMs, controller.signal); }
+          try {
+            if (cloudFailures) await wait(waitMs, controller.signal);
+            else {
+              await cloudChanges.wait(waitMs, controller.signal, observed);
+              if (!controller.signal.aborted && cloudChanges.revision !== observed) await wait(25, controller.signal);
+            }
+          }
           catch (error) { if (!controller.signal.aborted) throw error; }
         }
       }
@@ -277,6 +320,7 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
           activeObservations++;
           try { summary = counts(await phase.run()); } catch { /* Persist only a sanitized phase failure, never source content or credentials. */ }
           finally { activeObservations--; await refreshLicense(); }
+          if (phase.name === 'openapi' && summary.observed > 0) cloudChanges.notify();
           phase.failures = summary.failed > 0 || summary.busy > 0 ? Math.min(phase.failures + 1, 10) : 0;
           const backoffMs = Math.min(phase.interval * 2 ** phase.failures, Math.max(phase.interval, 300_000));
           phase.next = performance.now() + backoffMs;
