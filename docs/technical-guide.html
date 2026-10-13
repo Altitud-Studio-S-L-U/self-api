@@ -213,7 +213,7 @@ docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3
 <tr><td>Snapshot</td><td>Source/manifests capturados; readonly. Sin checkout vivo, env, secretos, socket o dependencias del consumidor.</td></tr>
 <tr><td>Tests</td><td>1–20 archivos de un runtime; receta no puede editarlos. Node --test, unittest/pytest o Java main/JUnit según perfil. Mismos bytes en ambas copias.</td></tr>
 <tr><td>Contenedor</td><td>Sin red, pull=never, root readonly, usuario 65534, capabilities vacías, no-new-privileges/seccomp.</td></tr>
-<tr><td>Recursos</td><td>1 CPU, 512 MiB, 128 PIDs; tmpfs acotado; deadline 30 s/fase, output ≤ 1 MiB y cleanup adicional acotado.</td></tr>
+<tr><td>Recursos</td><td>Comunes: 1 CPU, 128 PIDs, stdout/stderr combinados ≤ 1 MiB y presupuesto adicional de limpieza de 5 s. Node/unittest/Java main: 512 MiB, tmpfs 64 MiB y plazo de 30 s. Pytest/Maven-JUnit: 768 MiB, tmpfs 256 MiB y 120 s. Plazo por ejecución, incluido preflight.</td></tr>
 </tbody></table>
 <p>Sin manifiesto adicional: Python unittest o Java 25 <code>javac -proc:none</code>/main con assertions. Pytest y Maven/JUnit exigen preparar expresamente un runtime y pasar <code>--runtime</code> (pág. 16). Preparación descarga dependencias oficiales verificadas; ejecución del consumidor siempre sin red. Foreign preview indica <code>validation:not-run</code> hasta aprobar. Daemon/kernel y misma cuenta/administrador siguen dentro de la confianza; no sustituye CI completo.</p>
 <h2>Resultados conservados</h2>
