@@ -52,7 +52,10 @@ if (process.platform === 'darwin') await run('codesign', ['--remove-signature', 
 await inject(executable, 'NODE_SEA_BLOB', await readFile(blob), { sentinelFuse: 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2', ...(process.platform === 'darwin' ? { machoSegmentName: 'NODE_SEA' } : {}) });
 if (process.platform === 'darwin') await run('codesign', ['--sign', '-', executable]);
 await chmod(executable, 0o755);
-const nativeSignature=await nativeSigningReceipt(executable);
+const nativeSigningEnv={...process.env};
+for(const name of ['KEEPSEAM_WINDOWS_SIGN_CERT_SHA1','KEEPSEAM_SIGNTOOL_PATH','KEEPSEAM_WINDOWS_TIMESTAMP_URL','KEEPSEAM_WINDOWS_PUBLISHER','KEEPSEAM_APPLE_SIGN_IDENTITY','KEEPSEAM_APPLE_NOTARY_PROFILE','KEEPSEAM_APPLE_PUBLISHER'])if(nativeSigningEnv[name]==='')delete nativeSigningEnv[name];
+const nativeSignature=await nativeSigningReceipt(executable,{env:nativeSigningEnv,bundleDirectory:bundle,stagingDirectory:staging,
+  additionalExecutables:process.platform==='darwin'?[join(bundle,'engine',asset.binaryName)]:[]});
 // Node distributions carry their own notices; obtain the exact runtime's license explicitly.
 const licenseResponse = await fetch(`https://raw.githubusercontent.com/nodejs/node/v${process.versions.node}/LICENSE`, { signal: AbortSignal.timeout(20000) });
 assert(licenseResponse.ok, 'Node runtime license unavailable');

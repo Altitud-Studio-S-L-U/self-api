@@ -8,6 +8,7 @@ import { BaseFetcher, Updater } from 'tuf-js';
 import { buildSignedRelease, canonicalTuf } from '../tooling/sign-release.mjs';
 import {signReleaseConfiguration} from '../tooling/sign-release-cli.mjs';
 import {checkWindowsPermissions} from '../dist/windows-permissions.js';
+import {writeReleaseDelivery} from '../tooling/release-delivery.mjs';
 
 function fixture() {
   const {privateKey,publicKey}=generateKeyPairSync('ed25519');
@@ -19,7 +20,7 @@ function fixture() {
   return {rootBytes,rootSha256:createHash('sha256').update(rootBytes).digest('hex'),
     roleKeys:Object.fromEntries(['targets','snapshot','timestamp'].map(role=>[role,[{keyid,key:privateKey}]])),
     version:'0.2.0',sequence:1,sourceRevision:'a'.repeat(40),notes:{es:'Fixture sintética',en:'Synthetic fixture'},requirements:{es:'Node 24.21',en:'Node 24.21'},
-    artifacts:[{os:'any',arch:'any',fileName:'keepseam-client-0.2.0.tgz',bytes:Buffer.from('Synthetic inert SDK fixture')}],documentation:Buffer.from('%PDF-1.7 Synthetic inert document fixture'),keyid};
+    artifacts:[{os:'any',arch:'any',fileName:'keepseam-client-0.2.0.tgz',bytes:Buffer.from('Synthetic inert SDK fixture')}],documentation:Buffer.from('%PDF-1.7 Synthetic inert document fixture client-version=0.2.0 |'),keyid};
 }
 class FixtureFetcher extends BaseFetcher {
   constructor(files){super();this.files=files;}
@@ -60,9 +61,38 @@ test('operator signing command produces a real TUF feed and inert import bundle 
   await writeFile(rootFile,input.rootBytes,{mode:0o600});await writeFile(keyFile,input.roleKeys.targets[0].key.export({format:'pem',type:'pkcs8'}),{mode:0o600});await writeFile(artifactFile,input.artifacts[0].bytes,{mode:0o600});await writeFile(documentationFile,input.documentation,{mode:0o600});
   const config={schemaVersion:1,rootFile,rootSha256:input.rootSha256,roleKeys:Object.fromEntries(['targets','snapshot','timestamp'].map(role=>[role,[{keyid:input.keyid,file:keyFile}]])),version:input.version,sequence:input.sequence,sourceRevision:input.sourceRevision,notes:input.notes,requirements:input.requirements,documentationFile,artifacts:[{os:'any',arch:'any',fileName:input.artifacts[0].fileName,file:artifactFile}]};
   const path=join(directory,'configuration.json');await writeFile(path,JSON.stringify(config),{mode:0o600});
+  await writeFile(documentationFile,Buffer.from('%PDF-1.7 Synthetic wrong edition client-version=0.2.00 |'),{mode:0o600});
+  await assert.rejects(signReleaseConfiguration(path,join(directory,'wrong-document')),/client version/u);
+  await writeFile(documentationFile,input.documentation,{mode:0o600});
   const result=await signReleaseConfiguration(path,join(directory,'outputs')),bundle=JSON.parse(await readFile(join(result.directory,'import-bundle.json'),'utf8'));
   assert.equal(result.publicationEligible,true);assert.equal(JSON.parse(bundle.manifest).documentation.sha256,createHash('sha256').update(input.documentation).digest('hex'));
   assert.doesNotMatch(JSON.stringify(bundle),/PRIVATE KEY/u);
+  const delivery=JSON.parse(await readFile(join(result.deliveryDirectory,'delivery.json'),'utf8'));
+  const request=JSON.parse(await readFile(join(result.deliveryDirectory,'import-bundle.json'),'utf8'));
+  assert.equal(request.requestId,delivery.importRequestId);assert.deepEqual(request.bundle,bundle);assert.equal(delivery.published,false);
+  assert.deepEqual(await readFile(join(result.deliveryDirectory,'cloud-artifacts',input.artifacts[0].fileName)),input.artifacts[0].bytes);
+  assert.deepEqual(await readFile(join(result.deliveryDirectory,'trust/root.json')),input.rootBytes);
+  for(const file of delivery.files){const bytes=await readFile(join(result.deliveryDirectory,file.path));assert.equal(bytes.length,file.sizeBytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),file.sha256);}
   const updater=new Updater({metadataDir:join(result.directory,'metadata'),metadataBaseUrl:'https://synthetic-feed.invalid/metadata/',fetcher:new FixtureFetcher(new Map(['targets','snapshot','timestamp'].map(role=>[`https://synthetic-feed.invalid/metadata/${role}.json`,Buffer.from(bundle.metadata[role])]))),config:{maxRootRotations:0,maxDelegations:0}});
   await updater.refresh();assert.equal((await updater.getTargetInfo('channels/stable.json')).hashes.sha256,createHash('sha256').update(await readFile(join(result.directory,'targets/channels/stable.json'))).digest('hex'));
+  const inputs=join(directory,'reviewed-inputs');await mkdir(inputs,{mode:0o700});
+  await writeFile(join(inputs,input.artifacts[0].fileName),input.artifacts[0].bytes,{mode:0o600});await writeFile(join(inputs,'technical-guide.pdf'),input.documentation,{mode:0o600});
+  const previousInput=process.env.KEEPSEAM_RELEASE_INPUT_DIRECTORY,previousRevision=process.env.KEEPSEAM_RELEASE_SOURCE_REVISION;
+  try {
+    process.env.KEEPSEAM_RELEASE_INPUT_DIRECTORY=inputs;process.env.KEEPSEAM_RELEASE_SOURCE_REVISION='b'.repeat(40);
+    await assert.rejects(signReleaseConfiguration(path,join(directory,'wrong-source')),/reviewed release source/u);
+    process.env.KEEPSEAM_RELEASE_SOURCE_REVISION=input.sourceRevision;
+    const relocated=await signReleaseConfiguration(path,join(directory,'relocated'));
+    assert.deepEqual(await readFile(join(relocated.deliveryDirectory,'cloud-artifacts',input.artifacts[0].fileName)),input.artifacts[0].bytes);
+  } finally {
+    if(previousInput===undefined)delete process.env.KEEPSEAM_RELEASE_INPUT_DIRECTORY;else process.env.KEEPSEAM_RELEASE_INPUT_DIRECTORY=previousInput;
+    if(previousRevision===undefined)delete process.env.KEEPSEAM_RELEASE_SOURCE_REVISION;else process.env.KEEPSEAM_RELEASE_SOURCE_REVISION=previousRevision;
+  }
+});
+test('delivery refuses altered artifact bytes or native receipts before creating output',async t=>{
+  const directory=await realpath(await mkdtemp(join(tmpdir(),'keepseam-release-delivery-test-')));t.after(()=>rm(directory,{recursive:true}));
+  const signed=buildSignedRelease(fixture()),sdk=signed.manifest.artifacts[0];signed.targets.set(sdk.target,Buffer.from('Changed unreviewed bytes'));
+  await assert.rejects(writeReleaseDelivery(signed,join(directory,'changed')),/bytes differ/u);
+  const original=buildSignedRelease(fixture());
+  await assert.rejects(writeReleaseDelivery(original,join(directory,'receipt'),{nativeReceipts:[{schemaVersion:1,fileName:sdk.fileName,archiveSha256:'f'.repeat(64),executableSha256:'b'.repeat(64),nativeSignature:sdk.nativeSignature}]}),/does not bind/u);
 });
