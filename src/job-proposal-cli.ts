@@ -4,13 +4,16 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { confirmLocalRequest, escapeTerminal, jsonLine, renderValidation } from './cli-presentation.js';
 import { PlumberError } from './errors.js';
-import { prepareJobProposal, proposeJobMigration, type JobMigrationProposal } from './job-proposal.js';
+import { prepareJobProposal, proposeJobMigration, type JobMigrationProposal, type JobProposalRequest } from './job-proposal.js';
 import { prepareJobValidation } from './job-validation.js';
 import { loadLocalJson, parseLocalJson, readLocalBytes } from './local-file.js';
-import { approveModelProposal } from './model-harness.js';
-import { createHttpModelAdapter, type HttpModelAdapterOptions } from './model-http-adapter.js';
+import { approveModelRoute, ModelConnections, normalizeModelRoutingConfiguration, prepareModelRoute, runModelRoute } from './model-connections.js';
+import { ModelConnectionStore, readModelConnectionStatus } from './model-connections-store.js';
+import { ModelConnectionError } from './model-failure.js';
+import { createHttpModelAdapter, probeHttpModelConnection } from './model-http-adapter.js';
 import { serializeMigrationRecipe, type MigrationRecipe } from './migration-recipe.js';
 import { checkWindowsPermissions } from './windows-permissions.js';
+import { validateRuntime } from './validation-runtime.js';
 
 export interface JobProposalCliOptions {
   readonly confirm?: (requestId: string) => Promise<boolean>;
@@ -19,27 +22,15 @@ export interface JobProposalCliOptions {
   readonly prepare?: typeof prepareJobProposal;
   readonly propose?: typeof proposeJobMigration;
   readonly adapter?: typeof createHttpModelAdapter;
+  readonly probe?: typeof probeHttpModelConnection;
 }
 function invalid(message = 'Invalid proposal command arguments. Use --help.'): never { throw new PlumberError('INVALID_INPUT', message); }
 const hash = (bytes: string | Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
-const fields = ['provider', 'model', 'policyId', 'maximumOutputTokens', 'endpoint', 'apiKeyEnv'];
 function artifactName(name: string | undefined): string {
   const selected = name ?? `${randomUUID()}.json`;
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\.json$/u.test(selected)) invalid('--output selects a JSON filename inside the private state/proposals directory.');
   return selected;
 }
-async function configuredAdapter(path: string, factory: typeof createHttpModelAdapter) {
-  const value = await loadLocalJson(path, 16384);
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !fields.includes(key))) invalid('Model configuration contains unknown fields; keys belong in an environment variable.');
-  const config = value as HttpModelAdapterOptions & { apiKeyEnv?: string };
-  const { apiKeyEnv, ...options } = config;
-  const keyName = apiKeyEnv ?? ({ openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', google: 'GEMINI_API_KEY', 'local-openai-compatible': undefined })[config.provider];
-  if (keyName !== undefined && (typeof keyName !== 'string' || !/^[A-Z_][A-Z0-9_]{0,127}$/u.test(keyName))) invalid('Select a valid credential environment variable name.');
-  return factory({ ...options, ...(keyName ? { getApiKey: () => {
-    const key = process.env[keyName]; if (!key) invalid('The configured model credential is unavailable.'); return key;
-  } } : {}) });
-}
-
 async function saveArtifact(statePath: string, requestedName: string | undefined, value: unknown): Promise<string> {
   const name = artifactName(requestedName);
   const parent = join(resolve(statePath), 'proposals');
@@ -58,13 +49,15 @@ async function saveArtifact(statePath: string, requestedName: string | undefined
 export async function runJobProposalCli(args: string[], options: JobProposalCliOptions = {}): Promise<number> {
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });
+  const controller = new AbortController(), stop = (): void => { controller.abort(); };
+  let connectionStore: ModelConnectionStore | undefined;
   try {
     let parsed;
     try { parsed = parseArgs({ args, strict: true, allowPositionals: true, tokens: true, options: {
       state: { type: 'string' }, engine: { type: 'string' }, model: { type: 'string' },
       test: { type: 'string', multiple: true }, source: { type: 'string', multiple: true },
       evidence: { type: 'string' }, proposal: { type: 'string' }, answers: { type: 'string' }, output: { type: 'string' },
-      'timeout-ms': { type: 'string' },
+      'timeout-ms': { type: 'string' }, runtime: { type: 'string' },
       'allow-remote': { type: 'boolean' }, json: { type: 'boolean' },
     } }); } catch { invalid(); }
     const repeated = new Set<string>();
@@ -75,7 +68,7 @@ export async function runJobProposalCli(args: string[], options: JobProposalCliO
     }
     const [command, jobId] = parsed.positionals, values = parsed.values;
     const review = command === 'job-review';
-    const allowed = review ? ['state', 'engine', 'proposal', 'answers', 'output', 'json']
+    const allowed = review ? ['state', 'engine', 'proposal', 'answers', 'output', 'json', 'runtime']
       : ['state', 'engine', 'model', 'test', 'source', 'evidence', 'output', 'allow-remote', 'json', 'timeout-ms'];
     if (!['job-proposal-plan', 'job-propose', 'job-review'].includes(command ?? '')
       || Object.keys(values).some(key => !allowed.includes(key)) || parsed.positionals.length !== (review ? 1 : 2)
@@ -108,7 +101,8 @@ export async function runJobProposalCli(args: string[], options: JobProposalCliO
         return { ...decision, answer };
       }) };
       const request = await prepareJobValidation({ statePath: values.state, jobId: proposal.binding.jobId,
-        enginePath: values.engine, recipe: reviewedRecipe, testPaths: proposal.testPaths });
+        enginePath: values.engine, recipe: reviewedRecipe, testPaths: proposal.testPaths,
+        ...(values.runtime ? { runtime: validateRuntime(await loadLocalJson(values.runtime, 16 * 1024)) } : {}) });
       if (request.plan.evidence.consumerDigest !== proposal.binding.consumerDigest
         || request.plan.evidence.baseSha256 !== proposal.binding.baselineSha256
         || request.plan.evidence.revisionSha256 !== proposal.binding.revisionSha256
@@ -120,31 +114,51 @@ export async function runJobProposalCli(args: string[], options: JobProposalCliO
     }
     if (!jobId?.trim() || !values.model?.trim() || !values.test?.length) invalid('Select an observed job, model configuration and read-only tests.');
     if (command === 'job-proposal-plan' && (values.output !== undefined || values['allow-remote'] !== undefined)) invalid();
-    const adapter = await configuredAdapter(values.model, options.adapter ?? createHttpModelAdapter);
-    const { propose: _propose, ...identity } = adapter;
+    const configuration = normalizeModelRoutingConfiguration(await loadLocalJson(values.model, 16_384));
+    if (command === 'job-propose') connectionStore = await ModelConnectionStore.open(values.state);
+    const diagnosticStates = connectionStore ? [] : readModelConnectionStatus(values.state);
+    const runtime = new ModelConnections({ ...configuration,
+      ...(timeoutMs === undefined ? {} : { limits: { ...configuration.limits, timeoutMs } }) }, {
+      ...(options.adapter ? { adapter: options.adapter } : {}), ...(options.probe ? { probe: options.probe } : {}),
+      persistence: connectionStore ?? { read: id => diagnosticStates.find(state => state.id === id), write: () => { throw new Error('Planning is read-only.'); } },
+    });
     const evidence = values.evidence === undefined ? undefined : [{ id: 'local-reviewed-evidence', text: (await readLocalBytes(values.evidence, 256 * 1024)).toString('utf8') }];
-    const request = await (options.prepare ?? prepareJobProposal)({ statePath: values.state, jobId, enginePath: values.engine,
-      adapter: identity, testPaths: values.test, ...(timeoutMs === undefined ? {} : { limits: { timeoutMs } }),
-      ...(values.source ? { sourcePaths: values.source } : {}), ...(evidence ? { evidence } : {}) });
-    stdout(jsonLine(request));
+    const requests: JobProposalRequest[] = [];
+    const { maximumTotalOutputTokens: _maximumTotalOutputTokens, ...limits } = runtime.configuration.limits;
+    for (const id of runtime.selectedIds()) {
+      const { propose: _propose, ...identity } = runtime.adapter(id);
+      requests.push(await (options.prepare ?? prepareJobProposal)({ statePath: values.state, jobId, enginePath: values.engine,
+        adapter: identity, testPaths: values.test, limits,
+        ...(values.source ? { sourcePaths: values.source } : {}), ...(evidence ? { evidence } : {}) }));
+    }
+    const route = prepareModelRoute(runtime, requests.map(request => request.modelRequest));
+    stdout(jsonLine({ route, jobs: requests }));
     if (command === 'job-proposal-plan') return 0;
-    if (adapter.location === 'remote' && values['allow-remote'] !== true) invalid('Remote model disclosure requires --allow-remote and terminal confirmation of this exact request.');
-    if (!await (options.confirm ?? confirmLocalRequest)(request.modelRequest.id)) {
+    const remote = route.attempts.some(attempt => attempt.request.adapter.location === 'remote');
+    if (remote && values['allow-remote'] !== true) invalid('Remote model disclosure requires --allow-remote and terminal confirmation of every destination, functional check and limit in this exact request.');
+    if (!await (options.confirm ?? confirmLocalRequest)(route.id)) {
       stdout('Model consent cancelled; no provider call or execution authorized.\n'); return 1;
     }
-    const consent = approveModelProposal({ request: request.modelRequest, expectedRequestId: request.modelRequest.id,
-      ...(adapter.location === 'remote' ? { allowRemote: true } : {}) });
-    const proposal = await (options.propose ?? proposeJobMigration)({ request, expectedRequestId: request.id, consent, adapter });
+    const consent = approveModelRoute({ request: route, expectedRequestId: route.id, ...(remote ? { allowRemote: true } : {}) });
+    process.on('SIGINT', stop); process.on('SIGTERM', stop);
+    const routed = await runModelRoute({ request: route, consent, signal: controller.signal, onAlert: alert => { stderr(jsonLine({ modelAlert: alert })); },
+      execute: async (modelRequest, consent, adapter, signal) => {
+        const request = requests.find(request => request.modelRequest === modelRequest);
+        if (!request) invalid('The approved route is not bound to this observed job.');
+        return (options.propose ?? proposeJobMigration)({ request, expectedRequestId: request.id, consent, adapter, signal });
+      } });
+    const { outcome: proposal, ...routing } = routed;
     const artifactPath = await saveArtifact(values.state, values.output, proposal);
     const proposalSha256 = hash(JSON.stringify(proposal, null, 2) + '\n');
     const questions = proposal.status === 'proposal-ready' ? proposal.recipe.decisions : proposal.decisions;
-    stdout(jsonLine({ artifactPath, proposalSha256, proposal, reviewTemplate: {
+    stdout(jsonLine({ artifactPath, proposalSha256, proposal, routing, reviewTemplate: {
       proposalSha256, answers: Object.fromEntries(questions.map(decision => [decision.id, ''])),
     }, authorization: 'not-granted', publication: 'not-authorized' }));
     return proposal.status === 'decision-required' ? 1 : 0;
   } catch (error) {
-    stderr(jsonLine({ error: error instanceof PlumberError ? { code: error.code, message: error.message }
+    stderr(jsonLine({ error: error instanceof PlumberError ? { code: error.code, message: error.message,
+      ...(error instanceof ModelConnectionError ? { failure: error.kind } : {}) }
       : { code: 'INVALID_INPUT', message: 'Proposal command could not complete; no execution or publication was authorized.' } }));
     return 2;
-  }
+  } finally { controller.abort(); process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); connectionStore?.close(); }
 }

@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { after, test } from 'node:test';
 import { promisify } from 'node:util';
 import { openWorkerStore } from '../dist/worker-store.js';
+import { runtimeRecipeSha256 } from '../dist/validation-runtime.js';
 
 const execute = promisify(execFile);
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -342,7 +343,7 @@ test('v1 migration preserves snapshots, jobs, observations and an outstanding ob
   assert.equal(reopened.claim(subscription.id), null);
   assert.deepEqual(reopened.listExecutionIntents(), []);
   editState(statePath, db => {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);
     assert.equal(db.prepare('SELECT count(*) AS n FROM observations').get().n, 1);
   });
   reopened.failObservation({ lease, reason: 'analysis-failed' });
@@ -373,7 +374,30 @@ test('concurrent processes can open and migrate the same v1 database without los
   const children = await Promise.all(Array.from({ length: 2 }, () => execute(process.execPath,
     ['--input-type=module', '-e', script, statePath], { timeout: 15_000 })));
   for (const child of children) assert.deepEqual(JSON.parse(child.stdout), { jobs: [job.id], intents: [] });
-  editState(statePath, db => assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3));
+  editState(statePath, db => assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4));
+});
+
+test('v3 migration retains pending execution and binds new framework manifests durably', async t => {
+  const { store, statePath, job } = await fixture(t);
+  const original = store.enqueueExecution(input(job)).intent;
+  store.close();
+  editState(statePath, db => db.exec('ALTER TABLE execution_intents DROP COLUMN runtime_json; PRAGMA user_version=3;'));
+  const migrated = await openWorkerStore(statePath);
+  t.after(() => migrated.close());
+  assert.deepEqual(migrated.listExecutionIntents(), [original]);
+  const runtime = { schemaVersion: 1, kind: 'pytest', imageId: `sha256:${'a'.repeat(64)}`,
+    recipeSha256: runtimeRecipeSha256('pytest'), dependenciesSha256: 'b'.repeat(64) };
+  const queued = input(job, { testPaths: ['test_contract.py'], runtime });
+  const intent = migrated.enqueueExecution(queued).intent;
+  assert.deepEqual(intent.runtime, runtime);
+  assert.throws(() => migrated.enqueueExecution({ ...queued, runtime: { ...runtime, imageId: `sha256:${'c'.repeat(64)}` } }), invalid);
+  assert.throws(() => migrated.enqueueExecution({ ...queued, runtime: undefined }), invalid);
+  migrated.close();
+  const reopened = await openWorkerStore(statePath);
+  t.after(() => reopened.close());
+  assert.deepEqual(reopened.listExecutionIntents().find(row => row.id === intent.id).runtime, runtime);
+  editState(statePath, db => db.prepare('UPDATE execution_intents SET runtime_json=? WHERE id=?').run(JSON.stringify({ ...runtime, recipeSha256: 'c'.repeat(64) }), intent.id));
+  assert.throws(() => reopened.listExecutionIntents(), invalid);
 });
 
 test('intent count limits preserve all pending work and leave existing enqueue idempotent', async t => {

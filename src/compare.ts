@@ -16,6 +16,7 @@ export interface CompareOptions {
   readonly revisionPath: string;
   /** An explicitly authorized local executable. Never downloaded by this call. */
   readonly enginePath: string;
+  readonly signal?: AbortSignal;
 }
 
 function engineEnvironment(): NodeJS.ProcessEnv {
@@ -27,7 +28,7 @@ function engineEnvironment(): NodeJS.ProcessEnv {
   return environment;
 }
 
-async function runEngine(enginePath: string, args: string[], cwd: string): Promise<string> {
+async function runEngine(enginePath: string, args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
   try {
     const { stdout } = await execute(enginePath, args, {
       cwd,
@@ -37,6 +38,7 @@ async function runEngine(enginePath: string, args: string[], cwd: string): Promi
       timeout: 30_000,
       maxBuffer: MAX_OUTPUT_BYTES,
       encoding: 'utf8',
+      ...(signal ? { signal } : {}),
     });
     return stdout;
   } catch (error) {
@@ -90,6 +92,8 @@ function parseChanges(output: string): ApiChange[] {
 }
 
 export async function compareOpenApi(options: CompareOptions): Promise<ComparisonReport> {
+  if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) throw new PlumberError('INVALID_INPUT', 'Comparison cancellation requires an AbortSignal.');
+  options.signal?.throwIfAborted();
   const [base, revision] = await Promise.all([
     loadOpenApi(options.basePath),
     loadOpenApi(options.revisionPath),
@@ -107,7 +111,7 @@ export async function compareOpenApi(options: CompareOptions): Promise<Compariso
   const temporaryRoot = resolve(tmpdir());
   const directory = await mkdtemp(join(temporaryRoot, 'plumber-'));
   try {
-    const version = await runEngine(enginePath, ['--version'], directory);
+    const version = await runEngine(enginePath, ['--version'], directory, options.signal);
     if (version.trim() !== `oasdiff version ${release.version}`) {
       throw new PlumberError('ENGINE_UNAVAILABLE', `This build requires oasdiff ${release.version}.`);
     }
@@ -123,12 +127,12 @@ export async function compareOpenApi(options: CompareOptions): Promise<Compariso
     ]);
     const flags = ['--format', 'json', '--allow-external-refs=false', '--config', configFile];
     for (const file of [baseFile, revisionFile]) {
-      const validation = parseArray(await runEngine(enginePath, ['validate', ...flags, '--', file], directory));
+      const validation = parseArray(await runEngine(enginePath, ['validate', ...flags, '--', file], directory, options.signal));
       if (validation.length > 0) {
         throw new PlumberError('INVALID_INPUT', 'The contract requires validation review. No comparison was produced.');
       }
     }
-    const changes = parseChanges(await runEngine(enginePath, ['breaking', ...flags, '--', baseFile, revisionFile], directory));
+    const changes = parseChanges(await runEngine(enginePath, ['breaking', ...flags, '--', baseFile, revisionFile], directory, options.signal));
     return {
       schemaVersion: 1,
       engine: { name: 'oasdiff', version: release.version },

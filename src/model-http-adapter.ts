@@ -3,6 +3,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest, type RequestOptions } from 'node:https';
 import type { LookupFunction } from 'node:net';
 import { PlumberError } from './errors.js';
+import { ModelConnectionError, type ModelFailureKind } from './model-failure.js';
 import type { ModelProposalAdapter, ModelProposalContext } from './model-harness.js';
 import { publicAddress, resolveAddresses, type PublicAddress } from './public-network.js';
 
@@ -54,7 +55,7 @@ function recipeSchema(context: ModelProposalContext): Record<string, unknown> {
 }
 
 function invalid(): never { throw new PlumberError('INVALID_INPUT', 'The HTTP model adapter configuration is invalid.'); }
-function failed(): never { throw new PlumberError('ENGINE_FAILED', 'The model request failed; no response content or credentials were retained.'); }
+function failed(kind: ModelFailureKind = 'invalid-response'): never { throw new ModelConnectionError(kind); }
 function record(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) failed();
   return value as Record<string, unknown>;
@@ -102,8 +103,10 @@ function payload(provider: HttpModelProvider, model: string, maximumOutputTokens
     response_format: { type: 'json_schema', json_schema: { name: 'keepseam_migration_recipe', strict: true, schema } } };
 }
 
-function extract(provider: HttpModelProvider, response: unknown): string {
+function extract(provider: HttpModelProvider, response: unknown, expectedModel: string): string {
   const data = record(response);
+  const actualModel = provider === 'google' ? data['modelVersion'] : data['model'];
+  if (actualModel !== undefined && actualModel !== expectedModel) failed('model');
   if (provider === 'openai') {
     if (data.status !== 'completed' || data.error || data.incomplete_details) failed();
     const texts: string[] = [];
@@ -173,70 +176,155 @@ async function post(url: URL, address: PublicAddress, headers: Record<string, st
   return new Promise((resolve, reject) => {
     const request = constructor(url, config, response => {
       const read = async (): Promise<void> => {
-        if (response.statusCode !== 200 || (response.headers['content-encoding'] && response.headers['content-encoding'] !== 'identity')
+        const status = response.statusCode ?? 0;
+        if (status !== 200 && status !== 429) failed(httpFailure(status, undefined));
+        if ((response.headers['content-encoding'] && response.headers['content-encoding'] !== 'identity')
           || !/^application\/json(?:\s*;\s*charset=utf-8)?$/iu.test(response.headers['content-type'] ?? '')) failed();
+        const byteLimit = status === 200 ? maximumBytes : Math.min(maximumBytes, 16_384);
         const length = response.headers['content-length'];
-        if (length !== undefined && (!/^\d+$/u.test(length) || Number(length) > maximumBytes)) failed();
+        if (length !== undefined && (!/^\d+$/u.test(length) || Number(length) > byteLimit)) failed();
         const chunks: Buffer[] = [];
         let received = 0, count = 0;
         for await (const chunk of response) {
-          if (!(chunk instanceof Uint8Array) || ++count > 65_536 || (received += chunk.byteLength) > maximumBytes) failed();
+          if (!(chunk instanceof Uint8Array) || ++count > 65_536 || (received += chunk.byteLength) > byteLimit) failed();
           chunks.push(Buffer.from(chunk));
         }
         if (signal.aborted || received === 0 || (length !== undefined && Number(length) !== received)) failed();
         const json = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
-        resolve(JSON.parse(json));
+        const parsed: unknown = JSON.parse(json);
+        if (status !== 200) failed(httpFailure(status, parsed));
+        resolve(parsed);
       };
-      void read().catch(() => { response.destroy(); request.destroy(); reject(new Error('Model response rejected.')); });
+      void read().catch(error => {
+        response.destroy(); request.destroy();
+        reject(error instanceof ModelConnectionError ? error : new ModelConnectionError('invalid-response'));
+      });
     });
     request.maxHeadersCount = 0;
-    request.on('error', () => { reject(new Error('Model transport failed.')); });
+    request.on('error', () => { reject(new ModelConnectionError(signal.aborted ? 'cancelled' : 'transient')); });
     request.end(body);
   });
 }
 
-/** Built-in protocol adapters. Use through prepare/approve/proposeMigrationWithModel; this creates no request. */
-export function createHttpModelAdapter(options: HttpModelAdapterOptions, dependencies: HttpModelAdapterDependencies = {}): ModelProposalAdapter {
+function httpFailure(status: number, body: unknown): ModelFailureKind {
+  if (status === 401) return 'credentials';
+  if (status === 403) return 'permission';
+  if ([400, 404, 422].includes(status)) return 'model';
+  if (status === 402) return 'quota';
+  if (status === 429) {
+    const error = body && typeof body === 'object' && 'error' in body ? body.error : undefined;
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    const type = error && typeof error === 'object' && 'type' in error ? error.type : undefined;
+    // An ambiguous exhausted quota must not silently spend through another account.
+    return [code, type].some(value => value === 'rate_limit_exceeded' || value === 'rate_limit_error') ? 'transient' : 'quota';
+  }
+  return status === 408 || status >= 500 && status <= 599 ? 'transient' : 'invalid-response';
+}
+
+const PROBE_PROMPT = 'Connection check. Return exactly the JSON object {"keepseam":"ok"}. No other text.';
+export const MODEL_PROBE_OUTPUT_TOKENS = 128;
+export interface ModelConnectionProbe {
+  readonly status: 'verified';
+  readonly latencyMs: number;
+  readonly maximumOutputTokens: number;
+}
+
+function probePayload(provider: HttpModelProvider, model: string): unknown {
+  const schema = object({ keepseam: { type: 'string', enum: ['ok'] } });
+  if (provider === 'openai') return { model, store: false, stream: false, max_output_tokens: MODEL_PROBE_OUTPUT_TOKENS,
+    input: PROBE_PROMPT, text: { format: { type: 'json_schema', name: 'keepseam_connection', strict: true, schema } } };
+  if (provider === 'anthropic') return { model, stream: false, max_tokens: MODEL_PROBE_OUTPUT_TOKENS,
+    messages: [{ role: 'user', content: PROBE_PROMPT }], output_config: { format: { type: 'json_schema', schema } } };
+  if (provider === 'google') return { contents: [{ role: 'user', parts: [{ text: PROBE_PROMPT }] }],
+    generationConfig: { maxOutputTokens: MODEL_PROBE_OUTPUT_TOKENS, candidateCount: 1, responseMimeType: 'application/json', responseJsonSchema: schema } };
+  return { model, stream: false, max_tokens: MODEL_PROBE_OUTPUT_TOKENS,
+    messages: [{ role: 'user', content: PROBE_PROMPT }],
+    response_format: { type: 'json_schema', json_schema: { name: 'keepseam_connection', strict: true, schema } } };
+}
+
+function validateOptions(options: HttpModelAdapterOptions): URL {
   if (!options || typeof options.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/u.test(options.model)
     || typeof options.policyId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/u.test(options.policyId)
     || !Number.isSafeInteger(options.maximumOutputTokens) || options.maximumOutputTokens < 1 || options.maximumOutputTokens > 32768) invalid();
-  const url = endpoint(options);
-  const provider = options.provider, model = options.model, tokens = options.maximumOutputTokens, getKey = options.getApiKey;
+  return endpoint(options);
+}
+
+async function invokeHttpModel(options: HttpModelAdapterOptions, dependencies: HttpModelAdapterDependencies,
+  body: unknown, maximumOutputBytes: number, signal: AbortSignal): Promise<string> {
+  const url = validateOptions(options), provider = options.provider;
   const local = provider === 'local-openai-compatible';
-  const resolve = dependencies.resolve ?? resolveAddresses;
-  const constructor = dependencies.request ?? (local ? httpRequest : httpsRequest);
+  try {
+    if (signal.aborted) failed('cancelled');
+    if (!Number.isSafeInteger(maximumOutputBytes) || maximumOutputBytes < 1 || maximumOutputBytes > MAX_CONTEXT) invalid();
+    let address: PublicAddress;
+    if (local) address = { address: url.hostname === '[::1]' ? '::1' : '127.0.0.1', family: url.hostname === '[::1]' ? 6 : 4 };
+    else {
+      let addresses: readonly PublicAddress[];
+      try { addresses = await (dependencies.resolve ?? resolveAddresses)(url.hostname, signal); }
+      catch { failed(signal.aborted ? 'cancelled' : 'transient'); }
+      if (!Array.isArray(addresses) || addresses.length === 0) failed('transient');
+      if (addresses.length > 64) failed();
+      address = addresses.map(item => publicAddress(item.address, item.family))[0]!;
+    }
+    if (signal.aborted) failed('cancelled');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json',
+      'Accept-Encoding': 'identity', 'User-Agent': 'keepseam-client/0.1.0' };
+    if (provider === 'anthropic') headers['anthropic-version'] = '2023-06-01';
+    if (options.getApiKey) {
+      let key: string;
+      try { key = await options.getApiKey(signal); } catch { failed(signal.aborted ? 'cancelled' : 'credentials'); }
+      if (signal.aborted) failed('cancelled');
+      if (typeof key !== 'string' || key.length < 1 || key.length > 4096 || !/^[\x21-\x7e]+$/u.test(key)) failed('credentials');
+      headers[provider === 'anthropic' ? 'x-api-key' : provider === 'google' ? 'x-goog-api-key' : 'Authorization'] =
+        provider === 'anthropic' || provider === 'google' ? key : `Bearer ${key}`;
+    }
+    const response = await post(url, address, headers, Buffer.from(JSON.stringify(body)), maximumOutputBytes * 6 + 65536,
+      signal, dependencies.request ?? (local ? httpRequest : httpsRequest));
+    const result = extract(provider, response, options.model);
+    if (signal.aborted) failed('cancelled');
+    if (Buffer.byteLength(result) > maximumOutputBytes) failed();
+    return result;
+  } catch (error) {
+    if (signal.aborted) failed('cancelled');
+    if (error instanceof ModelConnectionError) throw error;
+    failed();
+  }
+}
+
+/** Performs a real, separately authorized inference containing only a fixed synthetic connection check. */
+export async function probeHttpModelConnection(options: HttpModelAdapterOptions, signal: AbortSignal,
+  dependencies: HttpModelAdapterDependencies = {}): Promise<ModelConnectionProbe> {
+  validateOptions(options);
+  const startedAt = performance.now();
+  const combined = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+  let result: string;
+  try { result = await invokeHttpModel(options, dependencies, probePayload(options.provider, options.model), 1024, combined); }
+  catch (error) {
+    if (signal.aborted) failed('cancelled');
+    if (combined.aborted) failed('transient');
+    throw error;
+  }
+  let response: unknown;
+  try { response = JSON.parse(result); } catch { failed(); }
+  if (!response || typeof response !== 'object' || Array.isArray(response) || Object.keys(response).length !== 1
+    || !('keepseam' in response) || response.keepseam !== 'ok') failed('model');
+  return Object.freeze({ status: 'verified', latencyMs: Math.ceil(performance.now() - startedAt), maximumOutputTokens: MODEL_PROBE_OUTPUT_TOKENS });
+}
+
+/** Built-in protocol adapters. Use through prepare/approve/proposeMigrationWithModel; this creates no request. */
+export function createHttpModelAdapter(options: HttpModelAdapterOptions, dependencies: HttpModelAdapterDependencies = {}): ModelProposalAdapter {
+  const url = validateOptions(options);
+  const provider = options.provider, model = options.model, tokens = options.maximumOutputTokens, getKey = options.getApiKey, policyId = options.policyId;
+  const local = provider === 'local-openai-compatible';
   const policy = createHash('sha256').update(JSON.stringify({ version: 4, instructions: INSTRUCTIONS,
     provider, model, tokens, endpoint: url.href, policyId: options.policyId })).digest('hex');
   return Object.freeze({ id: `${provider}-${policy.slice(0,16)}`, location: local ? 'local' as const : 'remote' as const,
     destination: local ? `local:http-${policy}` : url.href, policyId: policy,
     propose: async (context: ModelProposalContext, limits: { signal: AbortSignal; maximumOutputBytes: number }): Promise<string> => {
       const signal = AbortSignal.any([limits.signal, AbortSignal.timeout(120_000)]);
-      try {
-        if (signal.aborted || !Number.isSafeInteger(limits.maximumOutputBytes) || limits.maximumOutputBytes < 1 || limits.maximumOutputBytes > MAX_CONTEXT) invalid();
-        let address: PublicAddress;
-        if (local) address = { address: url.hostname === '[::1]' ? '::1' : '127.0.0.1', family: url.hostname === '[::1]' ? 6 : 4 };
-        else {
-          const addresses = await resolve(url.hostname, signal);
-          if (!Array.isArray(addresses) || addresses.length === 0 || addresses.length > 64) failed();
-          address = addresses.map(item => publicAddress(item.address, item.family))[0]!;
-        }
-        if (signal.aborted) failed();
-        const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json',
-          'Accept-Encoding': 'identity', 'User-Agent': 'keepseam-client/0.1.0' };
-        if (provider === 'anthropic') headers['anthropic-version'] = '2023-06-01';
-        if (getKey) {
-          const key = await getKey(signal);
-          if (signal.aborted || typeof key !== 'string' || key.length < 1 || key.length > 4096 || !/^[\x21-\x7e]+$/u.test(key)) failed();
-          headers[provider === 'anthropic' ? 'x-api-key' : provider === 'google' ? 'x-goog-api-key' : 'Authorization'] =
-            provider === 'anthropic' || provider === 'google' ? key : `Bearer ${key}`;
-        }
-        const body = Buffer.from(JSON.stringify(payload(provider, model, tokens, context)));
-        // JSON-escaped output plus a bounded protocol envelope; decoded recipe has its own exact byte budget.
-        const response = await post(url, address, headers, body, limits.maximumOutputBytes * 6 + 65536, signal, constructor);
-        const result = extract(provider, response);
-        if (signal.aborted || Buffer.byteLength(result) > limits.maximumOutputBytes) failed();
-        return result;
-      } catch { failed(); }
+      return invokeHttpModel({ provider, model, policyId, maximumOutputTokens: tokens,
+        ...(local ? { endpoint: url.href } : {}), ...(getKey ? { getApiKey: getKey } : {}) }, dependencies,
+      payload(provider, model, tokens, context), limits.maximumOutputBytes, signal);
     },
   });
 }

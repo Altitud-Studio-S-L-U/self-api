@@ -139,28 +139,30 @@ keepseam source-observe --once --state /private/keepseam --json</pre>
 </section>
 
 <section class="page">
-<div class="label">Nuevo recorrido de propuesta desde CLI</div>
+<div class="label">Conexiones locales y destinos consentidos</div>
 <h1>Proponer con un modelo</h1>
-<p>Seleccionar un job OpenAPI observado, tests read-only, motor y modelo explícitos. La preparación recomputa diff/impact e inspecciona consumidor actual; no confía en un informe guardado para decidir qué contexto revelar. No se elige ni descarga modelo automáticamente.</p>
-<pre># /private/local-model.json: ejemplo de runtime ya instalado
-{"provider":"local-openai-compatible","model":"your-installed-model",
- "policyId":"team-local-proposals-v1","maximumOutputTokens":2048,
- "endpoint":"http://127.0.0.1:11434/v1/chat/completions"}
+<p>Seleccionar job observado, tests read-only y modelos explícitos. El cliente recomputa contratos/impacto y captura actual; un informe guardado no decide qué contexto revelar. No descarga ni descubre modelos por su cuenta.</p>
+<pre># /private/local-model.json: manual por defecto
+{"schemaVersion":1,"primary":"local","connections":[{
+ "id":"local","revision":1,"credentialRevision":1,
+ "provider":"local-openai-compatible","model":"your-installed-model",
+ "policyId":"reviewed-v1","maximumOutputTokens":2048,
+ "endpoint":"http://127.0.0.1:11434/v1/chat/completions"}]}
 keepseam job-proposal-plan JOB_ID --state /private/keepseam \
   --engine /opt/keepseam/engine/oasdiff --model /private/local-model.json \
   --test orders.test.mjs
 keepseam job-propose JOB_ID --state /private/keepseam \
   --engine /opt/keepseam/engine/oasdiff --model /private/local-model.json \
   --test orders.test.mjs --output proposal.json</pre>
-<p><code>--source</code> selecciona JS/TS, Python o Java capturado; <code>--evidence</code> añade texto local revisado. Discovery automático de llamadas/parsers sigue JS/TS. Python/Java conservan <code>unsupported-language</code> y la decisión de cobertura. El modelo ve contratos completos y roles source/test explícitos, sin ruta absoluta. Inputs grandes fallan; no se truncan contratos.</p>
-<p><code>--timeout-ms</code> permite 1.000–120.000 ms en plan/propose, por defecto 30.000. El deadline forma parte del request consentido; para una CPU lenta elegirlo explícitamente antes de consentir, sin retries ocultos.</p>
-<h2>Consentimiento y egress</h2>
-<p><code>job-propose</code> imprime el request exacto y exige confirmarlo en terminal interactivo. Consentimiento es de un solo uso y expira; no se recupera deserializando JSON tras reinicio. Un proveedor remoto requiere además <code>--allow-remote</code>. Consentir disclosure no autoriza tests ni GitHub.</p>
-<p>Providers: <code>openai</code>, <code>anthropic</code>, <code>google</code>, <code>local-openai-compatible</code>. Config admite solo provider/model/policyId/maximumOutputTokens/endpoint/apiKeyEnv; claves remotas provienen del entorno o del callback SDK. Nunca insertar tokens literales. El endpoint local integrado acepta loopback numérico HTTP; un servidor privado remoto requiere un adaptador autorizado propio.</p>
-<p>Loopback no prueba que el runtime no retransmita. Si se exige inferencia privada, fijar pesos/runtime/licencia, aislar red externa, no montar repositorio/credenciales y desactivar telemetría. Revisar contexto para secretos/confidencialidad; patrones y sensitive-values son salvaguardas, no garantía de ausencia.</p>
-<h2>Resultado honesto</h2>
-<p><code>proposal-ready</code> contiene receta no vacía, pendiente de revisión semántica. <code>decision-required</code> contiene preguntas/resumen y ninguna receta: no se fabrica un cambio ni se crea un issue automáticamente. El modelo no puede eliminar preguntas obligatorias del revisor. Contratos/code/docs son datos no confiables, nunca instrucciones con herramientas o permisos.</p>
-<p>Se comprueban identidad job, contratos, consumidor y motor antes y después de respuesta. Drift invalida la propuesta. Una operación tiene un intento acotado, sin fallback remoto ni reintentos/expansión de contexto automática. Los tests de transporte con salida controlada no demuestran calidad de inferencia.</p>
+<p><code>--source</code>: JS/TS, Python o Java capturado; <code>--evidence</code>: texto local revisado. Discovery automático sigue JS/TS; Python/Java conservan cobertura a revisar. Se envían sólo archivos seleccionados y contratos completos, sin truncar ni ampliar contexto.</p>
+<h2>Manual y Auto</h2>
+<p>Manual usa un destino. <code>"mode":"auto","fallback":"OTRO_ID"</code> permite un principal y una alternativa configurada. Terminal confirma destinos, modelos, revisiones, contexto y límites; remotos requieren <code>--allow-remote</code>. Consentimiento expira, se consume una vez y no autoriza tests ni publicación.</p>
+<p><code>limits</code>: <code>timeoutMs</code> 1.000–120.000 (default 120.000), bytes input/output por intento (default 256 KiB; máximo 1 MiB), <code>maximumTotalOutputTokens</code> (default 8.192). El presupuesto reserva techos de generación y probes; no representa tokens facturados. Máximo dos generaciones; probes y verificaciones de evidencia consumen el mismo plazo global. <code>--timeout-ms</code> sustituye el plazo antes de consentir.</p>
+<p>Credenciales, permisos, modelo o cuota inválidos bloquean esa conexión hasta una prueba explícita válida; Auto puede usar sólo la alternativa consentida y verificada, con aviso. Fallos transitorios degradan conexión. Cancelación, contexto/destino alterado, salida insegura y <code>decision-required</code> detienen la cadena. Una receta sigue pendiente de revisión semántica.</p>
+<h2>Comprobación funcional y claves</h2>
+<p><code>model-connections verify --state DIR --model CONFIG</code> pide consentimiento para una inferencia sintética real, sin código privado: JSON fijo, máximo 128 tokens de salida y 30 s por probe. Se repite antes de trabajo si el recibo del proceso supera cinco minutos; nunca por polling inactivo. <code>status</code> no hace inferencia. Un reinicio exige nueva prueba; <code>--startup-checks</code> autoriza por separado esa comprobación del servicio.</p>
+<p>El permiso de arranque se vincula a la configuración exacta: cambiarla exige verificar y consentir de nuevo. Sin permiso, el servicio indica unverified y no llama al modelo. Con permiso realiza una prueba por conexión seleccionada; informa healthy/degraded/requires-reconfiguration sin bloquear heartbeat.</p>
+<p>Providers: OpenAI, Anthropic, Google o loopback HTTP explícito. Claves vía <code>apiKeyEnv</code> local; no se guardan ni pasan por Cloud. Cambiar configuración exige incrementar <code>revision</code>; rotar clave invalida recibos/consentimientos previos. Si la respuesta declara otro modelo, se exige reconfiguración: elegir una versión explícita. Loopback no demuestra aislamiento de red. Los tests controlados no acreditan calidad de IA real.</p>
 <footer><span>Keepseam Client · selección de contexto y consentimiento</span><span>5 / 19</span></footer>
 </section>
 
@@ -209,11 +211,11 @@ keepseam executions --state /private/keepseam --json</pre>
 docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd</pre>
 <table><thead><tr><th>Frontera</th><th>Límite aplicado</th></tr></thead><tbody>
 <tr><td>Snapshot</td><td>Source/manifests capturados; readonly. Sin checkout vivo, env, secretos, socket o dependencias del consumidor.</td></tr>
-<tr><td>Tests</td><td>1–20 archivos de un runtime; receta no puede editarlos. Node --test; Python unittest; Java main con -ea. Mismos bytes en ambas copias.</td></tr>
+<tr><td>Tests</td><td>1–20 archivos de un runtime; receta no puede editarlos. Node --test, unittest/pytest o Java main/JUnit según perfil. Mismos bytes en ambas copias.</td></tr>
 <tr><td>Contenedor</td><td>Sin red, pull=never, root readonly, usuario 65534, capabilities vacías, no-new-privileges/seccomp.</td></tr>
 <tr><td>Recursos</td><td>1 CPU, 512 MiB, 128 PIDs; tmpfs acotado; deadline 30 s/fase, output ≤ 1 MiB y cleanup adicional acotado.</td></tr>
 </tbody></table>
-<p>Tests sin dependencias externas: Python compila source y carga cada suite unittest una vez; Java 25 usa <code>javac -proc:none</code>, clases en <code>/tmp</code> y assertions habilitadas. Sin pip, Maven, Gradle ni pytest/JUnit externos. Foreign preview indica <code>validation:not-run</code> hasta aprobar. No sustituye CI completo; daemon/kernel y misma cuenta/administrador siguen dentro de la confianza.</p>
+<p>Sin manifiesto adicional: Python unittest o Java 25 <code>javac -proc:none</code>/main con assertions. Pytest y Maven/JUnit exigen preparar expresamente un runtime y pasar <code>--runtime</code> (pág. 16). Preparación descarga dependencias oficiales verificadas; ejecución del consumidor siempre sin red. Foreign preview indica <code>validation:not-run</code> hasta aprobar. Daemon/kernel y misma cuenta/administrador siguen dentro de la confianza; no sustituye CI completo.</p>
 <h2>Resultados conservados</h2>
 <p><code>passed</code>: baseline/candidato pasan; <code>improved</code>: falla baseline y pasa candidato; <code>regression</code>: falla solo candidato; <code>failed</code>: ambos fallan. Infraestructura ausente, límites, cleanup no confirmado o ejecución incompleta produce blocked. Publicación solo admite candidato passing con evidencia durable y cleanup confirmado.</p>
 <p>CLI ejecución devuelve 0 sin trabajo o todo passed, 1 con fallos completados/improvement y 2 blocked/interrupted/lost-ownership. Completed significa resultado registrado, incluso blocked. No modificar tests válidos ni borrar marcadores para reusar un recibo. El checkout original permanece intacto; reporte y output son privados.</p>
@@ -263,9 +265,10 @@ keepseam jobs --state /private/keepseam --json</pre>
 <table><thead><tr><th>Almacén</th><th>Contenido y límites</th></tr></thead><tbody>
 <tr><td><code>worker.sqlite3</code></td><td>100 subscriptions, 1.000 jobs/transitions; contratos/reports ≤ 4 MiB, totales snapshots/reports 64 MiB cada uno.</td></tr>
 <tr><td><code>source-observations.sqlite3</code></td><td>Catálogos/schemas/ejemplos/texto; 100 subscriptions, 1.000 transitions y 64 MiB de payloads.</td></tr>
-<tr><td>Intents / attempts</td><td>1.000 intents, receta ≤ 1 MiB, ≤ 20 tests, 64 MiB recipes. Recibos/markers/outcomes privados y retenidos.</td></tr>
+<tr><td>Intents / attempts</td><td>1.000 intents, receta ≤ 1 MiB, ≤ 20 tests, 64 MiB recipes. Recibos/markers/outcomes privados y retenidos; SQLite v4 conserva runtime exacto.</td></tr>
 </tbody></table>
 <p>Son límites de payload, no de tamaño exacto de DB. No hay pruning automático; agotamiento falla sin borrar evidencia o fingir freshness. Cambios de schema propios se migran transaccionalmente, conservando historia; DB ajena/futura falla. Ownership observer dura cinco minutos; ejecución diez y recovery cinco.</p>
+<p>Conexiones de modelos: <code>model-connections.json</code> privado conserva hasta 32 identidades, revisión y diagnóstico, nunca claves o sus hashes. Un lock SQLite exclusivo impide escrituras concurrentes entre CLI/servicio. Estado anterior no concede una comprobación funcional fresca tras reiniciar.</p>
 <h2>Permisos y diagnóstico</h2>
 <p>POSIX: directorios 0700/archivos 0600. Windows: nuevas carpetas reciben DACL privada; paths existentes inapropiados fallan sin repair implícito. Rechazar symlinks/junctions, hardlinks runtime y directorios de red. La misma cuenta OS y administradores forman parte del trust boundary; modos/ACL no autentican un revisor humano.</p>
 <p>Una observación fallida preserva último éxito/jobs y registra razón fija. <code>worker --once</code> devuelve 0 sin job actual pendiente, 1 con review y 2 busy/failure; unchanged no cierra jobs históricos. Plan/propuesta usan último snapshot capturado y no consultan proveedor silenciosamente; observar de nuevo antes de decidir y revisar timestamps.</p>
@@ -276,15 +279,16 @@ keepseam jobs --state /private/keepseam --json</pre>
 <section class="page">
 <div class="label">Supervisión nativa · configuración sin hooks</div>
 <h1>Servicio y Linux</h1>
-<p>Instalar versión revisada en ruta estable, cuenta no-root con lectura de consumidor/contratos y escritura solo en estado. Registrar subscriptions antes de arrancar. <code>render</code> crea una definición revisable; no instala servicios, modifica kernel ni descarga herramientas.</p>
+<p>Versión revisada en ruta estable, cuenta no-root, consumidor/contratos readonly y estado writable. Registrar subscriptions antes de arrancar. <code>render</code> genera definición revisable; no instala servicios ni herramientas.</p>
 <pre>{"schemaVersion":1,"statePath":"/var/lib/keepseam/state",
  "allowHttp":false,
  "openApi":{"enginePath":"/opt/keepseam/bin/oasdiff","intervalMs":60000},
- "sources":{"intervalMs":900000}}
+ "sources":{"intervalMs":900000},
+ "models":{"configPath":"/etc/keepseam/models.json"}}
 keepseam worker-service run --config /etc/keepseam/worker.json
 keepseam worker-service status --config /etc/keepseam/worker.json
 keepseam worker-service stop --config /etc/keepseam/worker.json</pre>
-<p>Quitar perfil sin registros; al menos uno es obligatorio. Config JSON ≤ 64 KiB, campos desconocidos rechazados, rutas locales absolutas, sin credenciales inline/hooks. Cada intervalo es 1.000–3.600.000 ms y cuenta desde operación completada. Config se lee una vez; cambiarla exige restart. Cloud opcional usa archivo privado, estado separado e IDs consentidos.</p>
+<p>Quitar perfil sin registros; al menos uno es obligatorio. JSON ≤ 64 KiB, campos cerrados, rutas absolutas, sin credenciales/hooks. Intervalos 1.000–3.600.000 ms desde operación completada; cambiar config exige restart. Cloud: archivo privado, estado separado e IDs consentidos. <code>models</code> opcional exige permiso <code>verify --startup-checks</code> (pág. 5).</p>
 <p>Observer serializa sus perfiles; Cloud tiene un bucle serial independiente para que un batch lento no retenga heartbeat. Cadencia Cloud normal ≤ 60 s; fallos hacen backoff acotado. Rechazo de autorización suspende sync hasta reparación/restart sin detener observación. Un heartbeat reciente no vuelve fresca la evidencia histórica.</p>
 <p>SQLite de servicio mantiene un lock exclusivo durante el proceso; crash lo libera. Status es snapshot durable, no prueba que PID siga vivo; consultar manager. Stop se liga al runId aleatorio, cancela HTTP y drena operaciones; un marker viejo no detiene el reemplazo. Manager permite 180 s antes de forzar cierre, no es watchdog de un proceso colgado.</p>
 <h2>systemd system</h2>
@@ -434,6 +438,7 @@ pnpm dev:model-review RUTA_RUN --answers REVISION.json
 node --test dev/model-evaluation/classification.test.mjs
 node --test dev/model-evaluation/semantic-review.test.mjs</pre>
 <p>La revisión separada vincula evaluación/propuesta exactas y todas las respuestas semánticas. Sin ellas: <code>awaiting-semantic-review</code>, sin ejecución. No sustituye recetas rechazadas. Baseline debe fallar y candidato pasar los mismos tests inalterados en copias aisladas; esto no autoriza consumidor live ni publicación, ni establece éxito general de un modelo real.</p>
+<p><code>pnpm dev:model-codex</code> usa la sesión existente de Codex, fixtures fijas y un SDK instalado sin red. Requiere <code>KEEPSEAM_CODEX_EXECUTABLE</code> absoluto y <code>KEEPSEAM_CODEX_MODEL</code> verificado. Una generación/caso, 120 s, herramientas desactivadas; misma revisión posterior. No acredita adaptadores BYOK ni capacidades del worker instalado.</p>
 <footer><span>Keepseam Client · inferencia controlada y revisión</span><span>15 / 19</span></footer>
 </section>
 
@@ -444,10 +449,17 @@ node --test dev/model-evaluation/semantic-review.test.mjs</pre>
 <pre>docker pull eclipse-temurin@sha256:51ae87bbb1949c1afdff51f6a3e6c5f283d84a4bd68512c9657fdc6605026a49
 docker pull python@sha256:f040863673aea2570c3ff6a5c3fb4c673a016cbc5375005ad145915922b6b78a
 pnpm dev:polyglot /absolute/work/keepseam-polyglot-unique</pre>
-<p>Linux x64; Python host 3.13 compatible para el laboratorio y salida nueva fuera del checkout. El paquete instalado captura source y tests, compara contratos, registra jobs y valida recetas manuales mediante SDK público: aprobación → cola → baseline falla → candidato pasa. Source live intacto, tests idénticos y cleanup verificado. Proveedor ficticio con sockets reales; cubre precisión, moneda, unidades, límites, 429/503 y XXE Java.</p>
-<p>Perfiles <code>python313-linux-amd64-v1</code> (Python 3.13.16) y <code>java25-linux-amd64-v1</code> (Temurin 25.0.4.1+1). Python importa cada suite unittest una vez y exige ≥1 caso por archivo; cero casos, funciones pytest o SystemExit durante import no pasan. No ejecuta bloque <code>__main__</code> ni scripts arbitrarios. Java compila sin annotation processors y ejecuta main con <code>-ea</code>. Sin instalaciones ni Maven/Gradle. Seleccionar <code>--source payment_client.py --test test_payment.py</code> o <code>--source PaymentClient.java --test PaymentTest.java</code>; tests autocontenidos para el contrato nuevo.</p>
-<p>El escáner informa <code>unsupported-language</code>, CLI 1 y cobertura a revisar: no deduce llamadas Python/Java. La propuesta acepta roles y edits explícitos; sintaxis foreign se valida en contenedor tras autorización, nunca en preview. Tests <code>test_*.py</code>, <code>*_test.py</code> y <code>*Test.java</code> son evidencia readonly. Hashes incluyen estos archivos; jobs/aprobaciones anteriores a este perfil requieren observación y revisión nuevas. Findings se ordenan por contenido completo para que el mismo contrato conserve identidad de aprobación.</p>
-<p>Las recetas del laboratorio son manuales y no prueban calidad IA. La evaluación real Qwen conserva su resultado parcial y las abstenciones; no se afirma soporte para todos los lenguajes, frameworks o APIs ni aprobación/publicación automática.</p>
+<p>Linux x64, Python host 3.13 y salida nueva fuera del checkout. SDK instalado: captura → job → receta manual → aprobación → cola → baseline falla → candidato pasa. Source intacto, tests idénticos, cleanup verificado. Proveedor ficticio con sockets reales: precisión, moneda, unidades, límites, 429/503 y XXE Java.</p>
+<p>Perfiles conservados: Python 3.13.16/unittest y Temurin 25.0.4.1+1/javac-main. Unittest exige ≥1 caso por archivo, rechaza cero casos/SystemExit y no ejecuta <code>__main__</code>; funciones pytest requieren el perfil siguiente. Java compila sin annotation processors y ejecuta con <code>-ea</code>.</p>
+<h2>Pytest y Maven/JUnit preparados</h2>
+<pre>keepseam runtime prepare pytest --output /private/pytest.json
+keepseam runtime prepare maven-junit --output /private/junit.json
+# Añadir --runtime /private/pytest.json (o junit.json) en:
+# validation-plan/approve/validate; job-plan/approve/queue/review</pre>
+<p>Preparación Linux x64 descarga artefactos oficiales con SHA verificado: pytest 9.1.1/Python 3.13 o Maven 3.9.16/JUnit 6.1.3/Java 25. SDK: <code>prepareValidationRuntime()</code>. Manifiesto liga imageId inmutable, receta y digest de dependencias al consentimiento y recuperación. El código consumidor jamás se ejecuta con red; no se aceptan tags, hooks ni comandos en el manifiesto.</p>
+<p>Pytest desactiva autoload de plugins. Maven admite POM raíz, <code>src/test/java</code> y dependencias preparadas JUnit/compiler/surefire/resources; otros frameworks, dependencias y multimódulo quedan fuera. Tests, conftest, POM y manifiestos Python son inmutables. No ejecutar pip ni descargar dependencias del cliente durante validación.</p>
+<p>El escáner informa <code>unsupported-language</code>/CLI 1: no deduce llamadas Python/Java. La propuesta exige source explícito; sintaxis foreign se valida tras autorización, nunca en preview. Tests <code>test_*.py</code>, <code>*_test.py</code> y <code>*Test.java</code> son readonly y participan en hashes; cambios de perfil requieren observar y aprobar de nuevo.</p>
+<p>Las recetas del laboratorio son manuales: no prueban calidad IA ni soporte para todos los frameworks. La evaluación Qwen conserva su resultado parcial y abstenciones. Pruebas HTTP de proveedores controladas no acreditan inferencia real BYOK.</p>
 <h2>Grabación del terminal</h2>
 <pre>pnpm build
 pnpm engine:setup

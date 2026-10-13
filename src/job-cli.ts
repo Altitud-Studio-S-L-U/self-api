@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { PlumberError } from './errors.js';
 import { loadLocalJson } from './local-file.js';
+import { validateRuntime } from './validation-runtime.js';
 import { confirmLocalRequest, escapeTerminal, jsonLine, renderValidation } from './cli-presentation.js';
 import { approveJobValidation, listJobExecutions, prepareJobValidation, queueJobValidation, recoverApprovedJobs, runApprovedJobsOnce } from './job-validation.js';
 import type { JobExecutionCycle } from './job-validation.js';
@@ -17,7 +18,7 @@ export interface JobCliOptions {
   readonly stderr?: (text: string) => void;
 }
 
-const proposalOptions = ['state', 'engine', 'recipe', 'test'];
+const proposalOptions = ['state', 'engine', 'recipe', 'test', 'runtime'];
 const commands = new Map([
   ['job-plan', new Set([...proposalOptions, 'json'])],
   ['job-approve', new Set(proposalOptions)],
@@ -46,7 +47,7 @@ export async function runJobCli(args: string[], options: JobCliOptions = {}): Pr
     let parsed;
     try {
       parsed = parseArgs({ args, strict: true, allowPositionals: true, tokens: true, options: {
-        state: { type: 'string' }, engine: { type: 'string' }, recipe: { type: 'string' },
+        state: { type: 'string' }, engine: { type: 'string' }, recipe: { type: 'string' }, runtime: { type: 'string' },
         test: { type: 'string', multiple: true }, approval: { type: 'string' },
         once: { type: 'boolean' }, limit: { type: 'string' }, intent: { type: 'string' }, json: { type: 'boolean' },
       } });
@@ -67,7 +68,8 @@ export async function runJobCli(args: string[], options: JobCliOptions = {}): Pr
       const { engine: enginePath, recipe: recipePath, test: testPaths } = parsed.values;
       if (!jobId?.trim() || !enginePath?.trim() || !recipePath?.trim() || !testPaths?.length) invalid();
       const recipe = await loadLocalJson(recipePath, 1024 * 1024);
-      const input = { statePath, jobId, enginePath, recipe, testPaths };
+      const runtime = parsed.values.runtime === undefined ? undefined : validateRuntime(await loadLocalJson(parsed.values.runtime, 16 * 1024));
+      const input = { statePath, jobId, enginePath, recipe, testPaths, ...(runtime ? { runtime } : {}) };
       if (command === 'job-queue') {
         const receiptId = parsed.values.approval;
         if (!receiptId?.trim()) invalid();

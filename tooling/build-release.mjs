@@ -84,6 +84,8 @@ try {
   const options = { cwd: verification, env: verificationEnv, windowsHide: true, timeout: 20_000 };
   const help = await run(installedExecutable, ['--help'], options);
   assert(help.stdout.startsWith('Usage:'), 'Extracted executable did not start');
+  const runtimeHelp = await run(installedExecutable, ['runtime', '--help'], options);
+  assert.match(runtimeHelp.stdout, /runtime prepare pytest\|maven-junit/u, 'Extracted executable must expose runtime preparation without Node or the checkout.');
   const compare = revision => ['compare', join(root, 'fixtures', 'orders-v1.json'), join(root, 'fixtures', revision), '--engine', join(installed, 'engine', asset.binaryName), '--json'];
   const comparison = await run(installedExecutable, compare('orders-v1.json'), options);
   assert.equal(JSON.parse(comparison.stdout).status, 'no-breaking-changes');

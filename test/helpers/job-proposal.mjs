@@ -40,7 +40,7 @@ export async function fixture(t, beforeObserve = async () => {}) {
 
 /** Real local HTTP transport with deterministic output; this server is not an inference model. */
 export async function controlledModel(t, recipe, onRequest = () => {}) {
-  const calls = [];
+  const calls = [], checks = [];
   const server = createServer(async (request, response) => {
     try {
       assert.equal(request.method, 'POST');
@@ -49,6 +49,12 @@ export async function controlledModel(t, recipe, onRequest = () => {}) {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const payload = JSON.parse(Buffer.concat(chunks));
+      if (payload.response_format?.json_schema?.name === 'keepseam_connection') {
+        checks.push(payload);
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"keepseam":"ok"}' } }] }));
+        return;
+      }
       calls.push(payload);
       await onRequest(payload);
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -57,8 +63,9 @@ export async function controlledModel(t, recipe, onRequest = () => {}) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
+  const endpoint = `http://127.0.0.1:${server.address().port}/v1/chat/completions`;
   const adapter = createHttpModelAdapter({ provider: 'local-openai-compatible', model: 'deterministic-fixture', policyId: 'fixture-v1',
-    maximumOutputTokens: 2048, endpoint: `http://127.0.0.1:${server.address().port}/v1/chat/completions` });
+    maximumOutputTokens: 2048, endpoint });
   const { propose: _propose, ...adapterIdentity } = adapter;
-  return { calls, adapter, identity: adapterIdentity };
+  return { calls, checks, endpoint, adapter, identity: adapterIdentity };
 }

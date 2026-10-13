@@ -6,6 +6,10 @@ import { WorkerLicenseStore, normalizeWorkerLicenseTrust, WORKER_CONTROL_INTERVA
 import { syncWorkerToCloud } from './cloud-sync.js';
 import { PlumberError } from './errors.js';
 import { loadLocalJson } from './local-file.js';
+import { ModelConnections } from './model-connections.js';
+import { ModelConnectionStore } from './model-connections-store.js';
+import type { probeHttpModelConnection } from './model-http-adapter.js';
+import { ModelConnectionError } from './model-failure.js';
 import { listSourceSubscriptions, observeSourcesOnce } from './source-observer.js';
 import { listLocalSubscriptions, observeOnce, type ObservationCycle } from './worker.js';
 import { normalizeWorkerServiceConfig, servicePath, type WorkerServiceConfig } from './worker-service-config.js';
@@ -23,14 +27,16 @@ export interface WorkerServiceStatus {
   readonly cloud: 'disabled' | 'pending' | 'synced' | 'unavailable' | 'reconnect-required';
   readonly automation: 'active' | 'draining' | 'paused';
   readonly licenseReason: 'allowed' | 'missing' | 'expired' | 'suspended' | 'revoked' | 'invalid' | 'clock-rollback';
+  readonly models?: 'pending' | 'unverified' | 'healthy' | 'degraded' | 'requires-reconfiguration';
 }
 
 export interface WorkerServiceDependencies {
-  /** Only trusted in-process adapters. JSON configuration cannot choose code, models or execution commands. */
+  /** Only trusted in-process adapters. JSON configuration cannot choose executable code or commands. */
   readonly observe?: typeof observeOnce;
   readonly observeSources?: typeof observeSourcesOnce;
   readonly sync?: typeof syncWorkerToCloud;
   readonly control?: WorkerControlTransport;
+  readonly probeModel?: typeof probeHttpModelConnection;
   /** A trusted scheduler seam; the default is a cancellable Node timer. */
   readonly wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }
@@ -96,7 +102,7 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
   let monitor: NodeJS.Timeout | undefined;
   let status: WorkerServiceStatus = { schemaVersion: 1, runId: lock.runId, pid: process.pid, state: 'starting',
     updatedAt: new Date().toISOString(), cycles: 0, observation: 'pending', cloud: config.cloud ? 'pending' : 'disabled',
-    automation: 'paused', licenseReason: 'missing' };
+    automation: 'paused', licenseReason: 'missing', ...(config.models ? { models: 'pending' } : {}) };
   const update = (changes: Partial<WorkerServiceStatus>): void => {
     status = { ...status, ...changes, updatedAt: new Date().toISOString() };
     writeServiceSnapshot(lock.directory, serviceFiles.status, status);
@@ -186,7 +192,40 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
     const refresh = (cycle = false): void => {
       const degraded = phases.some(phase => phase.failures > 0);
       update({ cycles: status.cycles + (cycle ? 1 : 0), observation: cycle ? degraded ? 'degraded' : 'healthy' : status.observation,
-        state: degraded || ['unavailable', 'reconnect-required'].includes(status.cloud) ? 'degraded' : 'running' });
+        state: degraded || status.models === 'degraded' || status.models === 'requires-reconfiguration' || ['unavailable', 'reconnect-required'].includes(status.cloud) ? 'degraded' : 'running' });
+    };
+    const checkConfiguredModels = async (): Promise<void> => {
+      if (!config.models) return;
+      let store: ModelConnectionStore | undefined;
+      let connections: ModelConnections | undefined;
+      try {
+        checkServicePath(config.models.configPath, 'config'); checkWindowsServiceAcl(config.models.configPath, false);
+        const value = await loadLocalJson(config.models.configPath, 16_384);
+        store = await ModelConnectionStore.open(lock.directory);
+        connections = new ModelConnections(value, { persistence: store,
+          ...(options.dependencies?.probeModel ? { probe: options.dependencies.probeModel } : {}) });
+        if (!store.permitsStartupProbe(connections.configurationDigest)) { update({ models: 'unverified' }); return; }
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(connections.configuration.limits.timeoutMs)]);
+        let checks = 0;
+        for (const id of connections.selectedIds()) {
+          if (connections.state(id).status === 'requires-reconfiguration') continue;
+          checks++;
+          try { await connections.verify(id, signal); }
+          catch (error) { if (!(error instanceof ModelConnectionError) || error.kind === 'cancelled' || error.kind === 'invalid-response') throw error; }
+        }
+        const states = connections.selectedIds().map(id => connections!.state(id));
+        const healthy = states.filter(value => value.status === 'healthy').length;
+        const state = healthy === states.length ? 'healthy' : healthy > 0 ? 'degraded'
+          : states.some(value => value.status === 'requires-reconfiguration') ? 'requires-reconfiguration' : 'degraded';
+        update({ models: state });
+        log('model-connections', { state, checks, privateCodeSent: false });
+      } catch {
+        if (!controller.signal.aborted) {
+          const blocked = connections?.states().some(value => value.status === 'requires-reconfiguration');
+          update({ models: blocked ? 'requires-reconfiguration' : 'degraded' });
+          log('model-connections', { state: 'unavailable', privateCodeSent: false });
+        }
+      } finally { store?.close(); if (!controller.signal.aborted) refresh(); }
     };
     const synchronize = async (): Promise<void> => {
       let cloudFailures = 0;
@@ -254,7 +293,7 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
     // Cloud contact has its own serial loop: a slow observation cannot withhold
     // a fresh heartbeat, and no two sync calls share ownership concurrently.
     let failure: unknown;
-    await Promise.all([controlLoop(), observe(), ...(config.cloud ? [synchronize()] : [])].map(async task => {
+    await Promise.all([controlLoop(), observe(), ...(config.models ? [checkConfiguredModels()] : []), ...(config.cloud ? [synchronize()] : [])].map(async task => {
       try { await task; } catch (error) { failure ??= error; abort(); }
     }));
     if (failure !== undefined) throw failure;

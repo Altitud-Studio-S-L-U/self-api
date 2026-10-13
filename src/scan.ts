@@ -19,6 +19,7 @@ export function scanCapturedConsumer(captured: ConsumerCapture): ConsumerInvento
   const packages: ConsumerInventory['packages'][number][] = [];
   const validationCandidates: ConsumerInventory['validationCandidates'][number][] = [];
   for (const manifest of captured.manifests) {
+    if (!/(?:^|\/)package\.json$/u.test(manifest.path)) continue;
     let data: unknown;
     try { data = JSON.parse(manifest.text); }
     catch { throw new PlumberError('INVALID_INPUT', 'A captured package manifest is not valid JSON.'); }

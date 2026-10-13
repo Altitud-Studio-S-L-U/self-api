@@ -9,6 +9,8 @@ import type { ImpactReport } from './impact.js';
 import type { ConsumerInventory } from './consumer-contracts.js';
 import { createMigrationPlan } from './migration-plan.js';
 import { loadLocalJson } from './local-file.js';
+import { validateRuntime } from './validation-runtime.js';
+import { prepareValidationRuntime } from './validation-runtime-prepare.js';
 import { prepareMigrationValidation, approveMigrationValidation, executeMigrationValidation } from './migration-validation.js';
 import { runWorkerCli } from './worker-cli.js';
 import { escapeTerminal, jsonLine, renderPlan, renderValidation, confirmLocalRequest } from './cli-presentation.js';
@@ -22,6 +24,7 @@ import { runDependencyCli } from './dependency-cli.js';
 import { runPublicationCommandCli } from './publication-command-cli.js';
 import { runClientUpdateCli } from './client-update-cli.js';
 import { runJobProposalCli } from './job-proposal-cli.js';
+import { runModelConnectionsCli } from './model-connections-cli.js';
 
 interface CliOptions {
   readonly compare?: typeof compareOpenApi;
@@ -31,12 +34,14 @@ interface CliOptions {
   readonly prepareValidation?: typeof prepareMigrationValidation;
   readonly approveValidation?: typeof approveMigrationValidation;
   readonly executeValidation?: typeof executeMigrationValidation;
+  readonly prepareRuntime?: typeof prepareValidationRuntime;
   readonly confirm?: (requestId: string) => Promise<boolean>;
   readonly stdout?: (text: string) => void;
   readonly stderr?: (text: string) => void;
 }
 
 const help = `Usage: keepseam compare <base.json> <revision.json> --engine <path> [--json]
+       keepseam runtime prepare pytest|maven-junit --output <new-manifest.json>
        keepseam mcp-compare <base.json> <revision.json> [--json]
        keepseam mcp-impact <base.json> <revision.json> --consumer <directory> [--bindings <local-json>] [--json]
        keepseam mcp-snapshot <catalog.json> [--json]
@@ -65,9 +70,10 @@ const help = `Usage: keepseam compare <base.json> <revision.json> --engine <path
        keepseam worker-service render --config <absolute-json> --target systemd|launchd|windows --node <absolute-path> --cli <absolute-path> [--scope system|user] [--user <unix-account>] [--name <service-name>]
        keepseam subscriptions --state <directory> [--json]
        keepseam jobs --state <directory> [--json]
+       keepseam model-connections status|verify --state <private-directory> --model <connections.json> [--connection <id>] [--allow-remote] [--startup-checks]
        keepseam job-proposal-plan <job-id> --state <directory> --engine <path> --model <local-config.json> --test <file> [--source <file>] [--evidence <local-file>] [--timeout-ms <1000-120000>]
        keepseam job-propose <job-id> --state <directory> --engine <path> --model <local-config.json> --test <file> [--source <file>] [--evidence <local-file>] [--timeout-ms <1000-120000>] [--allow-remote] [--output <name.json>]
-       keepseam job-review --state <directory> --engine <path> --proposal <local-json> --answers <local-json> [--output <name.json>] [--json]
+       keepseam job-review --state <directory> --engine <path> --proposal <local-json> --answers <local-json> [--runtime <manifest.json>] [--output <name.json>] [--json]
        keepseam job-plan <job-id> --state <directory> --engine <path> --recipe <path> --test <file> [--json]
        keepseam job-approve <job-id> --state <directory> --engine <path> --recipe <path> --test <file>
        keepseam job-queue <job-id> --state <directory> --engine <path> --recipe <path> --test <file> --approval <receipt-id> [--json]
@@ -88,6 +94,7 @@ Options:
   --provider-base-url <url>  Explicit HTTP(S) provider origin and optional base path.
   --recipe <path>  Explicit local migration decisions and exact edits.
   --test <path>    Captured JS/TS, Python or Java test entrypoint; one runtime per request.
+  --runtime <file> Prepared immutable pytest or Maven/JUnit runtime manifest (validation commands).
   --state <path>   Private local state outside the consumer checkout.
   --approval <id>  Single-use approval from an explicit approve action.
   --json           Write the comparison report as JSON to stdout.
@@ -108,7 +115,8 @@ validate runs approved tests against isolated copies using the fixed Linux x64 D
 validate exits 0 only when both baseline and candidate pass, 1 for completed failures/improvement,
 or 2 for invalid authorization/unavailable execution. It never changes the live consumer or publishes.
 job-approve requires the same explicit terminal review; job-queue only persists existing authorization.
-job-propose confirms one exact model request in an interactive terminal; remote disclosure also needs --allow-remote.
+  job-propose confirms exact destinations and limits; manual is default, Auto permits one approved fallback. Remote disclosure also needs --allow-remote.
+  model-connections verify performs a bounded synthetic inference; --startup-checks separately authorizes checks after restart, never idle polling.
 job-review records explicit answers bound to the saved proposal digest; it neither approves tests nor publishes.
 run-approved defaults to one queued intent and never retries an interrupted attempt.
 recover-approved reconciles expired/interrupted intents; it cannot execute tests or grant approval.
@@ -181,12 +189,30 @@ function renderImpact(report: ImpactReport): string {
 }
 
 export async function runCli(args: string[], options: CliOptions = {}): Promise<number> {
+  if (args[0] === 'runtime') {
+    const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
+    const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });
+    const usage = 'Usage: keepseam runtime prepare pytest|maven-junit --output <new-manifest.json>\nPreparation downloads verified official dependencies; validation executes offline. Linux x64 and local Docker required.\n';
+    if (args.length === 2 && args[1] === '--help') { stdout(usage); return 0; }
+    const [, command, kind, flag, output] = args;
+    if (args.length !== 5 || command !== 'prepare' || (kind !== 'pytest' && kind !== 'maven-junit') || flag !== '--output' || !output?.trim()) {
+      stderr(usage); return 2;
+    }
+    try { stdout(jsonLine(await (options.prepareRuntime ?? prepareValidationRuntime)(kind, output))); return 0; }
+    catch (error) {
+      stderr(jsonLine({ error: { code: 'INVALID_INPUT', message: error instanceof Error ? error.message.slice(0, 1200) : 'Could not prepare the isolated runtime.' } }));
+      return 2;
+    }
+  }
   if (args.includes('--help') || args.includes('-h')) {
     (options.stdout ?? ((text: string) => { process.stdout.write(text); }))(help);
     return 0;
   }
   if (args[0] === 'client-update') {
     return runClientUpdateCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
+  }
+  if (args[0] === 'model-connections') {
+    return runModelConnectionsCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}), ...(options.confirm ? { confirm: options.confirm } : {}) });
   }
   if (['job-proposal-plan', 'job-propose', 'job-review'].includes(args[0] ?? '')) {
     return runJobProposalCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}), ...(options.confirm ? { confirm: options.confirm } : {}) });
@@ -232,6 +258,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         'provider-base-url': { type: 'string' },
         recipe: { type: 'string' },
         test: { type: 'string', multiple: true },
+        runtime: { type: 'string' },
         state: { type: 'string' },
         approval: { type: 'string' },
         json: { type: 'boolean' },
@@ -260,7 +287,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const statePath = parsed.values.state;
   const receiptId = parsed.values.approval;
   const isValidation = command === 'validation-plan' || command === 'approve' || command === 'validate';
-  const validationOnlyOptions = testPaths || statePath || receiptId;
+  const validationOnlyOptions = testPaths || statePath || receiptId || parsed.values.runtime;
   const validCompare = command === 'compare' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && !consumerRoot && !providerBaseUrl && !recipePath;
   const validScan = command === 'scan' && parsed.positionals.length === 2 && basePath && !enginePath && !consumerRoot && !providerBaseUrl && !recipePath;
   const validImpact = command === 'impact' && parsed.positionals.length === 3 && basePath && revisionPath && enginePath && consumerRoot && providerBaseUrl && !recipePath;
@@ -279,7 +306,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   try {
     if (validValidation) {
       const recipe = await loadLocalJson(recipePath!, 1024 * 1024);
-      const validationOptions = { basePath: basePath!, revisionPath: revisionPath!, enginePath: enginePath!, consumerRoot: consumerRoot!, providerBaseUrl: providerBaseUrl!, recipe, testPaths: testPaths! };
+      const runtime = parsed.values.runtime === undefined ? undefined : validateRuntime(await loadLocalJson(parsed.values.runtime, 16 * 1024));
+      const validationOptions = { basePath: basePath!, revisionPath: revisionPath!, enginePath: enginePath!, consumerRoot: consumerRoot!, providerBaseUrl: providerBaseUrl!, recipe, testPaths: testPaths!, ...(runtime ? { runtime } : {}) };
       if (command === 'validate') {
         const result = await (options.executeValidation ?? executeMigrationValidation)({ options: validationOptions, statePath: statePath!, receiptId: receiptId! });
         stdout(parsed.values.json ? jsonLine(result)

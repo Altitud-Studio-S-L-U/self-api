@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isProxy } from 'node:util/types';
 import { isCapturedConsumerPath, isConsumerTestPath } from './consumer-files.js';
 import { PlumberError } from './errors.js';
+import { ModelConnectionError } from './model-failure.js';
 import { previewRecipe, serializeMigrationRecipe } from './migration-recipe.js';
 import type { MigrationRecipe, RecipePreview } from './migration-recipe.js';
 
@@ -105,6 +106,9 @@ const SEMANTIC_DECISION = Object.freeze({
 });
 const requests = new WeakMap<ModelProposalRequest, { readonly sensitiveValues: readonly string[] }>();
 const consents = new WeakMap<ModelProposalConsent, { readonly request: ModelProposalRequest; used: boolean }>();
+
+/** Internal orchestration guard: serialized plans cannot authorize even a synthetic provider call. */
+export function isPreparedModelProposal(request: ModelProposalRequest): boolean { return requests.has(request); }
 
 function invalid(message: string): never {
   throw new PlumberError('INVALID_INPUT', message);
@@ -360,8 +364,9 @@ export async function proposeMigrationWithModel(options: {
       }),
     ]);
     checkDeadline();
-  } catch {
+  } catch (error) {
     // Adapter errors may contain prompts, credentials or provider response bodies.
+    if (error instanceof ModelConnectionError) throw new ModelConnectionError(error.kind, 'INVALID_INPUT');
     invalid('The model proposal failed, was cancelled, or exceeded its deadline; no proposal was accepted.');
   } finally {
     if (timer !== undefined) clearTimeout(timer);

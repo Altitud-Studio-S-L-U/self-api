@@ -23,6 +23,7 @@ export interface JobProposalOptions {
   readonly requiredDecisions?: PrepareModelProposalOptions['requiredDecisions'];
   readonly sensitiveValues?: PrepareModelProposalOptions['sensitiveValues'];
   readonly limits?: PrepareModelProposalOptions['limits'];
+  readonly signal?: AbortSignal;
 }
 
 export interface JobProposalBinding {
@@ -85,6 +86,9 @@ function selectedPaths(value: readonly string[] | undefined, maximum: number): r
 
 /** Capture and recompute evidence locally. Stored reports are never instructions or an authority for selecting files. */
 export async function prepareJobProposal(options: JobProposalOptions): Promise<JobProposalRequest> {
+  if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) invalid('Job proposal cancellation requires an AbortSignal.');
+  const checkCancellation = (): void => { if (options.signal?.aborted) invalid('Job proposal was cancelled or exceeded its global deadline.'); };
+  checkCancellation();
   const sourcePaths = selectedPaths(options.sourcePaths, 50);
   const testPaths = selectedPaths(options.testPaths, 20) ?? Object.freeze([]);
   if (typeof options.jobId !== 'string' || !/^[a-f0-9]{64}$/u.test(options.jobId)) invalid('Select a canonical observed job ID.');
@@ -112,9 +116,10 @@ export async function prepareJobProposal(options: JobProposalOptions): Promise<J
     };
     await sourceIsFresh();
     const captured = await captureConsumer(subscription.consumerRoot);
+    checkCancellation();
     if (captured.digest !== job.consumerDigest || hash(baseline.bytes) !== job.baselineSha || hash(revision.bytes) !== job.revisionSha) stale();
     const comparison = await withContractCopies(store.statePath, baseline.bytes, revision.bytes,
-      paths => compareOpenApi({ ...paths, enginePath: input.enginePath }));
+      paths => compareOpenApi({ ...paths, enginePath: input.enginePath, ...(options.signal ? { signal: options.signal } : {}) }));
     if (comparison.engine.version !== job.engineVersion || comparison.base.sha256 !== job.baselineSha
       || comparison.revision.sha256 !== job.revisionSha
       || hash(JSON.stringify([subscription.id, job.baselineSha, job.revisionSha, captured.digest, comparison.engine.version])) !== job.id) stale();
@@ -157,6 +162,7 @@ export async function prepareJobProposal(options: JobProposalOptions): Promise<J
     });
     await sourceIsFresh();
     if ((await captureConsumer(subscription.consumerRoot)).digest !== captured.digest) stale();
+    checkCancellation();
     const selectedTests = Object.freeze([...testPaths]);
     const id = hash(JSON.stringify({ binding, modelRequestId: modelRequest.id, testPaths: selectedTests, discovery }));
     const request: JobProposalRequest = Object.freeze({ schemaVersion: 1, id, binding, modelRequest, testPaths: selectedTests, discovery,
@@ -177,12 +183,13 @@ export async function proposeJobMigration(options: {
   const { request } = options;
   const input = prepared.get(request);
   if (!input || options.expectedRequestId !== request.id) invalid('Inspect and confirm the exact locally prepared job proposal first.');
-  const current = await prepareJobProposal(input);
+  if (options.signal?.aborted) invalid('Job proposal was cancelled before checking current evidence.');
+  const current = await prepareJobProposal({ ...input, ...(options.signal ? { signal: options.signal } : {}) });
   if (current.id !== request.id) stale();
   const proposal = await proposeMigrationWithModel({ request: request.modelRequest, consent: options.consent, adapter: options.adapter,
     ...(options.signal ? { signal: options.signal } : {}) });
   // The model may have taken minutes. Its answer cannot authorize edits to a checkout that changed while it was thinking.
-  const after = await prepareJobProposal(input);
+  const after = await prepareJobProposal({ ...input, ...(options.signal ? { signal: options.signal } : {}) });
   if (after.id !== request.id) stale();
   return { ...proposal, requestId: request.id, modelRequestId: proposal.requestId, binding: request.binding, testPaths: request.testPaths };
 }

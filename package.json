@@ -27,7 +27,8 @@
     "keepseam": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "tooling/prepare-validation-runtime.mjs"
   ],
   "scripts": {
     "docs:build": "node tooling/build-docs.mjs --playwright-root ../keepseam-cloud",
@@ -40,9 +41,11 @@
     "dev:apis": "node dev/real-apis/cli.mjs",
     "dev:polyglot": "node dev/polyglot/run.mjs",
     "dev:model-evaluation": "node dev/model-evaluation/run.mjs",
+    "dev:model-codex": "node dev/model-evaluation/codex.mjs",
     "dev:model-review": "node dev/model-evaluation/review.mjs",
     "dev:check": "node tooling/development.mjs check",
     "engine:setup": "node tooling/setup-oasdiff.mjs",
+    "runtime:prepare": "node tooling/prepare-validation-runtime.mjs",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test test/*.test.mjs",
