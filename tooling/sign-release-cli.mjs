@@ -5,6 +5,7 @@ import {isAbsolute,join,dirname,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {buildSignedRelease} from './sign-release.mjs';
 import {writeReleaseDelivery} from './release-delivery.mjs';
+import {releaseRepositoryFiles} from './release-repository.mjs';
 import {checkServicePath,checkWindowsServiceAcl} from '../dist/worker-service-state.js';
 import {checkWindowsPermissions} from '../dist/windows-permissions.js';
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -36,14 +37,15 @@ export function loadReleaseRoleKeys(input,requiredRoles=['targets','snapshot','t
 
 export async function writeSignedRelease(signed,outputParent,{prefix='signed',nativeReceipts=[]}={}) {
   if(!['signed','refreshed'].includes(prefix))throw new Error('Invalid signed release output kind.');
+  const repositoryFiles=releaseRepositoryFiles(signed);
   await mkdir(outputParent,{recursive:true,mode:0o700});
   const directory=join(outputParent,`${prefix}-${signed.manifest.version}-${randomUUID()}`);await mkdir(directory,{mode:0o700});checkWindowsPermissions([directory],true,directory);
-  for(const [name,bytes] of new Map([['metadata/root.json',signed.root],...Array.from(signed.metadata,([name,bytes])=>[`metadata/${name}`,bytes]),...Array.from(signed.targets,([name,bytes])=>[`targets/${name}`,bytes]),['import-bundle.json',Buffer.from(JSON.stringify(signed.importBundle))]])) {
+  for(const [name,bytes] of new Map([['metadata/root.json',signed.root],...Array.from(signed.metadata,([name,bytes])=>[`metadata/${name}`,bytes]),...Array.from(signed.targets,([name,bytes])=>[`targets/${name}`,bytes]),...Array.from(repositoryFiles,([name,bytes])=>[`repository/${name}`,bytes]),['import-bundle.json',Buffer.from(JSON.stringify(signed.importBundle))]])) {
     const target=join(directory,name);await mkdir(dirname(target),{recursive:true,mode:0o700});await writeFile(target,bytes,{flag:'wx',mode:0o600});
   }
   const deliveryDirectory=join(directory,'delivery');
   await writeReleaseDelivery(signed,deliveryDirectory,{nativeReceipts});
-  return{directory,deliveryDirectory,version:signed.manifest.version,sequence:signed.manifest.sequence,publicationEligible:signed.manifest.publicationEligible,
+  return{directory,deliveryDirectory,repositoryDirectory:join(directory,'repository'),version:signed.manifest.version,sequence:signed.manifest.sequence,publicationEligible:signed.manifest.publicationEligible,
     manifestSha256:hash(signed.targets.get('release-manifest.json')),
     metadataVersions:Object.fromEntries([...signed.metadata].map(([name,bytes])=>[name.replace('.json',''),JSON.parse(bytes.toString()).signed.version]))};
 }

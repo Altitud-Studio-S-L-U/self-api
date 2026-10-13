@@ -11,6 +11,7 @@ import { ReleaseFetcher, releaseBaseUrl } from '../dist/client-update-fetcher.js
 import { runClientUpdateCli } from '../dist/client-update-cli.js';
 import { buildSignedRelease } from '../tooling/sign-release.mjs';
 import { refreshSignedRelease } from '../tooling/refresh-release.mjs';
+import { releaseRepositoryFiles } from '../tooling/release-repository.mjs';
 
 const base = resolve('work/test-client-updates');
 let parent;
@@ -27,6 +28,7 @@ const expires = '2099-01-01T00:00:00Z';
 const envelope = signed => Buffer.from(JSON.stringify({ signed, signatures: [{ keyid, sig: sign(null, Buffer.from(canonical(signed)), privateKey).toString('hex') }] }));
 const root = envelope({ _type: 'root', spec_version: '1.0.31', version: 1, expires, consistent_snapshot: false,
   keys: { [keyid]: key }, roles: Object.fromEntries(['root', 'timestamp', 'snapshot', 'targets'].map(role => [role, { keyids: [keyid], threshold: 1 }])) });
+const consistentRoot = envelope({ ...JSON.parse(root).signed, consistent_snapshot: true });
 const descriptor = (bytes, version) => ({ ...(version ? { version } : {}), length: bytes.length, hashes: { sha256: sha(bytes) } });
 
 // Ephemeral Ed25519 keys and inert bytes exercise the real TUF verifier. These
@@ -74,16 +76,16 @@ after(async () => {
   assert.equal(dirname(actual), await realpath(base)); assert.ok(basename(actual).startsWith('run-'));
   await rm(actual, { recursive: true, force: true });
 });
-async function fixture(t) {
+async function fixture(t, rootBytes = root) {
   const directory = await mkdtemp(join(await realpath(parent), 'update-'));
   const statePath = join(directory, 'state'); await mkdir(statePath, { mode: 0o700 });
-  const rootPath = join(directory, 'root.json'); await writeFile(rootPath, root, { mode: 0o600 });
+  const rootPath = join(directory, 'root.json'); await writeFile(rootPath, rootBytes, { mode: 0o600 });
   t.after(async () => {
     const actual = await realpath(directory);
     assert.equal(dirname(actual), await realpath(parent)); assert.ok(basename(actual).startsWith('update-'));
     await rm(actual, { recursive: true, force: true });
   });
-  return { directory, statePath, currentVersion: '0.1.0', repository: { metadataUrl, targetsUrl, rootPath, rootSha256: sha(root) } };
+  return { directory, statePath, currentVersion: '0.1.0', repository: { metadataUrl, targetsUrl, rootPath, rootSha256: sha(rootBytes) } };
 }
 const options = ({ directory: _directory, ...value }) => value;
 const reason = expected => error => error instanceof ClientUpdateError && error.reason === expected && !/private-fixture/u.test(error.message);
@@ -178,6 +180,75 @@ test('the installed version is up to date and never downloads an unnecessary pac
   const item = await fixture(t), connection = transport(repository({ version: '0.1.0' }));
   assert.equal((await stageClientUpdate(options(item), dependencies(connection))).state, 'up-to-date');
   assert.equal(connection.calls.filter(url => url.endsWith('.tgz')).length, 0);
+});
+
+function consistentRelease({ version = '0.2.0', sequence = 1, now = Date.now() } = {}) {
+  return buildSignedRelease({ rootBytes: consistentRoot, rootSha256: sha(consistentRoot),
+    roleKeys: Object.fromEntries(['targets', 'snapshot', 'timestamp'].map(role => [role, [{ keyid, key: privateKey }]])),
+    version, sequence, sourceRevision: 'a'.repeat(40), now,
+    notes: { es: 'Fixture sintética', en: 'Synthetic fixture' }, requirements: { es: 'Node 24.21', en: 'Node 24.21' },
+    artifacts: [{ os: 'any', arch: 'any', fileName: `keepseam-client-${version}.tgz`, bytes: Buffer.from(`Inert reviewed SDK ${version}`) }],
+    documentation: Buffer.from('%PDF-1.7 Inert reviewed documentation') });
+}
+const repositoryUrls = release => new Map([...releaseRepositoryFiles(release)].map(([path, bytes]) => [`https://releases.example.test/${path}`, bytes]));
+
+test('public SDK follows consistent transport names and stages exact bytes while the repository advances', async t => {
+  const item = await fixture(t, consistentRoot), previous = consistentRelease(), next = consistentRelease({ version: '0.3.0', sequence: 2 });
+  // Both immutable generations are retained while the mutable timestamp moves.
+  const files = new Map([...repositoryUrls(previous), ...repositoryUrls(next)]);
+  files.set(`${metadataUrl}timestamp.json`, previous.metadata.get('timestamp.json'));
+  const connection = transport({ files }, { response: (url, bytes) => {
+    if (url === `${metadataUrl}timestamp.json`) files.set(url, next.metadata.get('timestamp.json'));
+    return { body: bytes ?? Buffer.alloc(0), statusCode: bytes ? 200 : 404 };
+  } });
+  const staged = await stageClientUpdate(options(item), dependencies(connection));
+  assert.equal(staged.state, 'downloaded-awaiting-approval'); assert.equal(staged.installation, 'not-authorized');
+  assert.equal(staged.release.version, '0.2.0');
+  assert.deepEqual(await readFile(staged.artifactPath), previous.targets.get(previous.manifest.artifacts[0].target));
+  assert.ok(connection.calls.includes(`${metadataUrl}1.snapshot.json`));
+  assert.ok(connection.calls.includes(`${metadataUrl}1.targets.json`));
+  assert.ok(connection.calls.some(url => /\/[a-f0-9]{64}\.stable\.json$/u.test(url)));
+  assert.ok(connection.calls.some(url => /\/[a-f0-9]{64}\.keepseam-client-0\.2\.0\.tgz$/u.test(url)));
+  assert.equal(connection.calls.some(url => /metadata\/(?:root|snapshot|targets)\.json$/u.test(url)), false);
+  const updated = await checkClientUpdate(options(item), dependencies(connection));
+  assert.equal(updated.release.version, '0.3.0'); assert.equal(updated.installation, 'not-authorized');
+});
+
+for (const target of ['snapshot', 'targets', 'channel', 'artifact']) test(`consistent ${target} from another signed generation is rejected`, async t => {
+  const item = await fixture(t, consistentRoot), previous = consistentRelease(), next = consistentRelease({ version: '0.3.0', sequence: 2 });
+  const files = repositoryUrls(previous), replacements = repositoryUrls(next);
+  const suffix = target === 'snapshot' ? '.snapshot.json' : target === 'targets' ? '.targets.json' : target === 'channel' ? '.stable.json' : '.tgz';
+  const destination = [...files.keys()].find(path => path.endsWith(suffix));
+  const replacement = [...replacements.entries()].find(([path]) => path.endsWith(suffix));
+  assert.ok(destination); assert.ok(replacement); files.set(destination, replacement[1]);
+  await assert.rejects(stageClientUpdate(options(item), dependencies(transport({ files }))), reason('verification-failed'));
+  const status = await readClientUpdateStatus({ statePath: item.statePath });
+  assert.equal(status.installation, 'not-authorized'); assert.equal(status.artifactPath, null);
+  assert.equal((await readdir(item.statePath)).some(name => name.endsWith('.tgz')), false);
+});
+
+test('consistent freshness renewal preserves targets and cached trust while rollback remains blocked', async t => {
+  const item = await fixture(t, consistentRoot), now = Date.now(), oldNow = now - 2 * 3600000;
+  const previous = consistentRelease({ now: oldNow });
+  t.mock.timers.enable({ apis: ['Date'], now: oldNow });
+  try {
+    const original = await checkClientUpdate(options(item), dependencies(transport({ files: repositoryUrls(previous) })));
+    t.mock.timers.setTime(now);
+    await assert.rejects(checkClientUpdate(options(item), dependencies(transport({ files: repositoryUrls(previous) }))), reason('verification-failed'));
+    const next = refreshSignedRelease({ rootBytes: consistentRoot, rootSha256: sha(consistentRoot),
+      previousBundle: previous.importBundle, manifestSha256: sha(previous.importBundle.manifest), targets: previous.targets,
+      roleKeys: { timestamp: [{ keyid, key: privateKey }] }, now });
+    for (const role of ['targets.json', 'snapshot.json']) assert.deepEqual(next.metadata.get(role), previous.metadata.get(role));
+    assert.deepEqual(next.targets, previous.targets); assert.deepEqual(next.root, previous.root);
+    const connection = transport({ files: repositoryUrls(next) });
+    const updated = await stageClientUpdate(options(item), dependencies(connection));
+    assert.deepEqual(updated.release, original.release); assert.equal(updated.installation, 'not-authorized');
+    assert.deepEqual(await readFile(updated.artifactPath), previous.targets.get(previous.manifest.artifacts[0].target));
+    await assert.rejects(checkClientUpdate(options(item), dependencies(transport({ files: repositoryUrls(previous) }))), reason('verification-failed'));
+    const future = consistentRelease({ version: '0.3.0', sequence: 3 });
+    await checkClientUpdate(options(item), dependencies(transport({ files: repositoryUrls(future) })));
+    await assert.rejects(checkClientUpdate(options(item), dependencies(connection)), reason('verification-failed'));
+  } finally { t.mock.timers.reset(); }
 });
 
 test('untrusted bootstrap bytes cannot start HTTP or initialize trusted state', async t => {

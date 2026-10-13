@@ -62,7 +62,7 @@ export function authenticatedReleaseMetadata(root, role, bytes) {
 export function pinnedReleaseRoot(rootBytes, rootSha256, now) {
   requireReleaseValue(Buffer.isBuffer(rootBytes) && rootBytes.length <= 512000 && releaseHash(rootBytes) === rootSha256, 'Pinned TUF root mismatch.');
   const root = JSON.parse(rootBytes.toString('utf8')).signed;
-  requireReleaseValue(root?._type === 'root' && root.consistent_snapshot === false && Date.parse(root.expires) > now, 'Unsupported or expired pinned TUF root.');
+  requireReleaseValue(root?._type === 'root' && typeof root.consistent_snapshot === 'boolean' && Date.parse(root.expires) > now, 'Unsupported or expired pinned TUF root.');
   authenticatedReleaseMetadata(root, 'root', rootBytes);
   return root;
 }
