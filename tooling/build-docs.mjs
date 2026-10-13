@@ -13,7 +13,7 @@ const sourceHash = createHash('sha256').update(source).digest('hex');
 const version=JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).version;
 assert(html.includes(`Keepseam Client ${version}`),'Technical source must identify the current package version.');
 const target = path.join(root, 'docs', 'technical-guide.pdf');
-const pages = 19;
+const pages = 20;
 assert(!/<script\b|<(?:iframe|img|link)\b|@import|url\s*\(/i.test(html), 'Technical source must be self-contained and script-free.');
 const check = (pdf) => {
   const encoded = pdf.toString('latin1');

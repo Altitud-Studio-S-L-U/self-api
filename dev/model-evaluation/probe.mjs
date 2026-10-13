@@ -43,6 +43,7 @@ for (const scenario of cases) {
   const request = prepareModelProposal({ adapter: identity, files, evidence: [{ id: scenario.id, text: scenario.evidence }],
     limits: { maximumInputBytes: 16 * 1024, maximumOutputBytes: 16 * 1024, timeoutMs: 120000 } });
   const consent = approveModelProposal({ request, expectedRequestId: request.id });
+  await writeFile(`${output}/${scenario.id}.input.json`, JSON.stringify(request, null, 2), { flag: 'wx' });
   const started = performance.now();
   let outcome, proposal;
   try {

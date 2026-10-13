@@ -25,6 +25,12 @@ class Provider(BaseHTTPRequestHandler):
             amount = '19.999'
         if case == 'wrong-unit':
             amount = '1999.00'
+        invalid_amounts = {
+            'fraction-sign': '19.+1', 'fraction-space': '19. 1', 'fraction-unicode': '19.\u0661\u0662',
+            'whole-unicode': '\u0661\u0669.99', 'negative': '-19.99', 'exponent': '1e2.00',
+            'leading-zero': '019.99', 'trailing-space': '19.99 ', 'overflow': '10000000000000000.00',
+        }
+        amount = invalid_amounts.get(case, amount)
         currency = 'JPY' if case == 'currency' else 'USD'
         body = {'id': 'p42', 'money': {'value': amount, 'currency': currency}}
         raw = b'x' * 65537 if case == 'oversized' else json.dumps(body).encode()
@@ -57,7 +63,9 @@ def test_unit_corruption_is_detected(provider):
     assert get_payment(provider, 'wrong-unit')['amount_minor'] != 1999
 
 
-@pytest.mark.parametrize('case', ['fraction', 'currency', 'rate', 'outage', 'oversized'])
+@pytest.mark.parametrize('case', ['fraction', 'currency', 'rate', 'outage', 'oversized',
+                                'fraction-sign', 'fraction-space', 'fraction-unicode', 'whole-unicode',
+                                'negative', 'exponent', 'leading-zero', 'trailing-space', 'overflow'])
 def test_invalid_response_is_not_a_payment(provider, case):
     with pytest.raises(Exception):
         get_payment(provider, case)

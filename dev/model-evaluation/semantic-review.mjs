@@ -1,7 +1,19 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { scenarioFiles } from './polyglot-cases.mjs';
 
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
+
+export function reviewRejection({ proposal, proposalBytes, scenario, rejection }) {
+  assert.equal(rejection.scenarioId, scenario.id); assert.equal(rejection.requestId, proposal.requestId);
+  assert.equal(rejection.proposalSha256, sha256(proposalBytes), 'A rejection must bind the exact inference.');
+  assert.equal(typeof rejection.reviewer, 'string'); assert(rejection.reviewer.trim().length > 0 && rejection.reviewer.length <= 200);
+  assert.equal(typeof rejection.reason, 'string'); assert(rejection.reason.trim().length > 0 && rejection.reason.length <= 4096);
+  assert.equal(proposal.authorization, 'not-granted'); assert.equal(proposal.publication, 'not-authorized');
+  return { status: 'rejected', code: 'SEMANTIC_REVIEW_REJECTED', reason: rejection.reason,
+    semanticReview: 'rejected', reviewer: rejection.reviewer, proposalSha256: rejection.proposalSha256,
+    consumerModified: false, consumerExecuted: false, publication: 'not-authorized' };
+}
 
 /** This fixture reviewer records answers; it cannot replace an inference recipe. */
 export function prepareReviewedCandidate({ proposal, proposalBytes, scenario, review, previewRecipe }) {
@@ -27,10 +39,9 @@ export function prepareReviewedCandidate({ proposal, proposalBytes, scenario, re
     assert.equal(answer.question, decision.question, 'Review cannot rewrite a question.');
     return { ...decision, answer: answer.answer };
   }) };
-  const preview = previewRecipe(recipe, [{ path: 'payment.mjs', sha256: sha256(scenario.source), text: scenario.source },
-    { path: 'payment.test.mjs', sha256: sha256(scenario.test), text: scenario.test }]);
+  const preview = previewRecipe(recipe, scenarioFiles(scenario).map(({ path, text }) => ({ path, text, sha256: sha256(text) })));
   assert.equal(preview.requirements.length, 0, 'Unanswered decisions must withhold execution.');
-  assert.equal(preview.files.length, 1); assert.equal(preview.files[0].path, 'payment.mjs');
+  assert.equal(preview.files.length, 1); assert.equal(preview.files[0].path, scenario.sourcePath ?? 'payment.mjs');
   assert.equal(preview.files[0].before, scenario.source); assert.equal(preview.files[0].beforeSha256, sha256(scenario.source));
   return { recipe, preview, candidate: preview.files[0].after };
 }

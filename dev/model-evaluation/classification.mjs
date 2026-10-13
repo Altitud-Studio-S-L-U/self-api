@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 /** Pure report classification; it neither interprets raw model text nor grants semantic review. */
-export function describeProposal(proposal) {
+export function describeProposal(proposal, sourcePath = 'payment.mjs') {
   assert.equal(proposal.authorization, 'not-granted');
   assert.equal(proposal.publication, 'not-authorized');
   assert.equal(proposal.consumerModified, false);
@@ -18,8 +18,8 @@ export function describeProposal(proposal) {
   }
   assert.equal(proposal.status, 'proposal-ready', 'An unrecognized harness outcome cannot become an accepted proposal.');
   assert(proposal.recipe.files.length > 0);
-  assert(proposal.recipe.files.every(file => file.path === 'payment.mjs'));
-  assert(proposal.preview.files.every(file => file.path === 'payment.mjs'));
+  assert(proposal.recipe.files.every(file => file.path === sourcePath));
+  assert(proposal.preview.files.every(file => file.path === sourcePath));
   const pendingDecisions = proposal.preview.requirements.length;
   if (pendingDecisions) assert.equal(proposal.preview.files.length, 0, 'Pending semantic review must withhold executable previews.');
   return { ...common, status: 'accepted-proposal', proposedFiles: proposal.recipe.files.length,
@@ -38,7 +38,11 @@ export function classifyEvaluation(outcome) {
   assert.equal(outcome.tests.length, 2);
   assert.equal(outcome.tests[0].revision, 'baseline');
   assert.equal(outcome.tests[1].revision, 'candidate');
+  assert.match(outcome.tests[0].testSha256, /^[a-f0-9]{64}$/u, 'Baseline evidence must identify immutable tests.');
   assert.equal(outcome.tests[0].testSha256, outcome.tests[1].testSha256, 'Candidate evidence must use the unchanged baseline test.');
+  if (Object.hasOwn(outcome, 'validationStatus') && (outcome.validationStatus !== 'improved'
+    || outcome.tests[0].status !== 'failed' || outcome.tests[1].status !== 'passed'
+    || outcome.tests.some(result => result.cleanup !== 'removed'))) return 'failed-migration';
   return outcome.tests[0].exitCode === 1 && outcome.tests[1].exitCode === 0 ? 'baseline-fails-candidate-passes' : 'failed-migration';
 }
 

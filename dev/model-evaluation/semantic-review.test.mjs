@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { approveModelProposal, prepareModelProposal, proposeMigrationWithModel } from '../../dist/index.js';
 import { previewRecipe } from '../../dist/migration-recipe.js';
 import { cases } from './fixtures.mjs';
-import { prepareReviewedCandidate, sha256 } from './semantic-review.mjs';
+import { prepareReviewedCandidate, reviewRejection, sha256 } from './semantic-review.mjs';
 
 async function fixture() {
   const scenario = cases[0];
@@ -43,4 +43,15 @@ test('review rejects missing decisions, changed questions, stale proposal bindin
   }
   assert.throws(() => prepareReviewedCandidate({ ...value, proposal: { ...value.proposal, status: 'decision-required' } }));
   assert.throws(() => prepareReviewedCandidate({ ...value, scenario: cases[1] }));
+});
+
+test('semantic rejection preserves the model evidence and never grants execution or substitutes a repair', async () => {
+  const value = await fixture(), before = JSON.stringify(value.proposal);
+  const rejection = { scenarioId: value.scenario.id, requestId: value.proposal.requestId,
+    proposalSha256: sha256(value.proposalBytes), reviewer: 'Fixture reviewer', reason: 'The output contradicts the supplied currency format.' };
+  const result = reviewRejection({ ...value, rejection });
+  assert.equal(result.status, 'rejected'); assert.equal(result.consumerExecuted, false);
+  assert.equal(result.publication, 'not-authorized'); assert.equal(JSON.stringify(value.proposal), before);
+  assert.throws(() => reviewRejection({ ...value, rejection: { ...rejection, proposalSha256: '0'.repeat(64) } }));
+  assert.throws(() => reviewRejection({ ...value, rejection: { ...rejection, reason: '' } }));
 });

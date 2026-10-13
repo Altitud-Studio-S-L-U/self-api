@@ -51,7 +51,8 @@
     "test": "pnpm build && node --test test/*.test.mjs",
     "test:package": "node tooling/check-package.mjs",
     "test:isolated": "pnpm build && node --test --test-concurrency=1 integration/*.test.mjs",
-    "check": "pnpm typecheck && pnpm test && pnpm test:package",
+    "check": "pnpm typecheck && pnpm test && pnpm test:model-lab && pnpm test:package",
+    "test:model-lab": "node --test dev/model-evaluation/classification.test.mjs dev/model-evaluation/semantic-review.test.mjs",
     "keepseam": "node ./dist/cli.js"
   },
   "devDependencies": {
