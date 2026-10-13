@@ -35,6 +35,7 @@
     "docs:check": "node tooling/build-docs.mjs --check",
     "release:build": "node tooling/build-release.mjs",
     "release:sign": "node tooling/sign-release-cli.mjs",
+    "release:refresh": "node tooling/refresh-release-cli.mjs",
     "prepack": "pnpm run build",
     "dev": "node tooling/development.mjs status",
     "dev:local": "node dev/local/cli.mjs",

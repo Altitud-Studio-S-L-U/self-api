@@ -109,6 +109,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # systemd 249 delegates memory and pids by default, but user CPU quotas
+      # also require cpu delegation. This runner is disposable.
+      - run: sudo systemctl set-property --runtime "user@$(id -u).service" 'Delegate=cpu memory pids'
       - run: node tooling/service-native-smoke.mjs --user
 
   acceptance:

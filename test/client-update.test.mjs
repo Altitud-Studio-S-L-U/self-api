@@ -10,6 +10,7 @@ import { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpd
 import { ReleaseFetcher, releaseBaseUrl } from '../dist/client-update-fetcher.js';
 import { runClientUpdateCli } from '../dist/client-update-cli.js';
 import { buildSignedRelease } from '../tooling/sign-release.mjs';
+import { refreshSignedRelease } from '../tooling/refresh-release.mjs';
 
 const base = resolve('work/test-client-updates');
 let parent;
@@ -142,6 +143,35 @@ test('operator release metadata is compatible with public SDK check and staging 
   assert.equal(staged.state, 'downloaded-awaiting-approval'); assert.equal(staged.installation, 'not-authorized');
   assert.deepEqual(await readFile(staged.artifactPath), artifact);
   assert.deepEqual(await readClientUpdateStatus({ statePath: item.statePath }), staged);
+});
+
+test('public SDK retains expired cached timestamp and accepts only a legitimate operator renewal', async t => {
+  const item = await fixture(t), actualNow = Date.now(), oldNow = actualNow - 2 * 3600000;
+  const roleKeys = Object.fromEntries(['targets', 'snapshot', 'timestamp'].map(role => [role, [{ keyid, key: privateKey }]]));
+  const previous = buildSignedRelease({ rootBytes: root, rootSha256: sha(root), roleKeys, now: oldNow,
+    version: '0.2.0', sequence: 1, sourceRevision: 'a'.repeat(40),
+    notes: { es: 'Prueba sintética', en: 'Synthetic test' }, requirements: { es: 'Node 24.21', en: 'Node 24.21' },
+    artifacts: [{ os: 'any', arch: 'any', fileName: 'keepseam-client-0.2.0.tgz', bytes: Buffer.from('Same inert package before and after renewal') }],
+    documentation: Buffer.from('%PDF-1.7 Synthetic documentation fixture') });
+  const connection = release => transport({ files: new Map([
+    ...[...release.metadata].map(([path, bytes]) => [`${metadataUrl}${path}`, bytes]),
+    ...[...release.targets].map(([path, bytes]) => [`${targetsUrl}${path}`, bytes]),
+  ]) });
+  // The public SDK creates and later reuses its own cache. No private DB writes.
+  t.mock.timers.enable({ apis: ['Date'], now: oldNow });
+  try {
+    const original = await checkClientUpdate(options(item), dependencies(connection(previous)));
+    assert.equal(original.state, 'available');
+    t.mock.timers.setTime(actualNow);
+    await assert.rejects(checkClientUpdate(options(item), dependencies(connection(previous))), reason('verification-failed'));
+    const next = refreshSignedRelease({ rootBytes: root, rootSha256: sha(root), roleKeys, previousBundle: previous.importBundle,
+      manifestSha256: sha(previous.importBundle.manifest), targets: previous.targets, now: actualNow });
+    const refreshed = await checkClientUpdate(options(item), dependencies(connection(next)));
+    assert.equal(refreshed.state, 'available'); assert.deepEqual(refreshed.release, original.release);
+    const staged = await stageClientUpdate(options(item), dependencies(connection(next)));
+    assert.equal(staged.installation, 'not-authorized'); assert.deepEqual(await readFile(staged.artifactPath), previous.targets.get(previous.manifest.artifacts[0].target));
+    await assert.rejects(checkClientUpdate(options(item), dependencies(connection(previous))), reason('verification-failed'));
+  } finally { t.mock.timers.reset(); }
 });
 
 test('the installed version is up to date and never downloads an unnecessary package', async t => {

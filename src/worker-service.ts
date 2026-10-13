@@ -70,13 +70,37 @@ export async function loadWorkerServiceConfig(configPath: string): Promise<Worke
 export function readWorkerServiceStatus(config: WorkerServiceConfig): WorkerServiceStatus | undefined {
   checkServicePath(config.statePath, 'directory');
   checkWindowsServiceAcl(config.statePath, true);
-  const result = readServiceRecord(config.statePath, serviceFiles.status);
+  let result: unknown;
+  try { result = readServiceRecord(config.statePath, serviceFiles.status); }
+  catch (error) {
+    if (error instanceof SyntaxError) invalid('Service status is invalid. Consult the native service manager.');
+    throw error;
+  }
   if (result === undefined) return undefined;
-  if (result === null || typeof result !== 'object' || !('schemaVersion' in result) || result.schemaVersion !== 1
-    || !('runId' in result) || typeof result.runId !== 'string' || !/^[a-f0-9-]{36}$/u.test(result.runId)) {
+  const fields = ['schemaVersion', 'runId', 'pid', 'state', 'updatedAt', 'cycles', 'observation', 'cloud', 'automation', 'licenseReason', 'models'];
+  if (result === null || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).some(key => !fields.includes(key))
+    || !('schemaVersion' in result) || result.schemaVersion !== 1
+    || !('runId' in result) || typeof result.runId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(result.runId)
+    || !('pid' in result) || typeof result.pid !== 'number' || !Number.isSafeInteger(result.pid) || result.pid < 1
+    || !('cycles' in result) || typeof result.cycles !== 'number' || !Number.isSafeInteger(result.cycles) || result.cycles < 0
+    || !('updatedAt' in result) || typeof result.updatedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(result.updatedAt)
+    || !Number.isFinite(Date.parse(result.updatedAt)) || new Date(result.updatedAt).toISOString() !== result.updatedAt) {
     invalid('Service status is invalid. Consult the native service manager.');
   }
-  return result as WorkerServiceStatus;
+  const choice = <T extends string>(value: unknown, allowed: readonly T[]): T => {
+    const matched = allowed.find(item => item === value);
+    if (matched === undefined) invalid('Service status is invalid. Consult the native service manager.');
+    return matched;
+  };
+  return {
+    schemaVersion: 1, runId: result.runId, pid: result.pid, updatedAt: result.updatedAt, cycles: result.cycles,
+    state: choice('state' in result ? result.state : undefined, ['starting', 'running', 'degraded', 'stopping', 'stopped', 'failed']),
+    observation: choice('observation' in result ? result.observation : undefined, ['pending', 'healthy', 'degraded']),
+    cloud: choice('cloud' in result ? result.cloud : undefined, ['disabled', 'pending', 'synced', 'unavailable', 'reconnect-required']),
+    automation: choice('automation' in result ? result.automation : undefined, ['active', 'draining', 'paused']),
+    licenseReason: choice('licenseReason' in result ? result.licenseReason : undefined, ['allowed', 'missing', 'expired', 'suspended', 'revoked', 'invalid', 'clock-rollback']),
+    ...('models' in result ? { models: choice(result.models, ['pending', 'unverified', 'healthy', 'degraded', 'requires-reconfiguration']) } : {}),
+  };
 }
 
 /** Requests only the observed run to stop. A stale request never stops a replacement process. */

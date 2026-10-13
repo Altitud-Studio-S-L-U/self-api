@@ -179,6 +179,13 @@ Restart=on-failure
 RestartSec=30
 TimeoutStopSec=180
 KillSignal=SIGTERM
+KillMode=control-group
+OOMPolicy=stop
+CPUQuota=100%
+MemoryHigh=384M
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=128
 NoNewPrivileges=true
 ${temporaryStorage}
 ProtectSystem=strict

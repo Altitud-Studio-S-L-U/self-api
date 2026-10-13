@@ -1,17 +1,12 @@
-import { createHash, createPublicKey, sign } from 'node:crypto';
-
-const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-export const canonicalTuf = value => Array.isArray(value) ? `[${value.map(canonicalTuf).join(',')}]`
-  : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalTuf(value[key])}`).join(',')}}` : JSON.stringify(value);
-const descriptor = (bytes, version) => ({ ...(version === undefined ? {} : { version }), length: bytes.length, hashes: { sha256: sha256(bytes) } });
-const requireValue = (condition, message) => { if (!condition) throw new Error(message); };
+import { releaseHash as sha256, releaseDescriptor as descriptor, requireReleaseValue as requireValue,
+  pinnedReleaseRoot, signedReleaseEnvelope, releaseMetadataVersions, requireImportBundleBounds } from './release-tuf.mjs';
+export { canonicalTuf } from './release-tuf.mjs';
 
 /** Produces inert metadata, never publishes it or provisions a trust root. Role
  * keys must be supplied independently by the operator's signing environment. */
-export function buildSignedRelease({ rootBytes, rootSha256, roleKeys, version, sequence, sourceRevision, artifacts, documentation, notes, requirements, now = Date.now() }) {
-  requireValue(Buffer.isBuffer(rootBytes) && sha256(rootBytes) === rootSha256 && rootBytes.length <= 512000, 'Pinned TUF root mismatch.');
-  const root = JSON.parse(rootBytes.toString('utf8')).signed;
-  requireValue(root._type === 'root' && root.consistent_snapshot === false && Date.parse(root.expires) > now, 'Unsupported or expired pinned TUF root.');
+export function buildSignedRelease({ rootBytes, rootSha256, roleKeys, version, sequence, sourceRevision, artifacts, documentation, notes, requirements, metadataVersions, now = Date.now() }) {
+  const root = pinnedReleaseRoot(rootBytes, rootSha256, now);
+  const versions = releaseMetadataVersions(metadataVersions === undefined ? { targets: sequence, snapshot: sequence, timestamp: sequence } : metadataVersions);
   requireValue(/^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$/u.test(version)
     && Number.isSafeInteger(sequence) && sequence >= 1 && sequence <= 2147483646 && /^[a-f0-9]{40}$/u.test(sourceRevision), 'Invalid release identity.');
   requireValue(Array.isArray(artifacts) && artifacts.length >= 1 && artifacts.length <= 12, 'A signed release needs bounded artifacts.');
@@ -50,31 +45,14 @@ export function buildSignedRelease({ rootBytes, rootSha256, roleKeys, version, s
   targets.set('channels/stable.json', Buffer.from(JSON.stringify({ schemaVersion: 1, channel: 'stable', version, sequence,
     artifact: { target: sdk.target, sha256: sdk.sha256, byteLength: sdk.sizeBytes }, minimumNodeVersion: '24.21.0' })));
   const expiration = days => new Date(Math.min(now + days*86400000, Date.parse(root.expires))).toISOString();
-  function envelope(role, signed) {
-    const policy = root.roles[role], supplied = roleKeys[role];
-    requireValue(policy && Number.isInteger(policy.threshold) && policy.threshold >= 1 && Array.isArray(supplied), `Missing ${role} signing policy.`);
-    const seen = new Set(); const signatures = [];
-    for (const { keyid, key } of supplied) {
-      requireValue(!seen.has(keyid) && policy.keyids.includes(keyid), 'A role key is duplicated or not trusted.'); seen.add(keyid);
-      const trusted = root.keys[keyid];
-      requireValue(trusted?.keytype === 'ed25519' && trusted.scheme === 'ed25519' && key.asymmetricKeyType === 'ed25519', 'Unsupported release signing key.');
-      const actual = createPublicKey(key).export({ format: 'jwk' });
-      requireValue(Buffer.from(actual.x, 'base64url').toString('hex') === trusted.keyval.public, 'Release signing key does not match pinned trust.');
-      signatures.push({ keyid, sig: sign(null, Buffer.from(canonicalTuf(signed)), key).toString('hex') });
-    }
-    requireValue(signatures.length >= policy.threshold, `Insufficient ${role} signature threshold.`);
-    return Buffer.from(JSON.stringify({ signed, signatures }));
-  }
-  const targetsBytes = envelope('targets', { _type: 'targets', spec_version: '1.0.31', version: sequence, expires: expiration(7),
+  const envelope = (role, signed) => signedReleaseEnvelope(root, roleKeys, role, signed);
+  const targetsBytes = envelope('targets', { _type: 'targets', spec_version: '1.0.31', version: versions.targets, expires: expiration(7),
     targets: Object.fromEntries([...targets].map(([path, bytes]) => [path, descriptor(bytes)])) });
-  const snapshot = envelope('snapshot', { _type: 'snapshot', spec_version: '1.0.31', version: sequence, expires: expiration(1), meta: { 'targets.json': descriptor(targetsBytes, sequence) } });
-  const timestamp = envelope('timestamp', { _type: 'timestamp', spec_version: '1.0.31', version: sequence, expires: expiration(1/24), meta: { 'snapshot.json': descriptor(snapshot, sequence) } });
+  const snapshot = envelope('snapshot', { _type: 'snapshot', spec_version: '1.0.31', version: versions.snapshot, expires: expiration(1), meta: { 'targets.json': descriptor(targetsBytes, versions.targets) } });
+  const timestamp = envelope('timestamp', { _type: 'timestamp', spec_version: '1.0.31', version: versions.timestamp, expires: expiration(1/24), meta: { 'snapshot.json': descriptor(snapshot, versions.snapshot) } });
   const importBundle = { manifest: targets.get('release-manifest.json').toString('utf8'), metadata: { targets: targetsBytes.toString('utf8'), snapshot: snapshot.toString('utf8'), timestamp: timestamp.toString('utf8') } };
   // Match the closed Cloud request contract before producing output. Character
   // limits alone do not bound UTF-8 bytes or JSON escaping of localized text.
-  requireValue(importBundle.manifest.length <= 16384 && importBundle.metadata.targets.length <= 16384
-    && importBundle.metadata.snapshot.length <= 8192 && importBundle.metadata.timestamp.length <= 8192
-    && Buffer.byteLength(JSON.stringify({ requestId: '00000000-0000-4000-8000-000000000000', bundle: importBundle })) <= 30000,
-    'Release metadata exceeds the bounded Cloud import contract.');
+  requireImportBundleBounds(importBundle);
   return { manifest, root: rootBytes, metadata: new Map([['targets.json', targetsBytes], ['snapshot.json', snapshot], ['timestamp.json', timestamp]]), targets, importBundle };
 }
