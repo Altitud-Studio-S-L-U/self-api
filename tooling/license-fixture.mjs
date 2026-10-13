@@ -6,7 +6,7 @@ import { generateCloudWorkerIdentity } from '../dist/cloud-connection.js';
 
 /** Synthetic, isolated licenses for lifecycle tests; never used for customer enrollment. */
 export async function createLicenseFixture(directory, options = {}) {
-  const origin = 'http://127.0.0.1:1';
+  const origin = options.credentials?.baseUrl ?? 'http://127.0.0.1:1';
   const identity = await generateCloudWorkerIdentity();
   const credentials = options.credentials ?? { baseUrl: origin, installationId: identity.installationId, projectId: 'b'.repeat(64),
     clientSecret: 'c'.repeat(64), privateJwk: identity.privateJwk, allowLocalHttp: true };

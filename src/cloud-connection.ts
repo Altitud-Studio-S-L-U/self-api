@@ -93,6 +93,13 @@ function connection(credentials: CloudCredentials, options: { readonly signal?: 
     try {
       response=await fetch(url,{method:'POST',redirect:'error',signal:options.signal ? AbortSignal.any([options.signal,AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
         headers:{'content-type':type,DPoP:await proof(url,accessToken),...(accessToken?{authorization:`DPoP ${accessToken}`}:{})},body});
+      if (response.status !== 200) {
+        // Proxies may return empty or HTML error bodies. Discard without reading
+        // them; a cleanup failure cannot override an observed authorization status.
+        try { await response.body?.cancel(); } catch { /* The HTTP status remains authoritative. */ }
+        if (response.status >= 500 && response.status <= 599) throw new CloudConnectionError('NETWORK_UNAVAILABLE');
+        return { status: response.status, body: null };
+      }
       const payload=await boundedJSON(response);
       return {status:response.status,body:payload};
     } catch(error) {

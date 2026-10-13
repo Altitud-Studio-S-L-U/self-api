@@ -3,10 +3,15 @@ import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { createServer } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { createServiceFixture } from '../tooling/service-fixture.mjs';
 import { createLicenseFixture } from '../tooling/license-fixture.mjs';
 import { runWorkerService, normalizeWorkerServiceConfig, CloudConnectionError, WorkerLicenseStore } from '../dist/index.js';
 import { checkWindowsPermissions } from '../dist/windows-permissions.js';
+import { generateCloudWorkerIdentity } from '../dist/cloud-connection.js';
+import { verifyWorkerLicense } from '../dist/worker-license.js';
 
 async function fixture(t) {
   const parent=resolve('work/test-worker-service-license');await mkdir(parent,{recursive:true});
@@ -121,4 +126,41 @@ test('offline restart retains a newer persisted lease instead of importing stale
   const status=await running;
   assert.equal(observations,1);assert.equal(status.licenseReason,'allowed');assert.equal(status.automation,'active');
   assert.deepEqual(await readFile(lease.license.leasePath),bootstrap,'Bootstrap bytes cannot overwrite renewed authorization.');
+});
+
+test('a real HTTP 503 during offline restart preserves the signed lease and continues permitted observation',{timeout:60000},async t=>{
+  const f=await fixture(t);let requests=0;
+  const server=createServer(async(request,response)=>{for await(const _chunk of request){}requests++;response.writeHead(503);response.end();});
+  await new Promise(accept=>server.listen(0,'127.0.0.1',accept));
+  t.after(async()=>{server.closeAllConnections();await new Promise(accept=>server.close(accept));});
+  const identity=await generateCloudWorkerIdentity();
+  const lease=await createLicenseFixture(f.directory,{credentials:{...identity,baseUrl:`http://127.0.0.1:${server.address().port}`,
+    projectId:'b'.repeat(64),clientSecret:'c'.repeat(64),allowLocalHttp:true}});
+  const store=await WorkerLicenseStore.open(f.config.statePath,lease.credentials,lease.trust);
+  try{await store.apply(lease.token);}finally{store.close();}
+  const originalClaims=await verifyWorkerLicense(lease.token,lease.trust,lease.credentials);
+  let previousClock=0,previousRunId;
+  for(let restart=0;restart<2;restart++){
+    const controller=new AbortController();t.after(()=>controller.abort());
+    let controlHandled=false,observations=0;
+    const running=runWorkerService({...f.config,license:{credentialsPath:lease.license.credentialsPath,trustPath:lease.license.trustPath}},
+      {signal:controller.signal,dependencies:{
+        async observeSources(){observations++;if(controlHandled&&observations>=2)controller.abort();return{schemaVersion:1,results:[]};},
+        async wait(ms,signal){
+          if(ms>30_000){controlHandled=true;if(f.status().automation!=='active'||observations>=2)controller.abort();}
+          await delay(ms,undefined,{signal});
+        },
+      }});f.setRunning(running);
+    const status=await running;
+    assert.equal(controlHandled,true);assert.equal(observations,2);assert.equal(status.automation,'active');assert.equal(status.licenseReason,'allowed');
+    assert.notEqual(status.runId,previousRunId);previousRunId=status.runId;
+    const database=new DatabaseSync(join(f.config.statePath,'worker-license.sqlite3'),{readOnly:true,allowExtension:false});
+    try{
+      const persisted=database.prepare('SELECT token,revision,issued,clock,revoked FROM license WHERE id=1').get();
+      assert.equal(persisted.token,lease.token);assert.equal(persisted.revoked,0);assert(persisted.clock>=previousClock);previousClock=persisted.clock;
+      const claims=await verifyWorkerLicense(persisted.token,lease.trust,lease.credentials);
+      assert.equal(claims.iat,originalClaims.iat);assert.equal(claims.exp,originalClaims.exp);assert.equal(claims.entitlementExpiresAt,originalClaims.entitlementExpiresAt);
+    }finally{database.close();}
+  }
+  assert.equal(requests,2,'One failing initial token request per restart; no extra retry is hidden in the transport.');
 });
