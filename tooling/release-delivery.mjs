@@ -11,6 +11,7 @@ export async function writeReleaseDelivery(release,directory,{requestId=randomUU
   requireValue(/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(requestId),'Invalid delivery request identity.');
   const {manifest,root,targets,importBundle}=release;
   requireValue(JSON.stringify(manifest)===importBundle.manifest && Buffer.isBuffer(root),'Release delivery does not match its signed manifest.');
+  if(importBundle.channel!==undefined)requireValue(targets.get('channels/stable.json')?.equals(Buffer.from(importBundle.channel)),'Delivery channel bytes differ from signed metadata.');
   const metadata=JSON.parse(importBundle.manifest),files=[];
   const payload={requestId,bundle:importBundle},payloadBytes=Buffer.from(JSON.stringify(payload));
   requireValue(payloadBytes.length<=30000,'Release delivery exceeds the Cloud import limit.');

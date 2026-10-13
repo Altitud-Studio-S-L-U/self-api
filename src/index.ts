@@ -67,7 +67,7 @@ export type { HttpSourcePolicy, HttpSourceSnapshot, HttpSourceCredentials, Captu
 export { analyzeMcpImpact } from './mcp-impact.js';
 export type { McpClientBinding, McpImpactOptions, McpConsumerCall, McpImpactReport } from './mcp-impact.js';
 export { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from './client-update.js';
-export type { ClientUpdateOptions, ClientUpdateRepository, ClientRelease, ClientUpdateStatus, ClientUpdateReason, ClientUpdateDependencies } from './client-update.js';
+export type { ClientUpdateOptions, ClientUpdateRepository, PublicClientUpdateRepository, CloudClientUpdateRepository, ClientRelease, ClientUpdateStatus, ClientUpdateReason, ClientUpdateDependencies } from './client-update.js';
 export { validateRuntime } from './validation-runtime.js';
 export { prepareValidationRuntime } from './validation-runtime-prepare.js';
 export type { ValidationRuntime, ValidationFramework } from './validation-runtime.js';

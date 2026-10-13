@@ -50,7 +50,7 @@ export function buildSignedRelease({ rootBytes, rootSha256, roleKeys, version, s
     targets: Object.fromEntries([...targets].map(([path, bytes]) => [path, descriptor(bytes)])) });
   const snapshot = envelope('snapshot', { _type: 'snapshot', spec_version: '1.0.31', version: versions.snapshot, expires: expiration(1), meta: { 'targets.json': descriptor(targetsBytes, versions.targets) } });
   const timestamp = envelope('timestamp', { _type: 'timestamp', spec_version: '1.0.31', version: versions.timestamp, expires: expiration(1/24), meta: { 'snapshot.json': descriptor(snapshot, versions.snapshot) } });
-  const importBundle = { manifest: targets.get('release-manifest.json').toString('utf8'), metadata: { targets: targetsBytes.toString('utf8'), snapshot: snapshot.toString('utf8'), timestamp: timestamp.toString('utf8') } };
+  const importBundle = { manifest: targets.get('release-manifest.json').toString('utf8'), channel: targets.get('channels/stable.json').toString('utf8'), metadata: { targets: targetsBytes.toString('utf8'), snapshot: snapshot.toString('utf8'), timestamp: timestamp.toString('utf8') } };
   // Match the closed Cloud request contract before producing output. Character
   // limits alone do not bound UTF-8 bytes or JSON escaping of localized text.
   requireImportBundleBounds(importBundle);
