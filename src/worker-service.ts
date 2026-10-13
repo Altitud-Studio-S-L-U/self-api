@@ -109,10 +109,15 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
   let workController = new AbortController();
   let licenseStore: WorkerLicenseStore | undefined;
   let licenseRevision: number | null = null;
+  let licenseRevocations = 0;
   let activeObservations = 0;
   let licenseAllowed = false;
   const wait = options.dependencies?.wait ?? ((milliseconds: number, signal: AbortSignal) => delay(milliseconds, undefined, { signal }));
   const controlChanges = loopWakeup(wait), cloudChanges = loopWakeup(wait);
+  const revokeLicense = (reason: 'revoked' | 'invalid' = 'revoked'): void => {
+    licenseRevocations++;
+    licenseStore?.revoke(Date.now(), reason);
+  };
   const abort = (): void => { controller.abort(); workController.abort(); };
   options.signal?.addEventListener('abort', abort, { once: true });
   if (options.signal?.aborted) abort();
@@ -158,7 +163,7 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
         // Bootstrap is only for an empty store. Reimporting an older initial
         // lease would invalidate a newer persisted renewal during offline restart.
         if ((await licenseStore.status()).reason === 'missing') {
-          try { await licenseStore.apply(token as string); } catch { licenseStore.revoke(Date.now(), 'invalid'); }
+          try { await licenseStore.apply(token as string); } catch { revokeLicense('invalid'); }
         }
       }
     }
@@ -183,15 +188,19 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
         let failed = false;
         try {
           if (control && licenseStore) {
+            const revocationsAtRequest = licenseRevocations;
             const response = await control.poll({ schemaVersion: 1, requestId: randomUUID(), installationId: licenseCredentials!.installationId,
               projectId: licenseCredentials!.projectId,
               runId: lock.runId, observedRevision: licenseRevision, automation: status.automation });
+            // A status-channel rejection can arrive while this request is in
+            // flight. Only a subsequent control request may restore permission.
+            if (revocationsAtRequest !== licenseRevocations) throw new CloudConnectionError('AUTHORIZATION_REJECTED');
             await licenseStore.apply(response.license, Date.now(), 'authenticated-control');
           }
         } catch (error) {
           failed = true;
-          if (error instanceof CloudConnectionError && error.code === 'AUTHORIZATION_REJECTED') licenseStore?.revoke();
-          else if (error instanceof CloudConnectionError && ['INVALID_RESPONSE', 'INVALID_CONFIGURATION'].includes(error.code) || error instanceof PlumberError) licenseStore?.revoke(Date.now(), 'invalid');
+          if (error instanceof CloudConnectionError && error.code === 'AUTHORIZATION_REJECTED') revokeLicense();
+          else if (error instanceof CloudConnectionError && ['INVALID_RESPONSE', 'INVALID_CONFIGURATION'].includes(error.code) || error instanceof PlumberError) revokeLicense('invalid');
           log('license-control', { state: 'unavailable' });
         }
         await refreshLicense();
@@ -282,7 +291,7 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
           cloudFailures = 0;
         } catch (error) {
           terminal = error instanceof CloudConnectionError && ['AUTHORIZATION_REJECTED', 'STATUS_REJECTED', 'INVALID_CONFIGURATION'].includes(error.code);
-          if (error instanceof CloudConnectionError && error.code === 'AUTHORIZATION_REJECTED') { licenseStore?.revoke(); await refreshLicense(); }
+          if (error instanceof CloudConnectionError && error.code === 'AUTHORIZATION_REJECTED') { revokeLicense(); await refreshLicense(); }
           status = { ...status, cloud: terminal ? 'reconnect-required' : 'unavailable' };
           cloudFailures = Math.min(cloudFailures + 1, 10);
           waitMs = Math.min(waitMs * 2 ** cloudFailures, 300_000);

@@ -154,7 +154,10 @@ export class WorkerLicenseStore {
     if (Number(row['revoked'])) return { allowed: false, revision, reason: Number(row['revoked']) === 1 ? 'revoked' : 'invalid' };
     if (!row['token']) return { allowed: false, revision, reason: 'missing' };
     const claims = this.verified?.token === row['token'] ? this.verified.claims : await verifyWorkerLicense(String(row['token']), this.trust, this.credentials, now, true);
-    if (revocation !== this.revocation) return this.statusOrdered(now);
+    if (revocation !== this.revocation) {
+      const current = this.db.prepare('SELECT revision,revoked FROM license WHERE id=1').get()!;
+      return { allowed: false, revision: Number(current['revision']) || null, reason: Number(current['revoked']) === 1 ? 'revoked' : 'invalid' };
+    }
     this.verified = { token: String(row['token']), claims };
     if (claims.revision !== revision || claims.iat !== Number(row['issued'])) invalid();
     const reason = claims.decision === 'suspended' ? 'suspended' : claims.exp * 1000 <= now ? 'expired' : 'allowed';

@@ -121,3 +121,34 @@ test('a failed immediate control acknowledgement keeps the normal retry interval
   await f.advance(1); await retried.promise; await running;
   assert.deepEqual(times, [0, 1000, 61000]);
 });
+
+test('a control response started before a concurrent status 401 cannot restore revoked permission', { timeout: 60000 }, async t => {
+  const f = await fixture(t, true), pollStarted = deferred(), oldResponse = deferred(), denied = deferred(), oldSettled = deferred(), restored = deferred();
+  let polls = 0, syncs = 0, released = false;
+  const running = f.start({
+    control: { async poll() {
+      polls++;
+      if (polls === 1) { pollStarted.resolve(); await Promise.race([oldResponse.promise, f.stopped]); }
+      return { schemaVersion: 1, license: f.lease.token, pollAfterMs: 60000 };
+    } },
+    async observe() { return { schemaVersion: 1, results: [] }; },
+    async sync() {
+      if (++syncs === 1) { await pollStarted.promise; throw new CloudConnectionError('AUTHORIZATION_REJECTED'); }
+      return { state: 'synced', sent: 0, pending: 0 };
+    },
+    wait(ms, signal) {
+      const status = f.status();
+      if (!released && status.licenseReason === 'revoked') denied.resolve();
+      if (released && polls === 1) oldSettled.resolve(status);
+      if (polls >= 2 && status.licenseReason === 'allowed') restored.resolve(status);
+      return f.wait(ms, signal);
+    },
+  });
+  await denied.promise; released = true; oldResponse.resolve();
+  const afterOld = await oldSettled.promise;
+  assert.equal(afterOld.licenseReason, 'revoked', 'Only a control request made after the rejection may restore permission.');
+  assert.equal(afterOld.automation, 'paused'); assert.equal(syncs, 1);
+  await f.advance(60000);
+  assert.equal((await restored.promise).automation, 'active', 'A fresh authenticated control request can restore permission.');
+  f.controller.abort(); await running;
+});

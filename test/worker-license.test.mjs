@@ -80,7 +80,14 @@ test('revocation during asynchronous verification cannot be overwritten by an ol
 test('a cold status verification cannot grant permission after concurrent revocation', async t => {
   const f = await fixture(t), now = Date.now(); let store = await f.open();
   await store.apply(f.token, now); store.close(); store = await f.open();
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const verify = crypto.subtle.verify.bind(crypto.subtle);
+  t.mock.method(crypto.subtle, 'verify', async (...args) => { entered.resolve(); await release.promise; return verify(...args); });
+  t.after(release.resolve);
   const status = store.status(now + 1);
-  store.revoke(now + 1);
+  await entered.promise;
+  store.revoke(now + 2); release.resolve();
   assert.equal((await status).reason, 'revoked');
+  assert.equal((await store.status(now + 1)).reason, 'clock-rollback', 'The next independent read must still enforce the durable watermark.');
+  assert.equal((await store.status(now + 2)).reason, 'revoked');
 });
