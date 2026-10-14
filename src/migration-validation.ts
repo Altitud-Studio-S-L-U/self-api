@@ -3,7 +3,7 @@ import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createMigrationPlan } from './migration-plan.js';
 import type { MigrationPlan, MigrationPlanOptions } from './migration-plan.js';
-import { captureConsumer } from './consumer-files.js';
+import { captureConsumer, isConsumerTestPath } from './consumer-files.js';
 import type { ConsumerCapture } from './consumer-files.js';
 import { issueApproval, consumeApproval } from './approval-store.js';
 import type { ApprovalReceipt } from './approval-store.js';
@@ -11,9 +11,11 @@ import { dockerProfileForTests, isSupportedDockerTestPath, runDockerValidation }
 import type { DockerProfile, DockerValidationResult } from './docker-runner.js';
 import { PlumberError } from './errors.js';
 import { persistValidationOutcome } from './validation-outcome.js';
+import { validateRuntime, type ValidationRuntime } from './validation-runtime.js';
 
 export interface MigrationValidationOptions extends MigrationPlanOptions {
   readonly testPaths: readonly string[];
+  readonly runtime?: ValidationRuntime;
 }
 
 export interface MigrationValidationRequest {
@@ -68,13 +70,19 @@ async function prepare(options: MigrationValidationOptions): Promise<{
     invalid('Validation paths must be unique relative source paths without traversal.');
   }
   let profile: DockerProfile;
-  try { profile = dockerProfileForTests(testPaths); }
+  try { profile = dockerProfileForTests(testPaths, options.runtime === undefined ? undefined : validateRuntime(options.runtime)); }
   catch { invalid('A validation request must select tests from exactly one supported runtime profile.'); }
   const plan = await createMigrationPlan(options);
   if (plan.status !== 'ready-for-review' || plan.files.length === 0) {
     invalid('Resolve migration decisions and provide a nonempty proposal before requesting validation.');
   }
   const captured = await captureConsumer(options.consumerRoot);
+  if ('runtime' in profile && profile.runtime.kind === 'maven-junit' && !captured.manifests.some(file => file.path === 'pom.xml')) {
+    invalid('Maven validation requires a captured root pom.xml.');
+  }
+  if ('runtime' in profile && plan.files.some(file => isConsumerTestPath(file.path))) {
+    invalid('Framework validation preserves captured test directories and pytest configuration hooks.');
+  }
   if (captured.digest !== plan.evidence.consumerDigest) invalid('Consumer evidence changed; prepare a fresh request.');
   if ([...captured.files, ...captured.manifests].some(file => !portablePath(file.path))) {
     invalid('A captured filename cannot be represented by the isolated validation profile.');
@@ -190,12 +198,12 @@ export async function executeMigrationValidation(input: {
   const guard = input.guard ?? (() => {});
   guard();
   const baseline = await runDockerValidation({ snapshotPath: baselinePath, testPaths: request.spec.testPaths, statePath: attemptPath,
-    execution: { ...execution, phase: 'baseline' }, guard });
+    ...('runtime' in request.spec.profile ? { runtime: request.spec.profile.runtime } : {}), execution: { ...execution, phase: 'baseline' }, guard });
   let candidate: DockerValidationResult | undefined;
   if (completed(baseline)) {
     guard();
     candidate = await runDockerValidation({ snapshotPath: candidatePath, testPaths: request.spec.testPaths, statePath: attemptPath,
-      execution: { ...execution, phase: 'candidate' }, guard });
+      ...('runtime' in request.spec.profile ? { runtime: request.spec.profile.runtime } : {}), execution: { ...execution, phase: 'candidate' }, guard });
   }
   let status: MigrationValidationResult['status'] = 'blocked';
   if (completed(baseline) && candidate && completed(candidate)) {

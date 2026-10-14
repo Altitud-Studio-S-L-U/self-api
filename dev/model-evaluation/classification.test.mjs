@@ -41,12 +41,34 @@ test('only real recorded failing-baseline/passing-candidate results with the sam
   const outcome = { expected: 'migration', status: 'accepted-proposal', proposedFiles: 1, filesChanged: 1, pendingDecisions: 0 };
   assert.equal(classifyEvaluation(outcome), 'awaiting-tests');
   assert.equal(evaluationPassed(outcome), false);
-  const tests = [{ revision: 'baseline', exitCode: 1, testSha256: 'fixture-same-test' },
-    { revision: 'candidate', exitCode: 0, testSha256: 'fixture-same-test' }];
+  const tests = [{ revision: 'baseline', exitCode: 1, testSha256: 'a'.repeat(64) },
+    { revision: 'candidate', exitCode: 0, testSha256: 'a'.repeat(64) }];
   assert.equal(evaluationPassed({ ...outcome, tests }), true);
   assert.equal(evaluationPassed({ ...outcome, tests: [tests[0], { ...tests[1], exitCode: 1 }] }), false);
   assert.equal(evaluationPassed({ ...outcome, tests: [{ ...tests[0], exitCode: 0 }, tests[1]] }), false);
   assert.throws(() => classifyEvaluation({ ...outcome, tests: [tests[0], { ...tests[1], testSha256: 'weakened-test' }] }));
+  assert.throws(() => classifyEvaluation({ ...outcome, tests: tests.map(value => ({ ...value, testSha256: undefined })) }));
+});
+
+test('polyglot classification permits only the explicitly selected source adapter', () => {
+  const python = { ...proposal, recipe: { files: [{ path: 'payment_client.py' }] } };
+  assert.equal(describeProposal(python, 'payment_client.py').status, 'accepted-proposal');
+  assert.throws(() => describeProposal(python));
+  assert.throws(() => describeProposal({ ...python, recipe: { files: [{ path: 'test_payment.py' }] } }, 'payment_client.py'));
+});
+
+test('installed SDK cleanup and blocked outcomes cannot become success from exit codes alone', () => {
+  const outcome = { expected: 'migration', status: 'accepted-proposal', filesChanged: 1, pendingDecisions: 0,
+    validationStatus: 'improved', tests: [
+      { revision: 'baseline', status: 'failed', cleanup: 'removed', exitCode: 1, testSha256: 'a'.repeat(64) },
+      { revision: 'candidate', status: 'passed', cleanup: 'removed', exitCode: 0, testSha256: 'a'.repeat(64) },
+    ] };
+  assert.equal(evaluationPassed(outcome), true);
+  for (const validationStatus of ['blocked', 'failed', undefined]) assert.equal(evaluationPassed({ ...outcome, validationStatus }), false);
+  assert.equal(evaluationPassed({ ...outcome, tests: [outcome.tests[0], {
+    ...outcome.tests[1], status: 'cleanup-failed', cleanup: 'failed',
+  }] }), false);
+  assert.equal(evaluationPassed({ ...outcome, tests: [{ ...outcome.tests[0], cleanup: 'failed' }, outcome.tests[1]] }), false);
 });
 
 test('unknown or inconsistent harness outputs fail classification instead of becoming success', () => {

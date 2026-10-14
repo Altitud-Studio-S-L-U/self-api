@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, importJWK, SignJWT, type JWK } from 'jose';
 import { encodeCloudStatusEvent, type CloudStatusEvent } from './cloud-protocol.js';
+import type { WorkerControlRequest, WorkerControlResponse, WorkerControlTransport } from './worker-license.js';
 
 export interface CloudWorkerIdentity {
   readonly installationId: string;
@@ -59,6 +60,12 @@ async function boundedJSON(response: Response): Promise<unknown> {
 }
 
 export function createCloudTransport(credentials: CloudCredentials, options: { readonly signal?: AbortSignal } = {}): CloudTransport {
+  return connection(credentials, options, 'worker:status');
+}
+export function createCloudControlTransport(credentials: CloudCredentials, options: { readonly signal?: AbortSignal } = {}): WorkerControlTransport {
+  return connection(credentials, options, 'worker:control');
+}
+function connection(credentials: CloudCredentials, options: { readonly signal?: AbortSignal }, scope: 'worker:status' | 'worker:control'): CloudTransport & WorkerControlTransport {
   if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) reject();
   let origin:URL;
   try { origin=new URL(credentials.baseUrl); } catch { reject(); }
@@ -86,6 +93,13 @@ export function createCloudTransport(credentials: CloudCredentials, options: { r
     try {
       response=await fetch(url,{method:'POST',redirect:'error',signal:options.signal ? AbortSignal.any([options.signal,AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
         headers:{'content-type':type,DPoP:await proof(url,accessToken),...(accessToken?{authorization:`DPoP ${accessToken}`}:{})},body});
+      if (response.status !== 200) {
+        // Proxies may return empty or HTML error bodies. Discard without reading
+        // them; a cleanup failure cannot override an observed authorization status.
+        try { await response.body?.cancel(); } catch { /* The HTTP status remains authoritative. */ }
+        if (response.status >= 500 && response.status <= 599) throw new CloudConnectionError('NETWORK_UNAVAILABLE');
+        return { status: response.status, body: null };
+      }
       const payload=await boundedJSON(response);
       return {status:response.status,body:payload};
     } catch(error) {
@@ -96,17 +110,18 @@ export function createCloudTransport(credentials: CloudCredentials, options: { r
   async function accessToken():Promise<string> {
     if (token && token.expiresAt>Date.now()+15_000) return token.value;
     const result=await request('/api/worker/v1/token',new URLSearchParams({grant_type:'client_credentials',client_id:credentials.installationId,
-      client_secret:credentials.clientSecret,scope:'worker:status'}).toString(),'application/x-www-form-urlencoded');
+      client_secret:credentials.clientSecret,scope}).toString(),'application/x-www-form-urlencoded');
     if (result.status===429) throw new CloudConnectionError('RATE_LIMITED');
     if (result.status!==200) throw new CloudConnectionError('AUTHORIZATION_REJECTED');
     const data=result.body as {access_token?:unknown;token_type?:unknown;expires_in?:unknown;scope?:unknown};
     if (!data || typeof data.access_token!=='string' || !identifier.test(data.access_token) || data.token_type!=='DPoP'
-      || typeof data.expires_in!=='number' || !Number.isInteger(data.expires_in) || data.expires_in<1 || data.expires_in>300 || data.scope!=='worker:status') {
+      || typeof data.expires_in!=='number' || !Number.isInteger(data.expires_in) || data.expires_in<1 || data.expires_in>300 || data.scope!==scope) {
       throw new CloudConnectionError('INVALID_RESPONSE');
     }
     token={value:data.access_token,expiresAt:Date.now()+data.expires_in*1000}; return token.value;
   }
   return {installationId:credentials.installationId,projectId:credentials.projectId,async send(event) {
+    if (scope !== 'worker:status') reject();
     if (event.installationId!==credentials.installationId || event.projectId!==credentials.projectId) reject();
     const body=encodeCloudStatusEvent(event);
     const result=await request('/api/worker/v1/status',body,'application/json',await accessToken());
@@ -116,5 +131,15 @@ export function createCloudTransport(credentials: CloudCredentials, options: { r
     const receipt=result.body as CloudStatusReceipt;
     if (!receipt || receipt.eventId!==event.eventId || receipt.sequence!==event.sequence || !['accepted','duplicate'].includes(receipt.status)) throw new CloudConnectionError('INVALID_RESPONSE');
     return {eventId:receipt.eventId,sequence:receipt.sequence,status:receipt.status};
+  }, async poll(input: WorkerControlRequest): Promise<WorkerControlResponse> {
+    if (scope !== 'worker:control' || input.installationId !== credentials.installationId || input.projectId !== credentials.projectId) reject();
+    const result = await request('/api/worker/v1/control', JSON.stringify(input), 'application/json', await accessToken());
+    if (result.status === 401 || result.status === 403) { token = undefined; throw new CloudConnectionError('AUTHORIZATION_REJECTED'); }
+    if (result.status === 429) throw new CloudConnectionError('RATE_LIMITED');
+    if (result.status !== 200) throw new CloudConnectionError('STATUS_REJECTED');
+    const data = result.body as WorkerControlResponse;
+    if (!data || Object.keys(data).sort().join(',') !== 'license,pollAfterMs,schemaVersion' || data.schemaVersion !== 1
+      || data.pollAfterMs !== 60000 || typeof data.license !== 'string' || data.license.length > 8192) throw new CloudConnectionError('INVALID_RESPONSE');
+    return data;
   }};
 }

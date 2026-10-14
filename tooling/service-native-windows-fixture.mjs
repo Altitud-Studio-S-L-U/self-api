@@ -117,7 +117,7 @@ export async function readWindowsServiceEvidence(statePath, subscriptionId) {
     const worker = new DatabaseSync(join(statePath, 'worker.sqlite3'), options);
     try {
       assert.equal(worker.prepare('PRAGMA application_id').get().application_id, 0x504c554d);
-      assert.equal(worker.prepare('PRAGMA user_version').get().user_version, 3);
+      assert.equal(worker.prepare('PRAGMA user_version').get().user_version, 4);
       return { subscription, observations, jobs: worker.prepare('SELECT count(*) AS n FROM jobs').get().n,
         executionIntents: worker.prepare('SELECT count(*) AS n FROM execution_intents').get().n };
     } finally { worker.close(); }

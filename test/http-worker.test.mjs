@@ -307,7 +307,7 @@ test('HTTP job planning uses exact last-successful durable evidence without a fe
   assert.equal(old.revisionSha, digest(context.revision));
 });
 
-test('v2 to v3 migration retains local subscriptions, immutable snapshots, observations, jobs and queued execution state', async t => {
+test('v2 migration retains local subscriptions, immutable snapshots, observations, jobs and queued execution state', async t => {
   const context = await fixture(t);
   const localPath = join(context.directory, 'local-source.json');
   await writeFile(localPath, context.revision);
@@ -322,7 +322,7 @@ test('v2 to v3 migration retains local subscriptions, immutable snapshots, obser
   editState(input.statePath, db => {
     // Remove the HTTP-only fixture row and columns to reproduce the actual previous schema.
     db.prepare('DELETE FROM subscriptions WHERE id=?').run(context.subscription.id);
-    db.exec('ALTER TABLE subscriptions DROP COLUMN http_source_json; ALTER TABLE subscriptions DROP COLUMN http_cache_json; PRAGMA user_version=2;');
+    db.exec('ALTER TABLE subscriptions DROP COLUMN http_source_json; ALTER TABLE subscriptions DROP COLUMN http_cache_json; ALTER TABLE execution_intents DROP COLUMN runtime_json; PRAGMA user_version=2;');
   });
   const migrated = await openWorkerStore(input.statePath);
   try {
@@ -333,7 +333,7 @@ test('v2 to v3 migration retains local subscriptions, immutable snapshots, obser
     assert.equal(migrated.listSubscriptions()[0].httpSource, null);
   } finally { migrated.close(); }
   editState(input.statePath, db => {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);
     assert.equal(db.prepare('SELECT count(*) AS n FROM observations').get().n, 1);
     assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
   });

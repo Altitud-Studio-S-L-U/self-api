@@ -9,6 +9,8 @@ export interface WorkerServiceConfig {
   readonly allowHttp: boolean;
   readonly openApi?: { readonly enginePath: string; readonly intervalMs: number };
   readonly sources?: { readonly intervalMs: number };
+  readonly models?: { readonly configPath: string };
+  readonly license?: { readonly credentialsPath: string; readonly trustPath: string; readonly leasePath?: string };
   readonly cloud?: { readonly credentialsPath: string; readonly statePath: string; readonly integrationIds: readonly string[]; readonly intervalMs: number };
 }
 
@@ -54,7 +56,7 @@ function interval(value: unknown, fallback: number): number {
 
 export function normalizeWorkerServiceConfig(value: unknown, target: WorkerServiceTarget = process.platform === 'win32' ? 'windows' : 'systemd'): WorkerServiceConfig {
   if (!['systemd', 'launchd', 'windows'].includes(target)) invalid('Choose systemd, launchd or windows.');
-  const config = record(value, ['schemaVersion', 'statePath', 'allowHttp', 'openApi', 'sources', 'cloud']);
+  const config = record(value, ['schemaVersion', 'statePath', 'allowHttp', 'openApi', 'sources', 'cloud', 'license', 'models']);
   if (config['schemaVersion'] !== 1 || (config['allowHttp'] !== undefined && typeof config['allowHttp'] !== 'boolean')) {
     invalid('Service configuration requires schemaVersion 1 and an explicit boolean HTTP policy.');
   }
@@ -88,7 +90,20 @@ export function normalizeWorkerServiceConfig(value: unknown, target: WorkerServi
     cloud = Object.freeze({ credentialsPath: servicePath(input['credentialsPath'], target), statePath: cloudPath,
       integrationIds: Object.freeze([...ids] as string[]), intervalMs: interval(input['intervalMs'], 60_000) });
   }
+  let license: WorkerServiceConfig['license'];
+  if (config['license'] !== undefined) {
+    const input = record(config['license'], ['credentialsPath', 'trustPath', 'leasePath']);
+    license = Object.freeze({ credentialsPath: servicePath(input['credentialsPath'], target), trustPath: servicePath(input['trustPath'], target),
+      ...(input['leasePath'] !== undefined ? { leasePath: servicePath(input['leasePath'], target) } : {}) });
+  }
+  let models: WorkerServiceConfig['models'];
+  if (config['models'] !== undefined) {
+    const input = record(config['models'], ['configPath']);
+    models = Object.freeze({ configPath: servicePath(input['configPath'], target) });
+  }
   return Object.freeze({ schemaVersion: 1, statePath, allowHttp: config['allowHttp'] === true,
+    ...(models ? { models } : {}),
+    ...(license ? { license } : {}),
     ...(openApi ? { openApi } : {}), ...(sources ? { sources } : {}), ...(cloud ? { cloud } : {}) });
 }
 
@@ -164,6 +179,13 @@ Restart=on-failure
 RestartSec=30
 TimeoutStopSec=180
 KillSignal=SIGTERM
+KillMode=control-group
+OOMPolicy=stop
+CPUQuota=100%
+MemoryHigh=384M
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=128
 NoNewPrivileges=true
 ${temporaryStorage}
 ProtectSystem=strict

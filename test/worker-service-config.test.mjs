@@ -65,6 +65,17 @@ test('systemd user scope inherits a non-root manager identity and keeps home rea
   assert.match(content,/TimeoutStopSec=180\n/);
 });
 
+test('each Linux service bounds its process tree and restarts only its own failed unit', () => {
+  for (const scope of ['system', 'user']) {
+    const content = render(scope === 'user' ? { scope, user: undefined } : { scope });
+    for (const directive of ['KillMode=control-group', 'OOMPolicy=stop', 'CPUQuota=100%',
+      'MemoryHigh=384M', 'MemoryMax=512M', 'MemorySwapMax=0', 'TasksMax=128',
+      'Restart=on-failure', 'RestartSec=30', 'StartLimitIntervalSec=300', 'StartLimitBurst=5']) {
+      assert(content.split('\n').includes(directive), `Missing ${directive} in ${scope} service`);
+    }
+  }
+});
+
 test('service scopes reject unsupported managers and user identity switches instead of silently weakening isolation', () => {
   for (const overrides of [{scope:'root'},{scope:null},{scope:'user',user:'operator'},{scope:'user',target:'launchd'},
     {scope:'system',target:'launchd'},{scope:'user',target:'windows',user:undefined}]) assert.throws(()=>render(overrides));

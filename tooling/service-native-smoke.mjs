@@ -189,6 +189,22 @@ try {
     const initial = (await sourceSubscriptions()).find(item => item.id === fixture.subscriptionId);
     assert(initial?.lastSucceededAt && initial.lastError === null, 'The supervisor must run the real source observer');
     assert(Number.isSafeInteger(first.pid) && first.pid > 0 && first.pid !== process.pid);
+    if (target === 'systemd') {
+      const group = systemctl(['show', `${name}.service`, '--property=ControlGroup', '--value']).trim();
+      assert(group.startsWith('/') && !group.split('/').includes('..') && basename(group) === `${name}.service`);
+      const membership = (await readFile(`/proc/${first.pid}/cgroup`, 'utf8')).trim().split('\n');
+      assert(membership.includes(`0::${group}`), 'Worker must belong to its own cgroup v2 service');
+      const cgroup = `/sys/fs/cgroup${group}`;
+      for (const [file, expected] of [['memory.high', '402653184'], ['memory.max', '536870912'],
+        ['memory.swap.max', '0'], ['pids.max', '128']]) {
+        assert.equal((await readFile(join(cgroup, file), 'utf8')).trim(), expected,
+          `Kernel must enforce ${file}; a rendered directive alone is insufficient`);
+      }
+      const [quota, period] = (await readFile(join(cgroup, 'cpu.max'), 'utf8')).trim().split(/\s+/u).map(Number);
+      assert(Number.isSafeInteger(quota) && quota > 0 && Number.isSafeInteger(period) && period > 0 && quota === period,
+        'Kernel must enforce one CPU of quota for this service');
+      assert.equal(systemctl(['show', `${name}.service`, '--property=OOMPolicy', '--value']).trim(), 'stop');
+    }
     if (userScope) {
       const sourceMount = run('findmnt', ['--task', String(first.pid), '--target', fixture.sourcePath, '--noheadings', '--output', 'OPTIONS']).trim();
       const stateMount = run('findmnt', ['--task', String(first.pid), '--target', fixture.statePath, '--noheadings', '--output', 'OPTIONS']).trim();

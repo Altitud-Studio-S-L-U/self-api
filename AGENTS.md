@@ -1,6 +1,7 @@
 # Branching
 
 - Use `main` as the integration branch; submit changes through pull requests.
+- Finish each task with the primary checkout on main. Merge through PRs only after required reviews and checks; preserve unmerged work in its branches/PRs before removing extra worktrees and disposable task files.
 - Name work branches `feat/<short-name>`, `fix/<short-name>`, or `hotfix/<short-name>`.
 - Use `feat` for features, `fix` for regular corrections, and `hotfix` for urgent fixes.
 - Keep the name after `/` short, descriptive, and lowercase kebab-case.

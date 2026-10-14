@@ -8,9 +8,9 @@ import { fixture, controlledModel, enginePath } from './helpers/job-proposal.mjs
 async function setup(t) {
   const f = await fixture(t), model = await controlledModel(t, f.recipe);
   const modelPath = join(f.directory, 'model.json');
-  await writeFile(modelPath, JSON.stringify({ provider: 'local-openai-compatible', model: 'deterministic-fixture',
-    endpoint: model.adapter.destination.startsWith('local:') ? 'http://127.0.0.1:1/v1/chat/completions' : model.adapter.destination,
-    policyId: 'fixture-v1', maximumOutputTokens: 2048 }));
+  await writeFile(modelPath, JSON.stringify({ schemaVersion: 1, primary: 'fixture', connections: [{
+    id: 'fixture', revision: 1, credentialRevision: 1, provider: 'local-openai-compatible', model: 'deterministic-fixture',
+    endpoint: model.endpoint, policyId: 'fixture-v1', maximumOutputTokens: 2048 }] }));
   const args = ['--state', f.statePath, '--engine', enginePath, '--model', modelPath, '--test', 'orders.test.mjs'];
   return { ...f, model, modelPath, args };
 }
@@ -25,11 +25,11 @@ test('job model planning is local and cancelled consent never invokes a configur
   const factory = () => f.model.adapter;
   const planned = await invoke(['job-proposal-plan', f.jobId, ...f.args], { adapter: factory });
   assert.equal(planned.code, 0); assert.equal(f.model.calls.length, 0);
-  const request = JSON.parse(planned.stdout); assert.equal(request.authorization, 'not-granted');
+  const request = JSON.parse(planned.stdout); assert.equal(request.route.authorization, 'not-granted'); assert.equal(f.model.checks.length, 0);
   const cancelled = await invoke(['job-propose', f.jobId, ...f.args], { adapter: factory, confirm: async id => {
-    assert.equal(id, request.modelRequest.id); return false;
+    assert.equal(id, request.route.id); return false;
   } });
-  assert.equal(cancelled.code, 1); assert.equal(f.model.calls.length, 0);
+  assert.equal(cancelled.code, 1); assert.equal(f.model.calls.length, 0); assert.equal(f.model.checks.length, 0);
 });
 
 test('CLI generates a bound recipe, then accepts explicit answers without authorizing tests or publication', async t => {
@@ -37,6 +37,7 @@ test('CLI generates a bound recipe, then accepts explicit answers without author
   const generated = await invoke(['job-propose', f.jobId, ...f.args, '--output', 'proposal.json'],
     { adapter: () => f.model.adapter, confirm: async () => true });
   assert.equal(generated.code, 0, generated.stderr); assert.equal(f.model.calls.length, 1);
+  assert.equal(f.model.checks.length, 1);
   const saved = JSON.parse(generated.stdout.trim().split('\n').at(-1));
   assert.equal(saved.proposal.status, 'proposal-ready'); assert.equal(saved.proposal.authorization, 'not-granted');
   assert.equal(saved.proposal.publication, 'not-authorized'); assert.equal(saved.proposal.preview.files.length, 0);

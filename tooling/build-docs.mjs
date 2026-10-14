@@ -8,15 +8,19 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const source = readFileSync(path.join(root, 'docs', 'technical-guide.html'));
+assert(!source.includes(13), 'Technical HTML must use LF line endings, as required by .gitattributes; normalize it before generating the PDF.');
 const html = new TextDecoder('utf-8', { fatal: true }).decode(source);
 const sourceHash = createHash('sha256').update(source).digest('hex');
+const version=JSON.parse(readFileSync(path.join(root,'package.json'),'utf8')).version;
+assert(html.includes(`Keepseam Client ${version}`),'Technical source must identify the current package version.');
 const target = path.join(root, 'docs', 'technical-guide.pdf');
-const pages = 16;
+const pages = 24;
 assert(!/<script\b|<(?:iframe|img|link)\b|@import|url\s*\(/i.test(html), 'Technical source must be self-contained and script-free.');
 const check = (pdf) => {
   const encoded = pdf.toString('latin1');
   assert(encoded.startsWith('%PDF-'), 'Technical guide must be a genuine PDF.');
   assert(encoded.includes(`source-sha256=${sourceHash}`), 'Technical PDF is stale; regenerate it after changing its HTML source.');
+  assert(encoded.includes(`client-version=${version} |`),'Technical PDF does not identify the current client version.');
   assert.equal((encoded.match(/\/Type\s*\/Page\b/g) || []).length, pages, 'Unexpected technical guide page count.');
 };
 if (args.length === 1 && args[0] === '--check') {
@@ -32,7 +36,7 @@ if (args.length === 1 && args[0] === '--check') {
     await page.route('**/*', (route) => route.abort());
     await page.setContent(html, { waitUntil: 'load' });
     await page.emulateMedia({ media: 'print' });
-    await page.evaluate(async (title) => { document.title = title; await document.fonts.ready; }, `Keepseam Client | source-sha256=${sourceHash}`);
+    await page.evaluate(async (title) => { document.title = title; await document.fonts.ready; }, `Keepseam Client | client-version=${version} | source-sha256=${sourceHash}`);
     const layout = await page.evaluate(() => [...document.querySelectorAll('.page')].map((section, index) => ({
       page: index + 1,
       content: section.scrollHeight,

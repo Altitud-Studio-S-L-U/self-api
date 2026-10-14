@@ -41,10 +41,11 @@ try {
   const packageContents = JSON.parse(packed.stdout.slice(packed.stdout.lastIndexOf('\n{') + 1));
   assert.ok(Array.isArray(packageContents.files) && packageContents.files.length > 0);
   for (const { path } of packageContents.files) {
-    assert.ok(['package.json', 'README.md', 'dist/oasdiff-release.json'].includes(path) ||
+    assert.ok(['package.json', 'README.md', 'dist/oasdiff-release.json', 'tooling/prepare-validation-runtime.mjs'].includes(path) ||
       /^dist\/(?:[a-z0-9-]+\/)*[a-z0-9-]+\.(?:js|d\.ts)$/u.test(path),
     `Unexpected packaged file: ${path}`);
   }
+  assert.ok(packageContents.files.some(file => file.path === 'tooling/prepare-validation-runtime.mjs'));
   await writeFile(join(consumer, 'package.json'), JSON.stringify({
     name: 'keepseam-package-consumer-fixture',
     private: true,
@@ -67,12 +68,15 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compareOpenApi, compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest } from 'keepseam-client';
 import { runCli } from 'keepseam-client/cli';
+import { prepareValidationRuntime, validateRuntime } from 'keepseam-client';
 import { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from 'keepseam-client';
 import { negotiateCloudProtocol, encodeCloudStatusEvent } from 'keepseam-client/protocol';
 
 for (const api of [compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, encodeCloudStatusEvent, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest, runCli]) assert.equal(typeof api, 'function');
 assert.deepEqual(negotiateCloudProtocol([1]), { status: 'compatible', version: 1 });
 for (const api of [checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError]) assert.equal(typeof api, 'function');
+assert.equal(typeof prepareValidationRuntime, 'function');
+assert.equal(typeof validateRuntime, 'function');
 
 const installed = await realpath(join(import.meta.dirname, 'node_modules'));
 const entry = await realpath(fileURLToPath(import.meta.resolve('keepseam-client')));
@@ -143,6 +147,14 @@ void reviewedRecipe;
   assert.equal(cli.stderr, '');
   assert.match(cli.stdout, /keepseam compare <base\.json> <revision\.json>/u);
   assert.match(cli.stdout, /keepseam client-update check\|stage\|status --config <absolute-json>/u);
+  const preparationHelp = run([pnpmPath, 'exec', 'keepseam', 'runtime', '--help'], consumer);
+  assert.match(preparationHelp.stdout, /runtime prepare pytest\|maven-junit/u);
+  assert.equal(preparationHelp.stderr, '');
+  const installedTool = join(consumer, 'node_modules/keepseam-client/tooling/prepare-validation-runtime.mjs');
+  const invalidPreparation = spawnSync(process.execPath, [installedTool], { cwd: consumer, env: environment, encoding: 'utf8', timeout: 10_000, shell: false });
+  assert.equal(invalidPreparation.status, 1);
+  assert.match(invalidPreparation.stderr, /Usage: node tooling\/prepare-validation-runtime/u);
+  assert.doesNotMatch(invalidPreparation.stderr, /ERR_MODULE_NOT_FOUND/u);
   process.stdout.write('Packed package passed: public SDK import, NodeNext types, installed CLI, private subpaths, and package contents.\n');
 } finally {
   const actualWork = await realpath(work);

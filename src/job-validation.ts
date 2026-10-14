@@ -14,6 +14,7 @@ import { readValidationOutcome } from './validation-outcome.js';
 import type { ValidationOutcome } from './validation-outcome.js';
 import { openExistingWorkerStore, withContractCopies } from './worker.js';
 import type { ExecutionBlockReason, ExecutionIntent, WorkerStore } from './worker-store.js';
+import { validateRuntime, type ValidationRuntime } from './validation-runtime.js';
 
 export interface JobValidationOptions {
   readonly statePath: string;
@@ -21,6 +22,7 @@ export interface JobValidationOptions {
   readonly enginePath: string;
   readonly recipe: unknown;
   readonly testPaths: readonly string[];
+  readonly runtime?: ValidationRuntime;
 }
 
 export interface JobExecutionCycle {
@@ -41,19 +43,24 @@ function stale(): never {
   throw new JobEvidenceError('stale-evidence', 'Job evidence no longer matches the current source or consumer; observe and review again.');
 }
 
-function copiedInputs(input: JobValidationOptions): { recipeJson: string; testPaths: string[] } {
+function copiedInputs(input: JobValidationOptions): { recipeJson: string; testPaths: string[]; runtime?: ValidationRuntime } {
   const recipeJson = serializeMigrationRecipe(input.recipe);
   if (!Array.isArray(input.testPaths) || input.testPaths.length < 1 || input.testPaths.length > 20
     || input.testPaths.some(path => typeof path !== 'string')) {
     throw new PlumberError('INVALID_INPUT', 'Select 1–20 explicit test paths for the job.');
   }
-  return { recipeJson, testPaths: [...input.testPaths] };
+  return { recipeJson, testPaths: [...input.testPaths], ...(input.runtime === undefined ? {} : { runtime: validateRuntime(input.runtime) }) };
+}
+
+function validationInputs(input: JobValidationOptions, frozen: ReturnType<typeof copiedInputs>): JobValidationOptions {
+  return { statePath: input.statePath, jobId: input.jobId, enginePath: input.enginePath,
+    recipe: JSON.parse(frozen.recipeJson), testPaths: frozen.testPaths, ...(frozen.runtime ? { runtime: frozen.runtime } : {}) };
 }
 
 async function withFreshJob<T>(store: WorkerStore, input: JobValidationOptions,
   action: (options: MigrationValidationOptions, request: MigrationValidationRequest) => Promise<T>): Promise<T> {
   const { job, subscription, baseline, revision } = store.getJobEvidence(input.jobId);
-  const { recipeJson, testPaths } = copiedInputs(input);
+  const { recipeJson, testPaths, runtime } = copiedInputs(input);
   const currentSource = async (): Promise<Uint8Array> => {
     if (!subscription.httpSource) return readLocalBytes(subscription.sourcePath, 4 * 1024 * 1024).catch(() => stale());
     // This verifies the last successful explicit capture, not present-time remote behavior. No implicit network access.
@@ -70,7 +77,7 @@ async function withFreshJob<T>(store: WorkerStore, input: JobValidationOptions,
   return withContractCopies(store.statePath, baseline.bytes, revision.bytes, async paths => {
     const options: MigrationValidationOptions = { ...paths, enginePath: input.enginePath,
       consumerRoot: subscription.consumerRoot, providerBaseUrl: subscription.providerBaseUrl,
-      recipe: JSON.parse(recipeJson) as unknown, testPaths };
+      recipe: JSON.parse(recipeJson) as unknown, testPaths, ...(runtime ? { runtime } : {}) };
     const request = await prepareMigrationValidation(options);
     if (request.plan.evidence.consumerDigest !== job.consumerDigest
       || request.plan.evidence.baseSha256 !== job.baselineSha || request.plan.evidence.revisionSha256 !== job.revisionSha
@@ -82,8 +89,9 @@ async function withFreshJob<T>(store: WorkerStore, input: JobValidationOptions,
 
 export async function prepareJobValidation(input: JobValidationOptions): Promise<MigrationValidationRequest> {
   const frozen = copiedInputs(input);
+  const options = validationInputs(input, frozen);
   const store = await openExistingWorkerStore(input.statePath);
-  try { return await withFreshJob(store, { ...input, recipe: JSON.parse(frozen.recipeJson), testPaths: frozen.testPaths }, async (_options, request) => request); }
+  try { return await withFreshJob(store, options, async (_options, request) => request); }
   finally { store.close(); }
 }
 
@@ -93,9 +101,10 @@ export async function approveJobValidation(input: JobValidationOptions & {
   readonly origin: 'local-cli' | 'explicit-sdk-caller';
 }): Promise<ApprovalReceipt> {
   const frozen = copiedInputs(input);
+  const copied = validationInputs(input, frozen);
   const store = await openExistingWorkerStore(input.statePath);
   try {
-    return await withFreshJob(store, { ...input, recipe: JSON.parse(frozen.recipeJson), testPaths: frozen.testPaths }, async options =>
+    return await withFreshJob(store, copied, async options =>
       approveMigrationValidation({ options, expectedRequestId: input.expectedRequestId, statePath: store.statePath, origin: input.origin }));
   } finally { store.close(); }
 }
@@ -103,14 +112,15 @@ export async function approveJobValidation(input: JobValidationOptions & {
 /** Persist an existing, still-valid approval without consuming it or starting execution. */
 export async function queueJobValidation(input: JobValidationOptions & { readonly receiptId: string }): Promise<{ intent: ExecutionIntent; created: boolean }> {
   const frozen = copiedInputs(input);
+  const copied = validationInputs(input, frozen);
   const store = await openExistingWorkerStore(input.statePath);
   try {
-    return await withFreshJob(store, { ...input, recipe: JSON.parse(frozen.recipeJson), testPaths: frozen.testPaths }, async (options, request) => {
+    return await withFreshJob(store, copied, async (options, request) => {
       await inspectApproval({ statePath: store.statePath, consumerRoot: options.consumerRoot, receiptId: input.receiptId,
         planId: request.plan.id, executionDigest: request.executionDigest, policyDigest: request.policyDigest });
       return store.enqueueExecution({ jobId: input.jobId, receiptId: input.receiptId, requestId: request.id,
         planId: request.plan.id, executionDigest: request.executionDigest, policyDigest: request.policyDigest,
-        recipeJson: frozen.recipeJson, testPaths: frozen.testPaths });
+        recipeJson: frozen.recipeJson, testPaths: frozen.testPaths, ...(frozen.runtime ? { runtime: frozen.runtime } : {}) });
     });
   } finally { store.close(); }
 }
@@ -152,7 +162,7 @@ export async function runApprovedJobsOnce(input: {
       const progress: { phase: 'evidence' | 'approval' | 'execution' } = { phase: 'evidence' };
       try {
         await withFreshJob(store, { statePath: store.statePath, jobId: intent.jobId, enginePath: input.enginePath,
-          recipe: JSON.parse(intent.recipeJson), testPaths: intent.testPaths }, async (options, request) => {
+          recipe: JSON.parse(intent.recipeJson), testPaths: intent.testPaths, ...(intent.runtime ? { runtime: intent.runtime } : {}) }, async (options, request) => {
           store.assertExecutionOwnership(claim);
           if (request.id !== intent.requestId || request.plan.id !== intent.planId
             || request.executionDigest !== intent.executionDigest || request.policyDigest !== intent.policyDigest) {
@@ -237,7 +247,8 @@ export async function recoverApprovedJobs(input: {
           continue;
         }
         const recovered = await recoverDockerValidation({ statePath: bindings.attemptPath,
-          profileId: dockerProfileForTests(intent.testPaths).id,
+          profileId: dockerProfileForTests(intent.testPaths, intent.runtime ?? undefined).id,
+          ...(intent.runtime ? { runtime: intent.runtime } : {}),
           execution: { intentId: intent.id, receiptId: intent.receiptId, requestId: intent.requestId },
           guard: () => { store.assertRecoveryOwnership(claim); } });
         if (recovered.cleanup === 'removed' || recovered.cleanup === 'not-created') {

@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { test } from 'node:test';
-import { createHttpModelAdapter, prepareModelProposal, approveModelProposal, proposeMigrationWithModel } from '../dist/index.js';
+import { createHttpModelAdapter, probeHttpModelConnection, prepareModelProposal, approveModelProposal, proposeMigrationWithModel } from '../dist/index.js';
 
 const source = 'export const total = order => order.total;\n';
 const file = { path: 'src/order.mjs', sha256: createHash('sha256').update(source).digest('hex'), text: source, role: 'source' };
@@ -44,6 +44,36 @@ async function propose(adapter, request = prepare(adapter)) {
   const consent = approveModelProposal({ request, expectedRequestId: request.id, allowRemote: true });
   return proposeMigrationWithModel({ request, consent, adapter });
 }
+
+for (const provider of ['openai', 'anthropic', 'google', 'local-openai-compatible']) {
+  test(`${provider} functional connection check performs synthetic bounded inference without consumer code or tools`, async () => {
+    const fixture = transport(responseFor(provider, '{"keepseam":"ok"}'));
+    const result = await probeHttpModelConnection(options(provider), new AbortController().signal, fixture.dependencies);
+    assert.equal(result.status, 'verified'); assert.equal(result.maximumOutputTokens, 128); assert.equal(fixture.calls.length, 1);
+    const { body, url } = fixture.calls[0];
+    assert(!JSON.stringify(body).includes(source)); assert(!JSON.stringify(body).includes(file.path)); assert(!Object.hasOwn(body, 'tools'));
+    assert(!url.includes('fictional-provider-key'));
+    assert.equal(body.max_output_tokens ?? body.max_tokens ?? body.generationConfig.maxOutputTokens, 128);
+    if (provider === 'openai') assert.equal(body.store, false);
+    for (const output of ['not JSON', '{"keepseam":"wrong"}', '{"keepseam":"ok","secret":"untrusted"}']) {
+      const invalid = transport(responseFor(provider, output));
+      await assert.rejects(probeHttpModelConnection(options(provider), new AbortController().signal, invalid.dependencies), { code: 'ENGINE_FAILED' });
+    }
+    const mismatched = transport({ ...responseFor(provider, '{"keepseam":"ok"}'), [provider === 'google' ? 'modelVersion' : 'model']: 'unapproved-model' });
+    await assert.rejects(probeHttpModelConnection(options(provider), new AbortController().signal, mismatched.dependencies), { kind: 'model' });
+  });
+}
+
+test('HTTP failures expose only typed classifications, distinguishing transient rate limits from exhausted quota', async () => {
+  for (const [status, code, expected] of [[401, 'invalid_api_key', 'credentials'], [403, 'permission_error', 'permission'],
+    [404, 'model_not_found', 'model'], [400, 'invalid_request_error', 'model'], [429, 'insufficient_quota', 'quota'],
+    [429, 'rate_limit_exceeded', 'transient'], [429, 'unknown', 'quota'], [503, 'overloaded_error', 'transient']]) {
+    const fixture = transport({ error: { code, message: 'private-original-provider-diagnostic' } }, { status });
+    await assert.rejects(probeHttpModelConnection(options(), new AbortController().signal, fixture.dependencies), error => {
+      assert.equal(error.kind, expected); assert(!error.message.includes('private-original')); assert.equal(error.cause, undefined); return true;
+    });
+  }
+});
 
 for (const provider of ['openai', 'anthropic', 'google', 'local-openai-compatible']) {
   test(`${provider} sends a bounded structured request only after consent and returns an unapproved recipe`, async () => {

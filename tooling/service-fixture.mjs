@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { registerSourceSubscription } from '../dist/index.js';
+import { createLicenseFixture } from './license-fixture.mjs';
 
 /** Creates only a caller-owned test fixture; never installs a service or changes ACLs. */
 export async function createServiceFixture(directory) {
@@ -14,6 +15,9 @@ export async function createServiceFixture(directory) {
   await writeFile(baselinePath, schema, { flag: 'wx', mode: 0o600 });
   await writeFile(sourcePath, schema, { flag: 'wx', mode: 0o600 });
   const subscription = await registerSourceSubscription({ statePath, sourcePath, baselinePath, kind: 'json-schema', direction: 'input', label: 'Fictional service lifecycle fixture' });
-  await writeFile(configPath, JSON.stringify({ schemaVersion: 1, statePath, sources: { intervalMs: 1000 }, allowHttp: false }), { flag: 'wx', mode: 0o600 });
+  const { license } = await createLicenseFixture(directory);
+  // The licensed-daemon contract now requires a real verified lease even for
+  // local lifecycle fixtures. These fresh synthetic keys authorize no customer.
+  await writeFile(configPath, JSON.stringify({ schemaVersion: 1, statePath, sources: { intervalMs: 1000 }, allowHttp: false, license }), { flag: 'wx', mode: 0o600 });
   return { configPath, statePath, subscriptionId: subscription.id, sourcePath };
 }

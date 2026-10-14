@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { appendFile,readFile } from 'node:fs/promises';
 const pkg = JSON.parse(await readFile('package.json', 'utf8'));
 const tag = process.env.RELEASE_TAG;
 assert.equal(tag, `v${pkg.version}`, 'Release tag must match package version');
@@ -10,4 +10,5 @@ const response = await fetch(`https://api.github.com/repos/${process.env.GITHUB_
 assert(response.ok, 'Required CI evidence could not be read');
 const checks = (await response.json()).check_runs;
 assert(checks.some(check => check.name === 'SDK acceptance' && check.conclusion === 'success'), 'This commit must pass SDK acceptance before a release is built');
+if(process.env.GITHUB_OUTPUT)await appendFile(process.env.GITHUB_OUTPUT,`sha=${sha}\nversion=${pkg.version}\n`);
 console.log(`Verified reviewed main ancestry and SDK acceptance for ${tag}`);

@@ -40,7 +40,7 @@ jobs:
   isolated-validation:
     name: isolated validation (Linux x64)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -57,6 +57,9 @@ jobs:
       - run: docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd
       - run: docker pull python@sha256:f040863673aea2570c3ff6a5c3fb4c673a016cbc5375005ad145915922b6b78a
       - run: docker pull eclipse-temurin@sha256:51ae87bbb1949c1afdff51f6a3e6c5f283d84a4bd68512c9657fdc6605026a49
+      - run: pnpm build
+      - run: node tooling/prepare-validation-runtime.mjs pytest work/audit/pytest-runtime.json
+      - run: node tooling/prepare-validation-runtime.mjs maven-junit work/audit/maven-junit-runtime.json
       - run: pnpm test:isolated
   native-supervision:
     name: native service (${{ matrix.os }})
@@ -106,6 +109,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # systemd 249 delegates memory and pids by default, but user CPU quotas
+      # also require cpu delegation. This runner is disposable.
+      - run: sudo systemctl set-property --runtime "user@$(id -u).service" 'Delegate=cpu memory pids'
       - run: node tooling/service-native-smoke.mjs --user
 
   acceptance:

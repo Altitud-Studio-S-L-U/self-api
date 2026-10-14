@@ -10,6 +10,7 @@ import { checkWindowsPermissions } from './windows-permissions.js';
 import { validateValidationOutcome, type ValidationOutcome } from './validation-outcome.js';
 import { prepareHttpSource, validateHttpSourceSnapshot } from './http-source.js';
 import type { HttpSourcePolicy, HttpSourceSnapshot } from './http-source.js';
+import { validateRuntime, type ValidationRuntime } from './validation-runtime.js';
 
 export interface WorkerSnapshot { readonly bytes: Uint8Array; readonly metadata: SnapshotMetadata }
 export interface WorkerSubscription {
@@ -59,6 +60,7 @@ export interface ExecutionIntent {
   readonly policyDigest: string;
   readonly recipeJson: string;
   readonly testPaths: readonly string[];
+  readonly runtime: ValidationRuntime | null;
   readonly status: ExecutionStatus;
   readonly owner: string | null;
   readonly generation: number;
@@ -82,6 +84,7 @@ export interface EnqueueExecutionInput {
   readonly policyDigest: string;
   readonly recipeJson: string;
   readonly testPaths: readonly string[];
+  readonly runtime?: ValidationRuntime;
 }
 export interface WorkerStore {
   readonly statePath: string;
@@ -253,6 +256,7 @@ function execution(row: Row): ExecutionIntent {
     id: row.id as string, jobId: row.job_id as string, receiptId: row.receipt_id as string, requestId: row.request_id as string,
     planId: row.plan_id as string, executionDigest: row.execution_digest as string, policyDigest: row.policy_digest as string,
     recipeJson: row.recipe_json as string, testPaths: JSON.parse(row.test_paths_json as string) as string[],
+    runtime: row.runtime_json === null ? null : validateRuntime(JSON.parse(row.runtime_json as string)),
     status: row.status as ExecutionStatus, owner: row.owner as string | null, generation: row.generation as number,
     expiresAt: iso(row.expires_at), createdAt: iso(row.created_at)!, updatedAt: iso(row.updated_at)!,
     outcome: row.outcome_json === null ? null : validateValidationOutcome(JSON.parse(row.outcome_json as string)),
@@ -291,7 +295,8 @@ CREATE TABLE jobs (
   UNIQUE(subscription_id, baseline_sha, revision_sha, consumer_digest, engine_version)
 ) STRICT;
 ${EXECUTION_SCHEMA}
-PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=3;`;
+ALTER TABLE execution_intents ADD COLUMN runtime_json TEXT;
+PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=4;`;
 
 /** Opens customer-owned local state explicitly. Importing this module starts no worker and opens no database. */
 export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
@@ -324,8 +329,8 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
     database = db;
     const application = (): number => db.prepare('PRAGMA application_id').get()!.application_id as number;
     const version = (): number => db.prepare('PRAGMA user_version').get()!.user_version as number;
-    if (version() !== 0 && (![1, 2, 3].includes(version()) || application() !== APPLICATION_ID)) invalid('The worker database version or identity is unsupported.');
-    if (version() < 3) {
+    if (version() !== 0 && (![1, 2, 3, 4].includes(version()) || application() !== APPLICATION_ID)) invalid('The worker database version or identity is unsupported.');
+    if (version() < 4) {
       db.exec('BEGIN IMMEDIATE');
       try {
         if (version() === 0) {
@@ -333,7 +338,7 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
             invalid('An existing foreign database cannot be imported as worker state.');
           }
           db.exec(SCHEMA);
-        } else if (![1, 2, 3].includes(version()) || application() !== APPLICATION_ID) invalid('The worker database version or identity is unsupported.');
+        } else if (![1, 2, 3, 4].includes(version()) || application() !== APPLICATION_ID) invalid('The worker database version or identity is unsupported.');
         if (version() === 1) {
           db.exec(EXECUTION_SCHEMA);
           db.exec('PRAGMA user_version=2');
@@ -341,6 +346,7 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
         if (version() === 2) {
           db.exec('ALTER TABLE subscriptions ADD COLUMN http_source_json TEXT; ALTER TABLE subscriptions ADD COLUMN http_cache_json TEXT; PRAGMA user_version=3;');
         }
+        if (version() === 3) db.exec('ALTER TABLE execution_intents ADD COLUMN runtime_json TEXT; PRAGMA user_version=4;');
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     }
@@ -576,12 +582,13 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
         requiredJob(input.jobId);
         const recipeJson = canonicalRecipe(input.recipeJson);
         const testPaths = JSON.stringify(executionTests(input.testPaths));
+        const runtimeJson = input.runtime === undefined ? null : JSON.stringify(validateRuntime(input.runtime));
         const id = hash(input.receiptId);
         const existing = db.prepare('SELECT * FROM execution_intents WHERE receipt_id=?').get(input.receiptId);
         if (existing) {
           if (existing.id !== id || existing.job_id !== input.jobId || existing.request_id !== input.requestId || existing.plan_id !== input.planId
             || existing.execution_digest !== input.executionDigest || existing.policy_digest !== input.policyDigest
-            || existing.recipe_json !== recipeJson || existing.test_paths_json !== testPaths) {
+            || existing.recipe_json !== recipeJson || existing.test_paths_json !== testPaths || existing.runtime_json !== runtimeJson) {
             invalid('An approval receipt cannot be queued with different evidence or execution inputs.');
           }
           return { intent: execution(existing), created: false };
@@ -591,9 +598,9 @@ export async function openWorkerStore(statePath: string): Promise<WorkerStore> {
         if (used + Buffer.byteLength(recipeJson) > TOTAL_RECIPE_LIMIT) limit('Execution recipes exceed the total 64 MiB limit.');
         const now = Date.now();
         db.prepare(`INSERT INTO execution_intents
-          (id,job_id,receipt_id,request_id,plan_id,execution_digest,policy_digest,recipe_json,test_paths_json,status,created_at,updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?)`).run(id, input.jobId, input.receiptId, input.requestId, input.planId,
-          input.executionDigest, input.policyDigest, recipeJson, testPaths, now, now);
+          (id,job_id,receipt_id,request_id,plan_id,execution_digest,policy_digest,recipe_json,test_paths_json,runtime_json,status,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,'queued',?,?)`).run(id, input.jobId, input.receiptId, input.requestId, input.planId,
+          input.executionDigest, input.policyDigest, recipeJson, testPaths, runtimeJson, now, now);
         return { intent: execution(requiredExecution(id)), created: true };
       }); },
       listExecutionIntents() { return operate(() => db.prepare('SELECT * FROM execution_intents ORDER BY created_at,id').all().map(execution)); },

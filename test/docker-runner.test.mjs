@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { after, test } from 'node:test';
 import { createDockerValidationRunner, DOCKER_PROFILE, runDockerValidation } from '../dist/docker-runner.js';
+import { runtimeRecipeSha256 } from '../dist/validation-runtime.js';
 
 const parent = resolve('work/test-docker-runner');
 await mkdir(parent, { recursive: true });
@@ -88,6 +89,22 @@ test('profile binds image, execution permissions, environment, and limits immuta
   assert.ok(Object.isFrozen(DOCKER_PROFILE.isolationArgs));
   assert.ok(Object.isFrozen(DOCKER_PROFILE.environment));
   assert.ok(Object.isFrozen(DOCKER_PROFILE.command));
+});
+
+test('prepared framework image labels must match the approved recipe and dependencies before creation', async () => {
+  const input = await fixture();
+  await writeFile(join(input.snapshotPath, 'test_contract.py'), 'def test_contract(): assert True\n');
+  const runtime = { schemaVersion: 1, kind: 'pytest', imageId: `sha256:${'a'.repeat(64)}`,
+    recipeSha256: runtimeRecipeSha256('pytest'), dependenciesSha256: 'b'.repeat(64) };
+  for (const change of [{ 'io.keepseam.validation.recipe': '0'.repeat(64) }, { 'io.keepseam.validation.dependencies': '0'.repeat(64) }, { 'io.keepseam.validation.framework': 'maven-junit' }]) {
+    const docker = fakeDocker({ image: ({ call, response }) => call.args.includes('{{json .Config.Labels}}') ? { code: 0, stdout: JSON.stringify({
+      'io.keepseam.validation.recipe': runtime.recipeSha256, 'io.keepseam.validation.dependencies': runtime.dependenciesSha256,
+      'io.keepseam.validation.framework': runtime.kind, ...change }) } : response });
+    const result = await docker.runner()({ ...input, testPaths: ['test_contract.py'], runtime });
+    assert.equal(result.status, 'blocked');
+    assert.equal(result.cleanup, 'not-created');
+    assert.equal(docker.calls.some(call => call.args[0] === 'create'), false);
+  }
 });
 
 test('validates selected tests with fixed policy and verifies removal before returning passed', async () => {
