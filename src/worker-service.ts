@@ -5,6 +5,7 @@ import { CloudConnectionError, createCloudTransport, createCloudControlTransport
 import { WorkerLicenseStore, normalizeWorkerLicenseTrust, WORKER_CONTROL_INTERVAL_MS, type WorkerControlTransport } from './worker-license.js';
 import { syncWorkerToCloud } from './cloud-sync.js';
 import { PlumberError } from './errors.js';
+import { checkWindowsPermissions } from './windows-permissions.js';
 import { loadLocalJson } from './local-file.js';
 import { ModelConnections } from './model-connections.js';
 import { ModelConnectionStore } from './model-connections-store.js';
@@ -165,17 +166,18 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
     if (config.sources && (await listSourceSubscriptions({ statePath: lock.directory })).length === 0) invalid('The source service profile has no registered subscriptions.');
     let credentials: CloudCredentials | undefined;
     if (config.cloud) {
-      checkServicePath(config.cloud.statePath, 'directory'); checkWindowsServiceAcl(config.cloud.statePath, true);
-      checkServicePath(config.cloud.credentialsPath, 'secret'); checkWindowsServiceAcl(config.cloud.credentialsPath, true);
+      checkServicePath(config.cloud.statePath, 'directory');
+      checkServicePath(config.cloud.credentialsPath, 'secret');
+      checkWindowsPermissions([config.cloud.statePath, config.cloud.credentialsPath], true);
       credentials = await loadLocalJson(config.cloud.credentialsPath, 16_384) as CloudCredentials;
       createCloudTransport(credentials);
     }
     let control: WorkerControlTransport | undefined;
     let licenseCredentials: CloudCredentials | undefined;
     if (config.license) {
-      for (const path of [config.license.credentialsPath, config.license.trustPath, ...(config.license.leasePath ? [config.license.leasePath] : [])]) {
-        checkServicePath(path, 'secret'); checkWindowsServiceAcl(path, true);
-      }
+      const paths = [config.license.credentialsPath, config.license.trustPath, ...(config.license.leasePath ? [config.license.leasePath] : [])];
+      for (const path of paths) checkServicePath(path, 'secret');
+      checkWindowsPermissions(paths, true);
       licenseCredentials = await loadLocalJson(config.license.credentialsPath, 16_384) as CloudCredentials;
       const trust = normalizeWorkerLicenseTrust(await loadLocalJson(config.license.trustPath, 16_384));
       control = options.dependencies?.control ?? createCloudControlTransport(licenseCredentials, { signal: controller.signal });
