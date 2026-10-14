@@ -164,6 +164,7 @@ test('v2 binds journal policy and writes intent before create, creation receipt 
     create: async ({ response }) => {
       const intent = await readJson(join(directory, 'baseline.intent.json'));
       assert.equal(intent.requestId, context.execution.requestId);
+      assert.equal(intent.containerName, `keepseam-validation-${intent.owner}`);
       await assert.rejects(access(join(directory, 'baseline.created.json')), { code: 'ENOENT' });
       events.push('intent-before-create');
       return response;
@@ -297,6 +298,8 @@ test('partial or malformed markers and journal records fail conservatively', asy
 
 test('recovery refuses changed ownership labels, image, command, security controls or snapshot mount', async () => {
   const mutations = [
+    container => { container.name = container.name.replace('/keepseam-validation-', '/plumber-validation-'); },
+    container => { container.name = `/keepseam-validation-${randomUUID()}`; },
     container => { container.labels['io.plumber.validation'] = randomUUID(); },
     container => { container.labels['io.plumber.request'] = '0'.repeat(64); },
     container => { container.labels['io.plumber.profile'] = '0'.repeat(64); },
@@ -317,6 +320,24 @@ test('recovery refuses changed ownership labels, image, command, security contro
     assert.equal(result.cleanup, 'failed');
     assert.equal(result.reason, 'container-identity-mismatch');
     assert.ok(context.docker.calls.slice(start).every(call => call.args[0] !== 'rm'));
+    assert.equal(context.docker.containers.size, 1);
+  }
+});
+
+test('recovery rejects journals with another name prefix before Docker access', async () => {
+  for (const prefix of ['plumber-validation-', 'keepseam-validation-foreign-']) {
+    const context = await interruptedFixture();
+    const path = join(context.statePath, 'containers', 'baseline.intent.json');
+    const intent = await readJson(path);
+    const changed = { ...intent, containerName: `${prefix}${intent.owner}` };
+    await writeFile(path, JSON.stringify(changed));
+    const createdPath = join(context.statePath, 'containers', 'baseline.created.json');
+    const created = await readJson(createdPath);
+    await writeFile(createdPath, JSON.stringify({ ...created, intentSha256: jsonHash(changed) }));
+    const before = context.docker.calls.length;
+    const recovered = await context.docker.recover()({ statePath: context.statePath, execution: context.execution, guard() {} });
+    assert.equal(recovered.cleanup, 'failed');
+    assert.equal(context.docker.calls.length, before);
     assert.equal(context.docker.containers.size, 1);
   }
 });

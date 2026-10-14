@@ -55,7 +55,7 @@ test('isolated real HTTPS capture covers conditional polling, TLS failures, boun
   const beforeDigest = await filesDigest(snapshotPath);
   const result = await runDockerValidation({ snapshotPath, statePath, testPaths: ['capture.test.mjs'] });
   assert.equal(result.cleanup, 'removed', `${result.status}: ${result.reason ?? result.stderr}`);
-  assert.match(result.containerName, /^plumber-validation-[a-f0-9-]+$/u);
+  assert.match(result.containerName, /^keepseam-validation-[a-f0-9-]+$/u);
   await assert.rejects(docker(['container', 'inspect', result.containerName]), error => error.code === 1 && /No such (?:object|container)/iu.test(error.stderr));
   assert.equal(await filesDigest(snapshotPath), beforeDigest, 'HTTPS tests modified the captured fixture or its test certificate.');
   assert.equal(result.status, 'passed', `${result.stdout}\n${result.stderr}`);

@@ -114,7 +114,7 @@ test('validates selected tests with fixed policy and verifies removal before ret
   assert.equal(result.status, 'passed');
   assert.equal(result.exitCode, 0);
   assert.equal(result.cleanup, 'removed');
-  assert.match(result.containerName, /^plumber-validation-[a-f0-9-]{36}$/);
+  assert.match(result.containerName, /^keepseam-validation-[a-f0-9-]{36}$/);
   assert.equal(result.stdout, 'synthetic test passed\n');
   assert.deepEqual(docker.calls.map(call => call.args[0]), ['info', 'image', 'create', 'start', 'inspect', 'inspect', 'rm', 'inspect', 'inspect']);
   const create = docker.calls.find(call => call.args[0] === 'create');
