@@ -1,4 +1,4 @@
-name: plumber-sdk-local
+name: keepseam-client-local
 
 services:
   payments-provider:

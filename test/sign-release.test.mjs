@@ -32,6 +32,18 @@ test('signing accepts a new consistent-snapshot root without changing its pinned
   assert.equal(JSON.parse(release.root).signed.consistent_snapshot, true);
   assert.equal(createHash('sha256').update(release.root).digest('hex'), input.rootSha256);
 });
+
+test('Cloud channel bundle keeps exact signed bytes across refresh and accepts a historical bundle without that projection', () => {
+  const input=fixture(true),release=buildSignedRelease(input),channel=release.targets.get('channels/stable.json').toString('utf8');
+  assert.equal(release.importBundle.channel,channel);
+  const options={rootBytes:release.root,rootSha256:input.rootSha256,manifestSha256:createHash('sha256').update(release.importBundle.manifest).digest('hex'),
+    roleKeys:input.roleKeys,targets:release.targets,previousBundle:release.importBundle,now:Date.now()+1000};
+  assert.equal(refreshSignedRelease(options).importBundle.channel,channel);
+  assert.throws(()=>refreshSignedRelease({...options,previousBundle:{...release.importBundle,channel:channel+' '}}),/exact channel/u);
+  assert.throws(()=>requireImportBundleBounds({...release.importBundle,channel:'x'.repeat(4097)}),/bounded Cloud import/u);
+  const {channel:_channel,...legacy}=release.importBundle;
+  assert.equal(refreshSignedRelease({...options,previousBundle:legacy}).importBundle.channel,undefined);
+});
 test('refresh reserves the Cloud revision field within the existing thirty kilobyte body limit', () => {
   const bundle = { manifest: 'm'.repeat(16384), metadata: { targets: '', snapshot: '{}', timestamp: '{}' } };
   const input = { requestId: '00000000-0000-4000-8000-000000000000', bundle };

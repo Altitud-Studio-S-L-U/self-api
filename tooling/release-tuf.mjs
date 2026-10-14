@@ -81,6 +81,7 @@ export function signedReleaseEnvelope(root, roleKeys, role, signed) {
 }
 export function requireImportBundleBounds(bundle, { refresh = false } = {}) {
   requireReleaseValue(bundle.manifest.length <= 16384 && bundle.metadata.targets.length <= 16384
+    && (bundle.channel === undefined || typeof bundle.channel === 'string' && Buffer.byteLength(bundle.channel) <= 4096)
     && bundle.metadata.snapshot.length <= 8192 && bundle.metadata.timestamp.length <= 8192
     && Buffer.byteLength(JSON.stringify({ requestId: '00000000-0000-4000-8000-000000000000', ...(refresh ? { expectedRevision: 2147483646 } : {}), bundle })) <= 30000,
   'Release metadata exceeds the bounded Cloud import contract.');

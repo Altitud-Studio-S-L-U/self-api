@@ -13,7 +13,7 @@ const safePath = value => typeof value === 'string' && value.length <= 256 && va
  * exact root and release manifest are independently pinned by the operator. */
 export function inspectReleaseForRefresh({ rootBytes, rootSha256, manifestSha256, previousBundle, now = Date.now() }) {
   const root = pinnedReleaseRoot(rootBytes, rootSha256, now);
-  requireValue(closed(previousBundle, ['manifest', 'metadata']) && typeof previousBundle.manifest === 'string'
+  requireValue((closed(previousBundle, ['manifest', 'metadata']) || closed(previousBundle, ['manifest', 'metadata', 'channel'])) && typeof previousBundle.manifest === 'string'
     && closed(previousBundle.metadata, metadataRoles) && metadataRoles.every(role => typeof previousBundle.metadata[role] === 'string'), 'Invalid previous release bundle.');
   requireImportBundleBounds(previousBundle);
   requireValue(releaseHash(previousBundle.manifest) === manifestSha256, 'Pinned release manifest mismatch.');
@@ -47,6 +47,7 @@ export function inspectReleaseForRefresh({ rootBytes, rootSha256, manifestSha256
   requireValue(new Set(expectedTargets).size === expectedTargets.length
     && same(Object.keys(descriptors).sort(), expectedTargets.sort()), 'Unexpected or missing release targets.');
   requireValue(same(descriptors['release-manifest.json'], releaseDescriptor(Buffer.from(previousBundle.manifest))), 'Historical metadata does not bind the pinned manifest.');
+  if (previousBundle.channel !== undefined) requireValue(same(descriptors['channels/stable.json'], releaseDescriptor(Buffer.from(previousBundle.channel))), 'Historical metadata does not bind the exact channel.');
   return { root, manifest, metadata, bytes, descriptors };
 }
 
@@ -88,7 +89,7 @@ export function refreshSignedRelease(options) {
   if (required.includes('snapshot')) renew('snapshot', 24 * hour,
     { meta: { 'targets.json': releaseDescriptor(metadata.get('targets.json'), versions.targets) } });
   renew('timestamp', hour, { meta: { 'snapshot.json': releaseDescriptor(metadata.get('snapshot.json'), versions.snapshot) } });
-  const importBundle = { manifest: previousBundle.manifest,
+  const importBundle = { manifest: previousBundle.manifest, ...(previousBundle.channel === undefined ? {} : { channel: previousBundle.channel }),
     metadata: Object.fromEntries(metadataRoles.map(role => [role, metadata.get(`${role}.json`).toString('utf8')])) };
   requireImportBundleBounds(importBundle, { refresh: true });
   return { manifest: previous.manifest, root: rootBytes, targets: new Map(targets), metadata, importBundle };
