@@ -455,7 +455,7 @@ async function readJournal(directory: string, state: string, phase: Phase, ident
   }
   if (!exactFields(intent, INTENT_FIELDS) || intent.schemaVersion !== 1 || intent.phase !== phase
     || intent.statePathSha256 !== pathHash(state) || intent.profileSha256 !== hashJson(profile)
-    || typeof intent.owner !== 'string' || !UUID.test(intent.owner) || intent.containerName !== `plumber-validation-${intent.owner}`
+    || typeof intent.owner !== 'string' || !UUID.test(intent.owner) || intent.containerName !== `keepseam-validation-${intent.owner}`
     || typeof intent.imageId !== 'string' || !IMAGE_ID.test(intent.imageId)
     || typeof intent.commandSha256 !== 'string' || !HASH.test(intent.commandSha256) || !timestamp(intent.recordedAt)
     || !sameIdentity(intent as unknown as ContainerIntent, identity)) throw new Error('Journal identity does not match the attempt.');
@@ -583,7 +583,7 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
           } catch { return blocked('The prepared runtime does not match its approved recipe and dependency manifest.'); }
         }
         ownership = randomUUID();
-        containerName = `plumber-validation-${ownership}`;
+        containerName = `keepseam-validation-${ownership}`;
         const command = [...profile.command, ...paths.tests.map(path => `${profile.mountTarget}/${path}`)];
         if (executionContext !== undefined) {
           const inspectedImage = await control(['image', 'inspect', '--format', '{{.Id}}', profile.image]);

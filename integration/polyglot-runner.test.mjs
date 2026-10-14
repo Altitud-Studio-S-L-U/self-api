@@ -41,7 +41,7 @@ async function validate(t, filename, source) {
   const result = await runDockerValidation({ snapshotPath, statePath, testPaths: [filename] });
   assert.equal(hash(await readFile(path)), before, 'The isolated runner changed its captured test.');
   assert.equal(result.cleanup, 'removed', `${result.status}: ${result.reason ?? result.stderr}`);
-  assert.match(result.containerName, /^plumber-validation-[a-f0-9-]+$/u);
+  assert.match(result.containerName, /^keepseam-validation-[a-f0-9-]+$/u);
   await assert.rejects(execute('docker', ['container', 'inspect', result.containerName], dockerOptions), error => {
     assert.equal(error.code, 1);
     assert.match(error.stderr, /No such (?:object|container)/iu);

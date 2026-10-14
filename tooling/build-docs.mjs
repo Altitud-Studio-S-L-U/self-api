@@ -30,7 +30,9 @@ if (args.length === 1 && args[0] === '--check') {
   assert(args.length === 2 && args[0] === '--playwright-root', 'Usage: node tooling/build-docs.mjs --check | --playwright-root <installed package root>');
   const require = createRequire(path.resolve(args[1], 'package.json'));
   assert.equal(require('@playwright/test/package.json').version, '1.63.0', 'Use reviewed Playwright 1.63.0 and its bundled Chromium.');
-  const browser = await require('@playwright/test').chromium.launch({ headless: true });
+  const channel = process.env.KEEPSEAM_DOCS_CHROME_CHANNEL;
+  assert(channel === undefined || channel === 'chrome', 'The optional documentation browser channel must be chrome.');
+  const browser = await require('@playwright/test').chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
   try {
     const page = await browser.newPage({ locale: 'es-ES', timezoneId: 'UTC', viewport: { width: Math.floor(182 * 96 / 25.4), height: Math.floor(269 * 96 / 25.4) }, reducedMotion: 'reduce' });
     await page.route('**/*', (route) => route.abort());
