@@ -10,7 +10,8 @@ import { publicAddress, resolveAddresses, type PublicAddress } from './public-ne
 export type HttpModelProvider = 'openai' | 'anthropic' | 'google' | 'local-openai-compatible';
 export interface HttpModelAdapterOptions {
   readonly provider: HttpModelProvider;
-  /** Explicit customer choice. No default model, fallback provider or model download. */
+  /** Explicit customer choice. No default model, fallback provider or model download.
+   * Google accepts the ID or models/ID resource name; no alias resolution. */
   readonly model: string;
   readonly policyId: string;
   readonly maximumOutputTokens: number;
@@ -63,13 +64,21 @@ function record(value: unknown): Record<string, unknown> {
 function values(value: unknown): unknown[] { if (!Array.isArray(value)) failed(); return value; }
 function resultText(value: unknown): string { if (typeof value !== 'string' || !value.trim()) failed(); return value; }
 
+function googleModelId(model: string): string {
+  const id = model.startsWith('models/') ? model.slice('models/'.length) : model;
+  // generateContent takes one models/{model} resource; modelVersion reports its ID.
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(id)) invalid();
+  return id;
+}
+
 function endpoint(options: HttpModelAdapterOptions): URL {
   if (options.provider !== 'local-openai-compatible') {
     if (options.endpoint !== undefined || typeof options.getApiKey !== 'function') invalid();
+    const model = options.provider === 'google' ? googleModelId(options.model) : options.model;
     const endpoints = {
       openai: 'https://api.openai.com/v1/responses',
       anthropic: 'https://api.anthropic.com/v1/messages',
-      google: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(options.model)}:generateContent`,
+      google: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
     };
     if (!Object.hasOwn(endpoints, options.provider)) invalid();
     return new URL(endpoints[options.provider]);
@@ -106,7 +115,7 @@ function payload(provider: HttpModelProvider, model: string, maximumOutputTokens
 function extract(provider: HttpModelProvider, response: unknown, expectedModel: string): string {
   const data = record(response);
   const actualModel = provider === 'google' ? data['modelVersion'] : data['model'];
-  if (actualModel !== undefined && actualModel !== expectedModel) failed('model');
+  if (actualModel !== undefined && actualModel !== (provider === 'google' ? googleModelId(expectedModel) : expectedModel)) failed('model');
   if (provider === 'openai') {
     if (data.status !== 'completed' || data.error || data.incomplete_details) failed();
     const texts: string[] = [];

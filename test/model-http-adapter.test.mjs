@@ -75,6 +75,39 @@ test('HTTP failures expose only typed classifications, distinguishing transient 
   }
 });
 
+for (const model of ['gemini-fixture-001', 'models/gemini-fixture-001']) {
+  test(`Google ${model} uses the same exact resource for its functional check and generation`, async () => {
+    const destination = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-fixture-001:generateContent';
+    const configuration = options('google', { model });
+    const check = transport({ ...responseFor('google', '{"keepseam":"ok"}'), modelVersion: 'gemini-fixture-001' });
+    const generation = transport({ ...responseFor('google'), modelVersion: 'gemini-fixture-001' });
+    const adapter = createHttpModelAdapter(configuration, generation.dependencies);
+    assert.equal(adapter.destination, destination);
+    assert.equal((await probeHttpModelConnection(configuration, new AbortController().signal, check.dependencies)).status, 'verified');
+    assert.equal((await propose(adapter)).status, 'proposal-ready');
+    assert.deepEqual([...check.calls, ...generation.calls].map(call => call.url), [destination, destination]);
+    for (const [text, operation] of [['{"keepseam":"ok"}', 'probe'], [json, 'generation']]) {
+      const otherModel = transport({ ...responseFor('google', text), modelVersion: 'gemini-fixture-002' });
+      await assert.rejects(operation === 'probe'
+        ? probeHttpModelConnection(configuration, new AbortController().signal, otherModel.dependencies)
+        : propose(createHttpModelAdapter(configuration, otherModel.dependencies)), { kind: 'model' });
+      assert.equal(otherModel.calls.length, 1);
+    }
+  });
+}
+
+test('Google rejects malformed or nested model resources before DNS, credentials or requests', async () => {
+  let io = 0;
+  const dependencies = { resolve: async () => { io++; return [{ address: '1.1.1.1', family: 4 }]; }, request: () => { io++; assert.fail('Invalid model resource must not send.'); } };
+  for (const model of ['models/', 'models//gemini-fixture-001', 'models/models/gemini-fixture-001', 'other/gemini-fixture-001',
+    'models/../gemini-fixture-001', 'models/gemini-fixture-001:generateContent', 'models/%67emini-fixture-001', 'models/gemini?key=secret', 'x'.repeat(129)]) {
+    const configuration = options('google', { model, getApiKey: () => { io++; return 'synthetic-unread-key'; } });
+    assert.throws(() => createHttpModelAdapter(configuration, dependencies), { code: 'INVALID_INPUT' });
+    await assert.rejects(probeHttpModelConnection(configuration, new AbortController().signal, dependencies), { code: 'INVALID_INPUT' });
+  }
+  assert.equal(io, 0);
+});
+
 for (const provider of ['openai', 'anthropic', 'google', 'local-openai-compatible']) {
   test(`${provider} sends a bounded structured request only after consent and returns an unapproved recipe`, async () => {
     const fixture = transport(responseFor(provider));
