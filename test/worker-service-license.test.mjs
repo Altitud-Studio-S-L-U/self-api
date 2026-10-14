@@ -21,6 +21,38 @@ async function fixture(t) {
   const original=await createServiceFixture(directory),config=JSON.parse(await readFile(original.configPath,'utf8'));
   return {directory,config,controller,setRunning(value){running=value;},status:()=>JSON.parse(readFileSync(join(config.statePath,'worker-service.status.json'),'utf8'))};
 }
+function controlGate(signal) {
+  const gate=Promise.withResolvers();
+  const release=()=>{signal.removeEventListener('abort',release);gate.resolve();};
+  // A cancelled fixture must release its mock transport before teardown drains the daemon.
+  if(signal.aborted)release();else signal.addEventListener('abort',release,{once:true});
+  return {promise:gate.promise,resolve:release};
+}
+
+test('an already cancelled control fixture starts released',async()=>{
+  const controller=new AbortController();controller.abort();
+  const gate=controlGate(controller.signal);let released=false;
+  gate.promise.then(()=>{released=true;});await Promise.resolve();
+  assert.equal(released,true);
+});
+
+test('cancellation before observation releases the pending control fixture and drains the daemon',{timeout:60000},async t=>{
+  const f=await fixture(t),ready=controlGate(f.controller.signal),entered=Promise.withResolvers();
+  const token=JSON.parse(await readFile(f.config.license.leasePath,'utf8'));
+  let observations=0,polls=0,released=false;
+  ready.promise.then(()=>{released=true;});
+  const running=runWorkerService(f.config,{signal:f.controller.signal,dependencies:{
+    control:{async poll(){polls++;entered.resolve();f.controller.abort();await ready.promise;return{schemaVersion:1,license:token,pollAfterMs:60000};}},
+    async observeSources(){observations++;return{schemaVersion:1,results:[]};},
+    async wait(){throw new Error('Cancelled startup must not schedule another wait.');},
+  }});f.setRunning(running);
+  try {
+    await entered.promise;await new Promise(setImmediate);
+    assert.equal(released,true,'Cancellation must release the pending control fixture before teardown.');
+    const status=await running;
+    assert.equal(status.state,'stopped');assert.equal(polls,1);assert.equal(observations,0);
+  } finally {ready.resolve();await running.catch(()=>{});}
+});
 test('automatic daemon without a license stays alive but never invokes any observer',{timeout:60000},async t=>{
   const f=await fixture(t),{license:_license,...input}=f.config;
   let calls=0;
@@ -35,16 +67,15 @@ test('signed commercial pause cancels only owned observation, retains evidence a
   const f=await fixture(t),lease=await createLicenseFixture(f.directory),denial=await lease.sign({decision:'suspended',revision:2}),resumption=await lease.sign({revision:3});
   const original=await readFile(join(f.directory,'source.json'));
   let polls=0,observations=0,aborted=false,sawPaused=false,resumed=false;
-  const receipts=[];let releaseControl;
-  const ready=new Promise(resolve=>{releaseControl=resolve;});
+  const receipts=[],ready=controlGate(f.controller.signal);
   const running=runWorkerService(normalizeWorkerServiceConfig({...f.config,license:lease.license}),{signal:f.controller.signal,dependencies:{
-    control:{async poll(input){receipts.push(input);polls++;if(polls===1){await ready;return{schemaVersion:1,license:denial,pollAfterMs:60000};}
+    control:{async poll(input){receipts.push(input);polls++;if(polls===1){await ready.promise;return{schemaVersion:1,license:denial,pollAfterMs:60000};}
       // Resume is requested only after Cloud observes this completed pause;
       // an immediate draining ACK can precede the canceled observer's return.
       if(input.automation==='paused'&&input.observedRevision===2)resumed=true;
       return{schemaVersion:1,license:resumed?resumption:denial,pollAfterMs:60000};}},
     async observeSources(options){observations++;
-      if(observations===1){releaseControl();await new Promise(resolve=>options.signal.addEventListener('abort',()=>{aborted=true;resolve();},{once:true}));}
+      if(observations===1){ready.resolve();await new Promise(resolve=>options.signal.addEventListener('abort',()=>{aborted=true;resolve();},{once:true}));}
       if(observations===2)f.controller.abort();
       return{schemaVersion:1,results:[]};
     },
@@ -65,8 +96,7 @@ test('signed commercial pause cancels only owned observation, retains evidence a
 test('a signed resume during drain preserves serialized observation and never invents a completed-pause acknowledgement',{timeout:60000},async t=>{
   const f=await fixture(t),lease=await createLicenseFixture(f.directory),denial=await lease.sign({decision:'suspended',revision:2}),resumption=await lease.sign({revision:3});
   const original=await readFile(join(f.directory,'source.json'));
-  const ready=Promise.withResolvers(),cleanup=Promise.withResolvers();
-  f.controller.signal.addEventListener('abort',()=>cleanup.resolve(),{once:true});
+  const ready=controlGate(f.controller.signal),cleanup=controlGate(f.controller.signal);
   const receipts=[];let polls=0,observations=0,active=0,maximumActive=0,aborted=false,cleanedUp=false,resumedDuringDrain=false;
   const running=runWorkerService(normalizeWorkerServiceConfig({...f.config,license:lease.license}),{signal:f.controller.signal,dependencies:{
     control:{async poll(input){
