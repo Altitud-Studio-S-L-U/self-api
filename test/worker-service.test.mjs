@@ -7,40 +7,23 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { createServiceFixture } from '../tooling/service-fixture.mjs';
 import { loadWorkerServiceConfig, requestWorkerServiceStop, runWorkerService } from '../dist/index.js';
-import { appendServiceLog, serviceFiles } from '../dist/worker-service-state.js';
+import { appendServiceLog, serviceFailureDetails, serviceFiles } from '../dist/worker-service-state.js';
 import { listSourceObservations } from '../dist/source-observer.js';
+import { runWorkerServiceCli } from '../dist/worker-service-cli.js';
+import { checkWindowsPermissions } from '../dist/windows-permissions.js';
 
 const parent = resolve('work/test-worker-service');
 const cli = resolve('dist/cli.js');
 function restrictFixture(directory) {
-  if (process.platform !== 'win32') return;
-  const script = `
-$ErrorActionPreference = 'Stop'
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$targets = @((Get-Item -LiteralPath $env:KEEPSEAM_TEST_DIRECTORY)) + @(Get-ChildItem -LiteralPath $env:KEEPSEAM_TEST_DIRECTORY -Recurse -Force)
-foreach ($target in $targets) {
-  $acl = Get-Acl -LiteralPath $target.FullName
-  $acl.SetAccessRuleProtection($true, $false)
-  foreach ($rule in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($rule) }
-  $acl.SetOwner($sid)
-  foreach ($allowed in @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')) {
-    $identity = [System.Security.Principal.SecurityIdentifier]::new($allowed)
-    if ($target.PSIsContainer) { $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow') }
-    else { $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'Allow') }
-    $acl.AddAccessRule($rule)
-  }
-  Set-Acl -LiteralPath $target.FullName -AclObject $acl
-}
-`;
-  execFileSync(join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-    { env: { ...process.env, PSModulePath: join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/Modules'),
-      KEEPSEAM_TEST_DIRECTORY: directory }, windowsHide: true, stdio: 'pipe', timeout: 30000 });
+  // Initialize the newly owned root before creating children. They inherit its
+  // private DACL; independently protected worker state remains untouched.
+  checkWindowsPermissions([directory], true, directory);
 }
 async function fixture(t) {
   await mkdir(parent, { recursive: true });
   const directory = await mkdtemp(join(await realpath(parent), 'service-'));
-  const value = await createServiceFixture(directory);
   restrictFixture(directory);
+  const value = await createServiceFixture(directory);
   t.after(async () => {
     const actual = await realpath(directory);
     assert.equal(dirname(actual), await realpath(parent)); assert(basename(actual).startsWith('service-'));
@@ -48,16 +31,25 @@ async function fixture(t) {
   });
   return { directory, ...value };
 }
-async function waitForStatus(statePath, predicate, timeout = 45000) {
+async function waitForStatus(statePath, predicate, timeout = 45000, processInfo) {
   const deadline = Date.now() + timeout;
+  let lastStatus;
   while (Date.now() < deadline) {
     let status;
     try { status = JSON.parse(await readFile(join(statePath, serviceFiles.status), 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (status && predicate(status)) return status;
+    lastStatus = status;
+    if (processInfo && (processInfo.child.exitCode !== null || processInfo.child.signalCode !== null)) break;
     await delay(50);
   }
-  throw new Error('Worker did not reach the expected observable lifecycle state.');
+  // These fixtures contain fictional contracts only. Retain actionable failure
+  // evidence before their cleanup instead of reporting every exit as a timeout.
+  let log;
+  try { log = (await readFile(join(statePath, serviceFiles.log), 'utf8')).slice(-4096); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  throw new Error(`Worker did not reach the expected observable lifecycle state: ${JSON.stringify({ lastStatus,
+    exitCode: processInfo?.child.exitCode, signal: processInfo?.child.signalCode, stderr: processInfo?.stderr().slice(-4096), log })}`);
 }
 function launch(configPath) {
   const child = spawn(process.execPath, [cli, 'worker-service', 'run', '--config', configPath], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -66,13 +58,13 @@ function launch(configPath) {
   return { child, exited, stderr: () => stderr };
 }
 
-test('real foreground service prevents concurrent ownership, resumes durable evidence and drains a run-scoped stop', async t => {
+test('real foreground service prevents concurrent ownership and preserves evidence across three clean restarts', async t => {
   const item = await fixture(t);
   const config = await loadWorkerServiceConfig(item.configPath);
   let active;
   t.after(async () => { if (active && active.child.exitCode === null && active.child.signalCode === null) { active.child.kill(); await active.exited; } });
   active = launch(item.configPath);
-  const first = await waitForStatus(item.statePath, value => value.state === 'running' && value.cycles >= 1);
+  const first = await waitForStatus(item.statePath, value => value.state === 'running' && value.cycles >= 1, 45000, active);
   assert.equal(first.pid, active.child.pid);
   const contender = launch(item.configPath);
   assert.equal((await contender.exited)[0], 2);
@@ -82,24 +74,36 @@ test('real foreground service prevents concurrent ownership, resumes durable evi
   const stopped = await waitForStatus(item.statePath, value => value.state === 'stopped');
   assert.equal(stopped.runId, first.runId);
   const before = await listSourceObservations({ statePath: item.statePath });
-  active = launch(item.configPath);
-  const second = await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== first.runId && value.cycles >= 1);
-  assert.notEqual(second.pid, first.pid);
-  // The old stop marker must not terminate this new instance; unchanged evidence is not duplicated.
-  await waitForStatus(item.statePath, value => value.runId === second.runId && value.cycles >= 2);
-  assert.equal((await listSourceObservations({ statePath: item.statePath })).length, before.length);
-  requestWorkerServiceStop(config);
-  assert.equal((await active.exited)[0], 0, active.stderr());
+  let previous = first;
+  for (let restart = 0; restart < 3; restart++) {
+    active = launch(item.configPath);
+    const current = await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== previous.runId && value.cycles >= 1, 45000, active);
+    assert.notEqual(current.pid, previous.pid);
+    // Every restart must survive its predecessor's stop marker and preserve the
+    // evidence, not merely reach an initial status before failing on replacement.
+    await waitForStatus(item.statePath, value => value.state === 'running' && value.runId === current.runId && value.cycles >= 2, 45000, active);
+    assert.equal((await listSourceObservations({ statePath: item.statePath })).length, before.length);
+    assert.equal(requestWorkerServiceStop(config).runId, current.runId);
+    assert.equal((await active.exited)[0], 0, active.stderr());
+    assert.equal((await waitForStatus(item.statePath, value => value.state === 'stopped')).runId, current.runId);
+    previous = current;
+  }
 });
 
-test('forced process loss releases singleton ownership without deleting a stale PID file', async t => {
+test('two consecutive process losses recover ownership and durable evidence without deleting a stale PID file', async t => {
   const item = await fixture(t);
   let active = launch(item.configPath);
   t.after(async () => { if (active.child.exitCode === null && active.child.signalCode === null) { active.child.kill(); await active.exited; } });
-  const first = await waitForStatus(item.statePath, value => value.state === 'running');
-  active.child.kill('SIGKILL'); await active.exited;
-  active = launch(item.configPath);
-  await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== first.runId);
+  let previous = await waitForStatus(item.statePath, value => value.state === 'running' && value.cycles >= 2, 45000, active);
+  const before = await listSourceObservations({ statePath: item.statePath });
+  for (let loss = 0; loss < 2; loss++) {
+    active.child.kill('SIGKILL'); await active.exited;
+    active = launch(item.configPath);
+    const recovered = await waitForStatus(item.statePath, value => value.state === 'running' && value.runId !== previous.runId && value.cycles >= 2, 45000, active);
+    assert.notEqual(recovered.pid, previous.pid);
+    assert.equal((await listSourceObservations({ statePath: item.statePath })).length, before.length);
+    previous = recovered;
+  }
   requestWorkerServiceStop(await loadWorkerServiceConfig(item.configPath));
   assert.equal((await active.exited)[0], 0, active.stderr());
 });
@@ -164,4 +168,44 @@ test('invalid service CLI options cannot start a process or hide a configuration
   let output = ''; result.stderr.on('data', chunk => { output += chunk; });
   assert.equal((await once(result, 'exit'))[0], 2);
   assert.match(output, /SERVICE_FAILED|INVALID_INPUT/);
+});
+
+test('native failure diagnostics expose only allowlisted codes and operations without evaluating getters', () => {
+  const native = Object.assign(new Error('SECRET path and payload'), { code: 'EACCES', syscall: 'rename', path: '/SECRET', dest: '/SECRET' });
+  assert.deepEqual(serviceFailureDetails(native), { systemCode: 'EACCES', operation: 'rename' });
+  assert.deepEqual(serviceFailureDetails(Object.assign(new Error('SECRET'), { code: 'SECRET', syscall: 'SECRET' })), {});
+  const accessor = new Error('SECRET');
+  Object.defineProperties(accessor, { code: { get() { assert.fail('Do not evaluate an error code accessor'); } },
+    syscall: { get() { assert.fail('Do not evaluate an operation accessor'); } } });
+  assert.deepEqual(serviceFailureDetails(accessor), {});
+  assert.deepEqual(serviceFailureDetails({ code: 'EACCES', syscall: 'rename', message: 'SECRET' }), {});
+  assert.deepEqual(serviceFailureDetails(new Proxy(native, { getOwnPropertyDescriptor() { throw new Error('SECRET'); } })), {});
+});
+
+test('service CLI reports a native filesystem error without revealing its private path', async () => {
+  let output = '', errors = '';
+  const privatePath = resolve('work/service-private-missing/SECRET-never-log.json');
+  assert.equal(await runWorkerServiceCli(['worker-service', 'run', '--config', privatePath], {
+    stdout: text => { output += text; }, stderr: text => { errors += text; },
+  }), 2);
+  assert.equal(output, '');
+  const result = JSON.parse(errors).error;
+  assert.equal(result.code, 'SERVICE_FAILED');
+  assert.equal(result.systemCode, 'ENOENT');
+  assert.equal(result.operation, 'lstat');
+  assert.doesNotMatch(errors, /SECRET|service-private-missing|stack/);
+});
+
+test('failed status persistence retains an independent sanitized failure log', async t => {
+  const item = await fixture(t);
+  const config = await loadWorkerServiceConfig(item.configPath);
+  await assert.rejects(runWorkerService(config, { dependencies: { observeSources: async () => {
+    await mkdir(join(item.statePath, `${serviceFiles.status}.next`));
+    return { schemaVersion: 1, results: [{ status: 'unchanged' }] };
+  } } }), /Service runtime files cannot be links or special files/);
+  const entries = (await readFile(join(item.statePath, serviceFiles.log), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(entries.at(-1).event, 'failed');
+  assert.equal(entries.at(-1).reason, 'local-operation-failed');
+  assert.deepEqual(Object.keys(entries.at(-1)).sort(), ['event', 'reason', 'runId', 'timestamp']);
+  assert.equal(JSON.parse(await readFile(join(item.statePath, serviceFiles.status), 'utf8')).state, 'starting');
 });

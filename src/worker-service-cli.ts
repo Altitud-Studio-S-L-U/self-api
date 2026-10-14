@@ -4,6 +4,7 @@ import { PlumberError } from './errors.js';
 import { loadLocalJson } from './local-file.js';
 import { renderWorkerServiceManifest, type WorkerServiceTarget } from './worker-service-config.js';
 import { loadWorkerServiceConfig, readWorkerServiceStatus, requestWorkerServiceStop, runWorkerService } from './worker-service.js';
+import { serviceFailureDetails } from './worker-service-state.js';
 
 export async function runWorkerServiceCli(args: string[], options: { readonly stdout?: (text: string) => void; readonly stderr?: (text: string) => void } = {}): Promise<number> {
   const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
@@ -12,7 +13,7 @@ export async function runWorkerServiceCli(args: string[], options: { readonly st
   const stop = (): void => { controller.abort(); };
   try {
     const parsed = parseArgs({ args, strict: true, allowPositionals: true, tokens: true, options: {
-      config: { type: 'string' }, target: { type: 'string' }, node: { type: 'string' }, cli: { type: 'string' }, user: { type: 'string' }, name: { type: 'string' },
+      config: { type: 'string' }, target: { type: 'string' }, node: { type: 'string' }, cli: { type: 'string' }, user: { type: 'string' }, name: { type: 'string' }, scope: { type: 'string' },
     } });
     const seen = new Set<string>();
     for (const token of parsed.tokens) if (token.kind === 'option') {
@@ -27,7 +28,8 @@ export async function runWorkerServiceCli(args: string[], options: { readonly st
     if (action === 'render') {
       const value = await loadLocalJson(parsed.values.config, 64 * 1024);
       stdout(renderWorkerServiceManifest({ config: value, configPath: parsed.values.config, target: parsed.values.target as WorkerServiceTarget,
-        nodePath: parsed.values.node!, cliPath: parsed.values.cli!, ...(parsed.values.user ? { user: parsed.values.user } : {}),
+        nodePath: parsed.values.node!, cliPath: parsed.values.cli!, ...(parsed.values.user !== undefined ? { user: parsed.values.user } : {}),
+        ...(parsed.values.scope !== undefined ? { scope: parsed.values.scope as 'system' | 'user' } : {}),
         ...(parsed.values.name ? { name: parsed.values.name } : {}) }));
       return 0;
     }
@@ -44,7 +46,7 @@ export async function runWorkerServiceCli(args: string[], options: { readonly st
     return 0;
   } catch (error) {
     stderr(jsonLine({ error: error instanceof PlumberError ? { code: error.code, message: error.message }
-      : { code: 'SERVICE_FAILED', message: 'Worker service could not complete its local operation. Inspect the native manager and private status log.' } }));
+      : { code: 'SERVICE_FAILED', message: 'Worker service could not complete its local operation. Inspect the native manager and private status log.', ...serviceFailureDetails(error) } }));
     return 2;
   } finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
 }

@@ -11,14 +11,24 @@ const MAXIMUM_FILES = 500;
 const MAXIMUM_ENTRIES = 2000;
 const MAXIMUM_DEPTH = 20;
 const EXCLUDED_DIRECTORIES = new Set([
-  'node_modules', '.git', '.plumber', 'work', 'dist', 'build', 'coverage', 'vendor', '.next',
+  'node_modules', '.git', '.plumber', 'work', 'dist', 'build', 'target', 'coverage', 'vendor', '.next', '__pycache__',
 ]);
-const SOURCE_EXTENSION = /\.(?:tsx?|jsx?|mts|cts|mjs|cjs)$/i;
+const SOURCE_EXTENSION = /\.(?:tsx?|jsx?|mts|cts|mjs|cjs|py|java)$/i;
 const DECLARATION_EXTENSION = /\.d\.(?:ts|mts|cts)$/i;
+const MANIFEST_NAMES = new Set(['package.json', 'pom.xml', 'pyproject.toml', 'pytest.ini', 'setup.cfg']);
+
+export function isJavaScriptConsumerPath(path: string): boolean {
+  return /\.(?:tsx?|jsx?|mts|cts|mjs|cjs)$/iu.test(path);
+}
+
+export function isConsumerTestPath(path: string): boolean {
+  return /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|\.(?:test|spec)\.[^.]+$/iu.test(path)
+    || /(?:^|\/)(?:conftest|test_[^/]+)\.py$|(?:^|\/)[^/]+_test\.py$|(?:^|\/)[^/]*(?:Test|Tests)\.java$/u.test(path);
+}
 
 function capturedFilename(name: string): boolean {
   return !name.startsWith('.') && !DECLARATION_EXTENSION.test(name)
-    && (name === 'package.json' || SOURCE_EXTENSION.test(name));
+    && (MANIFEST_NAMES.has(name) || SOURCE_EXTENSION.test(name));
 }
 
 /** Shared inspection profile for regular Git tree paths; filesystem safety is checked separately. */
@@ -178,7 +188,7 @@ export async function captureConsumer(rootPath: string): Promise<ConsumerCapture
         else if (!capturedFilename(name)) reason = 'unsupported-extension';
         else {
           if (candidates.length >= MAXIMUM_FILES) invalid('Consumer source and manifest files exceed the limit of 500.');
-          candidates.push({ absolutePath: absoluteEntry, path, manifest: name === 'package.json', attributes });
+          candidates.push({ absolutePath: absoluteEntry, path, manifest: MANIFEST_NAMES.has(name), attributes });
           continue;
         }
         skipped.push(Object.freeze({ path, reason }));

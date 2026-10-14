@@ -27,7 +27,19 @@ export type { IntegrationManifest, IntegrationVersionAxis, IntegrationSourceKind
 export { loadMcpCatalog, compareMcpCatalogs } from './mcp-catalog.js';
 export type { McpJsonSchema, McpToolContract, McpCatalog, McpCatalogSnapshot, McpChange, McpComparisonReport } from './mcp-catalog.js';
 export { prepareModelProposal, approveModelProposal, proposeMigrationWithModel } from './model-harness.js';
-export type { ModelAdapterIdentity, ModelContextFile, ModelProposalLimits, ModelProposalContext, PrepareModelProposalOptions, ModelProposalRequest, ModelProposalConsent, ModelProposalAdapter, ModelMigrationProposal } from './model-harness.js';
+export { prepareJobProposal, proposeJobMigration } from './job-proposal.js';
+export type { JobProposalOptions, JobProposalBinding, JobProposalRequest, JobMigrationProposal, JobNoProposal, JobProposalOutcome } from './job-proposal.js';
+export type { ModelAdapterIdentity, ModelContextFile, ModelProposalLimits, ModelProposalContext, PrepareModelProposalOptions, ModelProposalRequest, ModelProposalConsent, ModelProposalAdapter, ModelMigrationProposal, ModelNoProposal, ModelProposalOutcome } from './model-harness.js';
+export { createHttpModelAdapter } from './model-http-adapter.js';
+export { probeHttpModelConnection, MODEL_PROBE_OUTPUT_TOKENS } from './model-http-adapter.js';
+export type { ModelConnectionProbe } from './model-http-adapter.js';
+export { ModelConnectionError } from './model-failure.js';
+export type { ModelFailureKind } from './model-failure.js';
+export { ModelConnections, normalizeModelRoutingConfiguration, prepareModelRoute, approveModelRoute, runModelRoute } from './model-connections.js';
+export type { ModelConnectionConfiguration, ModelRoutingConfiguration, ModelConnectionState, ModelConnectionPersistence,
+  ModelConnectionDependencies, ModelRoutingAlert, ModelRouteRequest, ModelRouteConsent, ModelRouteResult } from './model-connections.js';
+export { ModelConnectionStore, readModelConnectionStatus } from './model-connections-store.js';
+export type { HttpModelProvider, HttpModelAdapterOptions, HttpModelAdapterDependencies } from './model-http-adapter.js';
 export { loadJsonSchema, compareJsonSchemas, loadJsonExample, compareJsonExamples } from './json-schema.js';
 export type { JsonSchema, JsonSchemaSnapshot, JsonSchemaComparison, JsonExampleSnapshot, JsonExampleComparison } from './json-schema.js';
 export { runWorkerLoop } from './worker-loop.js';
@@ -36,7 +48,9 @@ export { normalizeWorkerServiceConfig, renderWorkerServiceManifest } from './wor
 export type { WorkerServiceConfig, WorkerServiceTarget, WorkerServiceManifestOptions } from './worker-service-config.js';
 export { runWorkerService, loadWorkerServiceConfig, readWorkerServiceStatus, requestWorkerServiceStop } from './worker-service.js';
 export type { WorkerServiceStatus, WorkerServiceDependencies } from './worker-service.js';
-export { generateCloudWorkerIdentity, createCloudTransport, CloudConnectionError } from './cloud-connection.js';
+export { generateCloudWorkerIdentity, createCloudTransport, createCloudControlTransport, CloudConnectionError } from './cloud-connection.js';
+export { normalizeWorkerLicenseTrust, verifyWorkerLicense, WorkerLicenseStore, WORKER_CONTROL_INTERVAL_MS, WORKER_OFFLINE_LIMIT_SECONDS } from './worker-license.js';
+export type { WorkerLicenseTrust, WorkerLicenseClaims, WorkerControlRequest, WorkerControlResponse, WorkerControlTransport } from './worker-license.js';
 export { syncWorkerToCloud } from './cloud-sync.js';
 export type { CloudSyncOptions,CloudSyncResult } from './cloud-sync.js';
 export type { CloudWorkerIdentity, CloudCredentials, CloudStatusReceipt, CloudTransport } from './cloud-connection.js';
@@ -52,3 +66,8 @@ export { prepareHttpSource, captureHttpSource, HttpSourceError } from './http-so
 export type { HttpSourcePolicy, HttpSourceSnapshot, HttpSourceCredentials, CaptureHttpSourceOptions, HttpSourceAddress, HttpSourceTransportRequest, HttpSourceTransportResponse, HttpSourceDependencies, HttpSourceCapture, HttpSourceFailure } from './http-source.js';
 export { analyzeMcpImpact } from './mcp-impact.js';
 export type { McpClientBinding, McpImpactOptions, McpConsumerCall, McpImpactReport } from './mcp-impact.js';
+export { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from './client-update.js';
+export type { ClientUpdateOptions, ClientUpdateRepository, PublicClientUpdateRepository, CloudClientUpdateRepository, ClientRelease, ClientUpdateStatus, ClientUpdateReason, ClientUpdateDependencies } from './client-update.js';
+export { validateRuntime } from './validation-runtime.js';
+export { prepareValidationRuntime } from './validation-runtime-prepare.js';
+export type { ValidationRuntime, ValidationFramework } from './validation-runtime.js';

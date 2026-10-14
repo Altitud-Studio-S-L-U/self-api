@@ -1,4 +1,4 @@
-import { captureConsumer, type ConsumerCapture } from './consumer-files.js';
+import { captureConsumer, isJavaScriptConsumerPath, type ConsumerCapture } from './consumer-files.js';
 import { createHash } from 'node:crypto';
 import type { ConsumerInventory } from './consumer-contracts.js';
 import { inspectSource } from './inspect-source.js';
@@ -15,10 +15,11 @@ export async function scanConsumer(rootPath: string): Promise<ConsumerInventory>
 
 /** Analyzes captured strings without resolving imports or reading the live consumer. */
 export function scanCapturedConsumer(captured: ConsumerCapture): ConsumerInventory {
-  const inspections = captured.files.map(inspectSource);
+  const inspections = captured.files.filter(file => isJavaScriptConsumerPath(file.path)).map(inspectSource);
   const packages: ConsumerInventory['packages'][number][] = [];
   const validationCandidates: ConsumerInventory['validationCandidates'][number][] = [];
   for (const manifest of captured.manifests) {
+    if (!/(?:^|\/)package\.json$/u.test(manifest.path)) continue;
     let data: unknown;
     try { data = JSON.parse(manifest.text); }
     catch { throw new PlumberError('INVALID_INPUT', 'A captured package manifest is not valid JSON.'); }
@@ -58,7 +59,12 @@ export function scanCapturedConsumer(captured: ConsumerCapture): ConsumerInvento
       .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0),
     calls: inspections.flatMap(item => item.calls),
     imports: inspections.flatMap(item => item.imports),
-    issues: inspections.flatMap(item => item.issues),
+    issues: [
+      ...inspections.flatMap(item => item.issues),
+      // Captured bytes support explicit proposals; automatic call discovery remains JS/TS only.
+      ...captured.files.filter(file => !isJavaScriptConsumerPath(file.path))
+        .map(file => ({ code: 'unsupported-language', location: { file: file.path, line: 1, column: 1 } })),
+    ],
     skipped: captured.skipped,
     packages,
     validationCandidates,

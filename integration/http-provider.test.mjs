@@ -44,7 +44,7 @@ test('isolated real HTTPS capture covers conditional polling, TLS failures, boun
   await mkdir(snapshotPath, { mode: 0o755 });
   await mkdir(statePath, { mode: 0o700 });
   await copyFile(join(root, 'fixtures/http-provider/capture.test.mjs'), join(snapshotPath, 'capture.test.mjs'));
-  for (const file of ['http-source.js', 'errors.js']) await copyFile(join(root, 'dist', file), join(snapshotPath, file));
+  for (const file of ['http-source.js', 'public-network.js', 'errors.js']) await copyFile(join(root, 'dist', file), join(snapshotPath, file));
   await writeFile(join(snapshotPath, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   // This one-day key is ephemeral fixture data, readable only within the controlled snapshot and never committed.
   await execute(openssl, ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '1',

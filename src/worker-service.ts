@@ -1,14 +1,20 @@
 import { performance } from 'node:perf_hooks';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { CloudConnectionError, createCloudTransport, type CloudCredentials } from './cloud-connection.js';
+import { CloudConnectionError, createCloudTransport, createCloudControlTransport, type CloudCredentials } from './cloud-connection.js';
+import { WorkerLicenseStore, normalizeWorkerLicenseTrust, WORKER_CONTROL_INTERVAL_MS, type WorkerControlTransport } from './worker-license.js';
 import { syncWorkerToCloud } from './cloud-sync.js';
 import { PlumberError } from './errors.js';
 import { loadLocalJson } from './local-file.js';
+import { ModelConnections } from './model-connections.js';
+import { ModelConnectionStore } from './model-connections-store.js';
+import type { probeHttpModelConnection } from './model-http-adapter.js';
+import { ModelConnectionError } from './model-failure.js';
 import { listSourceSubscriptions, observeSourcesOnce } from './source-observer.js';
 import { listLocalSubscriptions, observeOnce, type ObservationCycle } from './worker.js';
 import { normalizeWorkerServiceConfig, servicePath, type WorkerServiceConfig } from './worker-service-config.js';
 import { appendServiceLog, checkServicePath, checkWindowsServiceAcl, hasServiceDatabase, lockWorkerService,
-  readServiceRecord, serviceFiles, writeServiceSnapshot } from './worker-service-state.js';
+  readServiceRecord, serviceFailureDetails, serviceFiles, writeServiceSnapshot } from './worker-service-state.js';
 
 export interface WorkerServiceStatus {
   readonly schemaVersion: 1;
@@ -19,16 +25,40 @@ export interface WorkerServiceStatus {
   readonly cycles: number;
   readonly observation: 'pending' | 'healthy' | 'degraded';
   readonly cloud: 'disabled' | 'pending' | 'synced' | 'unavailable' | 'reconnect-required';
+  readonly automation: 'active' | 'draining' | 'paused';
+  readonly licenseReason: 'allowed' | 'missing' | 'expired' | 'suspended' | 'revoked' | 'invalid' | 'clock-rollback';
+  readonly models?: 'pending' | 'unverified' | 'healthy' | 'degraded' | 'requires-reconfiguration';
 }
 
 export interface WorkerServiceDependencies {
-  /** Only trusted in-process adapters. JSON configuration cannot choose code, models or execution commands. */
+  /** Only trusted in-process adapters. JSON configuration cannot choose executable code or commands. */
   readonly observe?: typeof observeOnce;
   readonly observeSources?: typeof observeSourcesOnce;
   readonly sync?: typeof syncWorkerToCloud;
+  readonly control?: WorkerControlTransport;
+  readonly probeModel?: typeof probeHttpModelConnection;
+  /** A trusted scheduler seam; the default is a cancellable Node timer. */
+  readonly wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }
 
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
+
+/** Coalesce local changes into the existing serial loop, including changes
+ * arriving during I/O. Failure backoff deliberately uses an ordinary wait. */
+function loopWakeup(wait: NonNullable<WorkerServiceDependencies['wait']>) {
+  let revision = Symbol(), sleeping: AbortController | undefined;
+  return {
+    get revision() { return revision; },
+    notify() { revision = Symbol(); sleeping?.abort(); },
+    async wait(milliseconds: number, signal: AbortSignal, observed: symbol) {
+      if (revision !== observed || signal.aborted) return;
+      const wake = new AbortController(); sleeping = wake;
+      try { await wait(milliseconds, AbortSignal.any([signal, wake.signal])); }
+      catch (error) { if (!signal.aborted && !wake.signal.aborted) throw error; }
+      finally { sleeping = undefined; }
+    },
+  };
+}
 
 export async function loadWorkerServiceConfig(configPath: string): Promise<WorkerServiceConfig> {
   servicePath(configPath, process.platform === 'win32' ? 'windows' : 'systemd');
@@ -40,13 +70,37 @@ export async function loadWorkerServiceConfig(configPath: string): Promise<Worke
 export function readWorkerServiceStatus(config: WorkerServiceConfig): WorkerServiceStatus | undefined {
   checkServicePath(config.statePath, 'directory');
   checkWindowsServiceAcl(config.statePath, true);
-  const result = readServiceRecord(config.statePath, serviceFiles.status);
+  let result: unknown;
+  try { result = readServiceRecord(config.statePath, serviceFiles.status); }
+  catch (error) {
+    if (error instanceof SyntaxError) invalid('Service status is invalid. Consult the native service manager.');
+    throw error;
+  }
   if (result === undefined) return undefined;
-  if (result === null || typeof result !== 'object' || !('schemaVersion' in result) || result.schemaVersion !== 1
-    || !('runId' in result) || typeof result.runId !== 'string' || !/^[a-f0-9-]{36}$/u.test(result.runId)) {
+  const fields = ['schemaVersion', 'runId', 'pid', 'state', 'updatedAt', 'cycles', 'observation', 'cloud', 'automation', 'licenseReason', 'models'];
+  if (result === null || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).some(key => !fields.includes(key))
+    || !('schemaVersion' in result) || result.schemaVersion !== 1
+    || !('runId' in result) || typeof result.runId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(result.runId)
+    || !('pid' in result) || typeof result.pid !== 'number' || !Number.isSafeInteger(result.pid) || result.pid < 1
+    || !('cycles' in result) || typeof result.cycles !== 'number' || !Number.isSafeInteger(result.cycles) || result.cycles < 0
+    || !('updatedAt' in result) || typeof result.updatedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(result.updatedAt)
+    || !Number.isFinite(Date.parse(result.updatedAt)) || new Date(result.updatedAt).toISOString() !== result.updatedAt) {
     invalid('Service status is invalid. Consult the native service manager.');
   }
-  return result as WorkerServiceStatus;
+  const choice = <T extends string>(value: unknown, allowed: readonly T[]): T => {
+    const matched = allowed.find(item => item === value);
+    if (matched === undefined) invalid('Service status is invalid. Consult the native service manager.');
+    return matched;
+  };
+  return {
+    schemaVersion: 1, runId: result.runId, pid: result.pid, updatedAt: result.updatedAt, cycles: result.cycles,
+    state: choice('state' in result ? result.state : undefined, ['starting', 'running', 'degraded', 'stopping', 'stopped', 'failed']),
+    observation: choice('observation' in result ? result.observation : undefined, ['pending', 'healthy', 'degraded']),
+    cloud: choice('cloud' in result ? result.cloud : undefined, ['disabled', 'pending', 'synced', 'unavailable', 'reconnect-required']),
+    automation: choice('automation' in result ? result.automation : undefined, ['active', 'draining', 'paused']),
+    licenseReason: choice('licenseReason' in result ? result.licenseReason : undefined, ['allowed', 'missing', 'expired', 'suspended', 'revoked', 'invalid', 'clock-rollback']),
+    ...('models' in result ? { models: choice(result.models, ['pending', 'unverified', 'healthy', 'degraded', 'requires-reconfiguration']) } : {}),
+  };
 }
 
 /** Requests only the observed run to stop. A stale request never stops a replacement process. */
@@ -76,13 +130,26 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
   if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) invalid('A service requires an AbortSignal for cancellation.');
   const lock = await lockWorkerService(config.statePath);
   const controller = new AbortController();
-  const abort = (): void => { controller.abort(); };
+  let workController = new AbortController();
+  let licenseStore: WorkerLicenseStore | undefined;
+  let licenseRevision: number | null = null;
+  let licenseRevocations = 0;
+  let activeObservations = 0;
+  let licenseAllowed = false;
+  const wait = options.dependencies?.wait ?? ((milliseconds: number, signal: AbortSignal) => delay(milliseconds, undefined, { signal }));
+  const controlChanges = loopWakeup(wait), cloudChanges = loopWakeup(wait);
+  const revokeLicense = (reason: 'revoked' | 'invalid' = 'revoked'): void => {
+    licenseRevocations++;
+    licenseStore?.revoke(Date.now(), reason);
+  };
+  const abort = (): void => { controller.abort(); workController.abort(); };
   options.signal?.addEventListener('abort', abort, { once: true });
   if (options.signal?.aborted) abort();
   let monitorError = false;
   let monitor: NodeJS.Timeout | undefined;
   let status: WorkerServiceStatus = { schemaVersion: 1, runId: lock.runId, pid: process.pid, state: 'starting',
-    updatedAt: new Date().toISOString(), cycles: 0, observation: 'pending', cloud: config.cloud ? 'pending' : 'disabled' };
+    updatedAt: new Date().toISOString(), cycles: 0, observation: 'pending', cloud: config.cloud ? 'pending' : 'disabled',
+    automation: 'paused', licenseReason: 'missing', ...(config.models ? { models: 'pending' } : {}) };
   const update = (changes: Partial<WorkerServiceStatus>): void => {
     status = { ...status, ...changes, updatedAt: new Date().toISOString() };
     writeServiceSnapshot(lock.directory, serviceFiles.status, status);
@@ -103,6 +170,80 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
       credentials = await loadLocalJson(config.cloud.credentialsPath, 16_384) as CloudCredentials;
       createCloudTransport(credentials);
     }
+    let control: WorkerControlTransport | undefined;
+    let licenseCredentials: CloudCredentials | undefined;
+    if (config.license) {
+      for (const path of [config.license.credentialsPath, config.license.trustPath, ...(config.license.leasePath ? [config.license.leasePath] : [])]) {
+        checkServicePath(path, 'secret'); checkWindowsServiceAcl(path, true);
+      }
+      licenseCredentials = await loadLocalJson(config.license.credentialsPath, 16_384) as CloudCredentials;
+      const trust = normalizeWorkerLicenseTrust(await loadLocalJson(config.license.trustPath, 16_384));
+      control = options.dependencies?.control ?? createCloudControlTransport(licenseCredentials, { signal: controller.signal });
+      if (credentials && (credentials.installationId !== licenseCredentials.installationId || credentials.projectId !== licenseCredentials.projectId
+        || credentials.baseUrl !== licenseCredentials.baseUrl)) invalid('Cloud metadata and license must belong to the same installation.');
+      licenseStore = await WorkerLicenseStore.open(lock.directory, licenseCredentials, trust);
+      if (config.license.leasePath) {
+        const token = await loadLocalJson(config.license.leasePath, 16_384);
+        // Bootstrap is only for an empty store. Reimporting an older initial
+        // lease would invalidate a newer persisted renewal during offline restart.
+        if ((await licenseStore.status()).reason === 'missing') {
+          try { await licenseStore.apply(token as string); } catch { revokeLicense('invalid'); }
+        }
+      }
+    }
+    const refreshLicense = async (): Promise<void> => {
+      const value = licenseStore ? await licenseStore.status() : { allowed: false, revision: null, reason: 'missing' as const };
+      const automation = value.allowed ? 'active' : activeObservations ? 'draining' : 'paused';
+      const controlChanged = licenseRevision !== value.revision || status.automation !== automation;
+      const authorizationChanged = licenseAllowed !== value.allowed;
+      licenseRevision = value.revision;
+      if (!value.allowed && licenseAllowed) workController.abort();
+      if (value.allowed && !licenseAllowed) workController = new AbortController();
+      licenseAllowed = value.allowed;
+      update({ automation, licenseReason: value.reason });
+      if (controlChanged) controlChanges.notify();
+      if (authorizationChanged) cloudChanges.notify();
+    };
+    await refreshLicense();
+    const controlLoop = async (): Promise<void> => {
+      while (!controller.signal.aborted) {
+        const start = performance.now();
+        const observed = controlChanges.revision;
+        let failed = false;
+        try {
+          if (control && licenseStore) {
+            const revocationsAtRequest = licenseRevocations;
+            const response = await control.poll({ schemaVersion: 1, requestId: randomUUID(), installationId: licenseCredentials!.installationId,
+              projectId: licenseCredentials!.projectId,
+              runId: lock.runId, observedRevision: licenseRevision, automation: status.automation });
+            // A status-channel rejection can arrive while this request is in
+            // flight. Only a subsequent control request may restore permission.
+            if (revocationsAtRequest !== licenseRevocations) throw new CloudConnectionError('AUTHORIZATION_REJECTED');
+            await licenseStore.apply(response.license, Date.now(), 'authenticated-control');
+          }
+        } catch (error) {
+          failed = true;
+          if (error instanceof CloudConnectionError && error.code === 'AUTHORIZATION_REJECTED') revokeLicense();
+          else if (error instanceof CloudConnectionError && ['INVALID_RESPONSE', 'INVALID_CONFIGURATION'].includes(error.code) || error instanceof PlumberError) revokeLicense('invalid');
+          log('license-control', { state: 'unavailable' });
+        }
+        await refreshLicense();
+        if (!controller.signal.aborted) {
+          try {
+            const remaining = Math.max(1, WORKER_CONTROL_INTERVAL_MS - (performance.now() - start));
+            if (failed) await wait(remaining, controller.signal);
+            else {
+              await controlChanges.wait(remaining, controller.signal, observed);
+              // State acknowledgements share the authenticated control channel;
+              // signed policy churn cannot turn them into an unbounded spin.
+              const minimumDelay = 1000 - (performance.now() - start);
+              if (!controller.signal.aborted && minimumDelay > 0) await wait(minimumDelay, controller.signal);
+            }
+          }
+          catch (error) { if (!controller.signal.aborted) throw error; }
+        }
+      }
+    };
     // Windows SCM wrappers cannot rely on POSIX signals. The request is private and tied to this random run, never a PID kill.
     monitor = setInterval(() => {
       try {
@@ -113,60 +254,140 @@ export async function runWorkerService(input: WorkerServiceConfig | unknown, opt
     const phases: { name: 'openapi' | 'sources'; interval: number; next: number; failures: number; run(): Promise<ObservationCycle> }[] = [];
     if (config.openApi) phases.push({ name: 'openapi', interval: config.openApi.intervalMs, next: 0, failures: 0,
       run: () => (options.dependencies?.observe ?? observeOnce)({ statePath: lock.directory, enginePath: config.openApi!.enginePath,
-        allowHttp: config.allowHttp, signal: controller.signal }) });
+        allowHttp: config.allowHttp, signal: workController.signal }) });
     if (config.sources) phases.push({ name: 'sources', interval: config.sources.intervalMs, next: 0, failures: 0,
       run: () => (options.dependencies?.observeSources ?? observeSourcesOnce)({ statePath: lock.directory,
-        allowHttp: config.allowHttp, signal: controller.signal }) });
-    let cloudAt = 0, cloudFailures = 0;
-    while (!controller.signal.aborted) {
-      let ran = false;
-      for (const phase of phases) {
-        if (controller.signal.aborted || performance.now() < phase.next) continue;
-        let summary: ReturnType<typeof counts> = { observed: 0, unchanged: 0, busy: 0, failed: 1 };
-        try { summary = counts(await phase.run()); } catch { /* Persist only a sanitized phase failure, never source content or credentials. */ }
-        phase.failures = summary.failed > 0 || summary.busy > 0 ? Math.min(phase.failures + 1, 10) : 0;
-        const backoffMs = Math.min(phase.interval * 2 ** phase.failures, Math.max(phase.interval, 300_000));
-        phase.next = performance.now() + backoffMs;
-        log('observation', { profile: phase.name, counts: summary, retryAfterMs: backoffMs });
-        ran = true;
-      }
-      if (!controller.signal.aborted && config.cloud && performance.now() >= cloudAt) {
+        allowHttp: config.allowHttp, signal: workController.signal }) });
+    const refresh = (cycle = false): void => {
+      const degraded = phases.some(phase => phase.failures > 0);
+      update({ cycles: status.cycles + (cycle ? 1 : 0), observation: cycle ? degraded ? 'degraded' : 'healthy' : status.observation,
+        state: degraded || status.models === 'degraded' || status.models === 'requires-reconfiguration' || ['unavailable', 'reconnect-required'].includes(status.cloud) ? 'degraded' : 'running' });
+    };
+    const checkConfiguredModels = async (): Promise<void> => {
+      if (!config.models) return;
+      let store: ModelConnectionStore | undefined;
+      let connections: ModelConnections | undefined;
+      try {
+        checkServicePath(config.models.configPath, 'config'); checkWindowsServiceAcl(config.models.configPath, false);
+        const value = await loadLocalJson(config.models.configPath, 16_384);
+        store = await ModelConnectionStore.open(lock.directory);
+        connections = new ModelConnections(value, { persistence: store,
+          ...(options.dependencies?.probeModel ? { probe: options.dependencies.probeModel } : {}) });
+        if (!store.permitsStartupProbe(connections.configurationDigest)) { update({ models: 'unverified' }); return; }
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(connections.configuration.limits.timeoutMs)]);
+        let checks = 0;
+        for (const id of connections.selectedIds()) {
+          if (connections.state(id).status === 'requires-reconfiguration') continue;
+          checks++;
+          try { await connections.verify(id, signal); }
+          catch (error) { if (!(error instanceof ModelConnectionError) || error.kind === 'cancelled' || error.kind === 'invalid-response') throw error; }
+        }
+        const states = connections.selectedIds().map(id => connections!.state(id));
+        const healthy = states.filter(value => value.status === 'healthy').length;
+        const state = healthy === states.length ? 'healthy' : healthy > 0 ? 'degraded'
+          : states.some(value => value.status === 'requires-reconfiguration') ? 'requires-reconfiguration' : 'degraded';
+        update({ models: state });
+        log('model-connections', { state, checks, privateCodeSent: false });
+      } catch {
+        if (!controller.signal.aborted) {
+          const blocked = connections?.states().some(value => value.status === 'requires-reconfiguration');
+          update({ models: blocked ? 'requires-reconfiguration' : 'degraded' });
+          log('model-connections', { state: 'unavailable', privateCodeSent: false });
+        }
+      } finally { store?.close(); if (!controller.signal.aborted) refresh(); }
+    };
+    const synchronize = async (): Promise<void> => {
+      let cloudFailures = 0;
+      while (!controller.signal.aborted) {
+        const observed = cloudChanges.revision;
+        await refreshLicense();
+        if (!licenseAllowed) {
+          await cloudChanges.wait(WORKER_CONTROL_INTERVAL_MS, controller.signal, observed);
+          continue;
+        }
+        let terminal = false;
+        let waitMs = Math.min(config.cloud!.intervalMs, 60_000);
         try {
           const result = await (options.dependencies?.sync ?? syncWorkerToCloud)({ statePath: lock.directory,
-            cloudStatePath: config.cloud.statePath, integrationIds: config.cloud.integrationIds, credentials: credentials!, signal: controller.signal });
+            cloudStatePath: config.cloud!.statePath, integrationIds: config.cloud!.integrationIds, credentials: credentials!, signal: workController.signal });
           if (!['synced', 'pending', 'busy'].includes(result.state)) throw new Error('Invalid sync result.');
           status = { ...status, cloud: result.state === 'synced' ? 'synced' : 'pending' };
-          cloudFailures = 0; cloudAt = performance.now() + config.cloud.intervalMs;
-          log('cloud-status', { state: status.cloud });
+          cloudFailures = 0;
         } catch (error) {
-          const terminal = error instanceof CloudConnectionError && ['AUTHORIZATION_REJECTED', 'STATUS_REJECTED', 'INVALID_CONFIGURATION'].includes(error.code);
+          terminal = error instanceof CloudConnectionError && ['AUTHORIZATION_REJECTED', 'STATUS_REJECTED', 'INVALID_CONFIGURATION'].includes(error.code);
+          if (error instanceof CloudConnectionError && error.code === 'AUTHORIZATION_REJECTED') { revokeLicense(); await refreshLicense(); }
           status = { ...status, cloud: terminal ? 'reconnect-required' : 'unavailable' };
           cloudFailures = Math.min(cloudFailures + 1, 10);
-          cloudAt = terminal ? Infinity : performance.now() + Math.min(config.cloud.intervalMs * 2 ** cloudFailures, Math.max(config.cloud.intervalMs, 300_000));
-          log('cloud-status', { state: status.cloud });
+          waitMs = Math.min(waitMs * 2 ** cloudFailures, 300_000);
         }
-        ran = true;
+        log('cloud-status', { state: status.cloud }); refresh();
+        if (controller.signal.aborted) break;
+        if (terminal) {
+          // A fresh control response can restore licensed metadata sharing. No
+          // work is retried here; the durable outbox retains identical events.
+          try { await wait(WORKER_CONTROL_INTERVAL_MS, controller.signal); }
+          catch (error) { if (!controller.signal.aborted) throw error; }
+        } else {
+          try {
+            if (cloudFailures) await wait(waitMs, controller.signal);
+            else {
+              await cloudChanges.wait(waitMs, controller.signal, observed);
+              if (!controller.signal.aborted && cloudChanges.revision !== observed) await wait(25, controller.signal);
+            }
+          }
+          catch (error) { if (!controller.signal.aborted) throw error; }
+        }
       }
-      if (ran) {
-        const degraded = phases.some(phase => phase.failures > 0);
-        update({ cycles: status.cycles + 1, observation: degraded ? 'degraded' : 'healthy',
-          state: degraded || ['unavailable', 'reconnect-required'].includes(status.cloud) ? 'degraded' : 'running' });
+    };
+    const observe = async (): Promise<void> => {
+      while (!controller.signal.aborted) {
+        await refreshLicense();
+        if (!licenseAllowed) {
+          try { await wait(WORKER_CONTROL_INTERVAL_MS, controller.signal); } catch (error) { if (!controller.signal.aborted) throw error; }
+          continue;
+        }
+        let ran = false;
+        for (const phase of phases) {
+          if (controller.signal.aborted || !licenseAllowed || performance.now() < phase.next) continue;
+          let summary: ReturnType<typeof counts> = { observed: 0, unchanged: 0, busy: 0, failed: 1 };
+          activeObservations++;
+          try { summary = counts(await phase.run()); } catch { /* Persist only a sanitized phase failure, never source content or credentials. */ }
+          finally { activeObservations--; await refreshLicense(); }
+          if (phase.name === 'openapi' && summary.observed > 0) cloudChanges.notify();
+          phase.failures = summary.failed > 0 || summary.busy > 0 ? Math.min(phase.failures + 1, 10) : 0;
+          const backoffMs = Math.min(phase.interval * 2 ** phase.failures, Math.max(phase.interval, 300_000));
+          phase.next = performance.now() + backoffMs;
+          log('observation', { profile: phase.name, counts: summary, retryAfterMs: backoffMs });
+          ran = true;
+        }
+        if (ran) refresh(true);
+        if (controller.signal.aborted) break;
+        const next = Math.min(...phases.map(phase => phase.next));
+        try { await wait(Math.min(WORKER_CONTROL_INTERVAL_MS, Math.max(1, next - performance.now())), controller.signal); }
+        catch (error) { if (!controller.signal.aborted) throw error; }
       }
-      if (controller.signal.aborted) break;
-      const next = Math.min(...phases.map(phase => phase.next), config.cloud ? cloudAt : Infinity);
-      try { await delay(Math.max(1, next - performance.now()), undefined, { signal: controller.signal }); }
-      catch (error) { if (!controller.signal.aborted) throw error; }
-    }
+    };
+    // Cloud contact has its own serial loop: a slow observation cannot withhold
+    // a fresh heartbeat, and no two sync calls share ownership concurrently.
+    let failure: unknown;
+    await Promise.all([controlLoop(), observe(), ...(config.models ? [checkConfiguredModels()] : []), ...(config.cloud ? [synchronize()] : [])].map(async task => {
+      try { await task; } catch (error) { failure ??= error; abort(); }
+    }));
+    if (failure !== undefined) throw failure;
     if (monitorError) throw new Error('Local control state is invalid.');
     update({ state: 'stopping' }); log('stopping');
     update({ state: 'stopped' }); log('stopped');
     return status;
   } catch (error) {
-    try { update({ state: 'failed' }); log('failed', { reason: 'local-operation-failed' }); } catch { /* Preserve the original failure if storage itself is unavailable. */ }
+    // Failure to replace a snapshot must not prevent an independent bounded log
+    // append. The CLI also retains these allowlisted fields if storage is down.
+    try { log('failed', { reason: 'local-operation-failed', ...serviceFailureDetails(error) }); } catch { /* Preserve the original storage failure. */ }
+    try { update({ state: 'failed' }); } catch { /* Preserve the original storage failure. */ }
     throw error;
   } finally {
     if (monitor) clearInterval(monitor);
     options.signal?.removeEventListener('abort', abort);
+    licenseStore?.close();
     lock.close();
   }
 }

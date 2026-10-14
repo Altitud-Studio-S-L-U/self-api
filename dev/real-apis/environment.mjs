@@ -45,7 +45,8 @@ export async function seed(root = defaultRoot) {
     await missing(join(root, 'environment.json'), json(marker));
   }
   const paths = { root, consumer: join(root, 'consumer'), state: join(root, 'state'), sources: join(root, 'sources'), contracts: join(root, 'contracts') };
-  for (const path of [paths.consumer, paths.state, paths.sources, paths.contracts, join(paths.consumer, 'adapters')]) {
+  // WorkerStore owns creation and native permissions of its private state.
+  for (const path of [paths.consumer, paths.sources, paths.contracts, join(paths.consumer, 'adapters')]) {
     await mkdir(path, { recursive: true, mode: 0o700 });
     if ((await lstat(path)).isSymbolicLink()) throw new Error('Lab directories cannot be symlinks');
     if (process.platform !== 'win32') await chmod(path, 0o700);

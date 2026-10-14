@@ -6,7 +6,7 @@
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
-    "node": ">=24.11.1 <25"
+    "node": ">=24.21.0 <25"
   },
   "packageManager": "pnpm@11.19.0",
   "exports": {
@@ -27,31 +27,46 @@
     "keepseam": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "tooling/prepare-validation-runtime.mjs"
   ],
   "scripts": {
+    "docs:build": "node tooling/build-docs.mjs --playwright-root ../keepseam-cloud",
+    "docs:check": "node tooling/build-docs.mjs --check",
+    "release:build": "node tooling/build-release.mjs",
+    "release:sign": "node tooling/sign-release-cli.mjs",
+    "release:refresh": "node tooling/refresh-release-cli.mjs",
     "prepack": "pnpm run build",
     "dev": "node tooling/development.mjs status",
     "dev:local": "node dev/local/cli.mjs",
     "dev:apis": "node dev/real-apis/cli.mjs",
+    "dev:polyglot": "node dev/polyglot/run.mjs",
+    "dev:model-evaluation": "node dev/model-evaluation/run.mjs",
+    "dev:model-codex": "node dev/model-evaluation/codex.mjs",
+    "dev:model-review": "node dev/model-evaluation/review.mjs",
     "dev:check": "node tooling/development.mjs check",
     "engine:setup": "node tooling/setup-oasdiff.mjs",
+    "runtime:prepare": "node tooling/prepare-validation-runtime.mjs",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test test/*.test.mjs",
     "test:package": "node tooling/check-package.mjs",
     "test:isolated": "pnpm build && node --test --test-concurrency=1 integration/*.test.mjs",
-    "check": "pnpm typecheck && pnpm test && pnpm test:package",
+    "check": "pnpm typecheck && pnpm test && pnpm test:model-lab && pnpm test:package",
+    "test:model-lab": "node --test dev/model-evaluation/classification.test.mjs dev/model-evaluation/semantic-review.test.mjs",
     "keepseam": "node ./dist/cli.js"
   },
   "devDependencies": {
     "@notionhq/client": "5.27.0",
     "@types/node": "24.19.1",
+    "@types/retry": "0.12.5",
     "notion-v4": "npm:@notionhq/client@4.0.2",
+    "postject": "1.0.0-alpha.6",
     "typescript": "7.0.2"
   },
   "dependencies": {
     "@babel/parser": "8.0.6",
-    "jose": "6.2.12"
+    "jose": "6.2.12",
+    "tuf-js": "5.0.1"
   }
 }

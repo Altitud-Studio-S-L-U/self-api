@@ -54,7 +54,7 @@ node dev/live-validation/cli.mjs identity /private/pilot-unique
 node dev/live-validation/cli.mjs sync /private/pilot-unique /private/credentials.json
 ```
 
-`identity` emits only the public JWK, fingerprint and binding ID. Its private key remains in `identity.private.json` with private filesystem permissions. Enroll and independently verify this new identity through the [normal Cloud procedure](../../docs/local-workflow.md#connect-an-approved-worker-to-cloud), then bind only its displayed subscription. Combine the connection fields and original private key locally. Do not reuse another worker's credential with an empty outbox or copy an existing worker's state.
+`identity` emits only the public JWK, fingerprint and binding ID. Its private key remains in `identity.private.json` with private filesystem permissions. Enroll and independently verify this new identity through the normal Cloud procedure in [the technical guide](../../docs/technical-guide.pdf), then bind only its displayed subscription. Combine the connection fields and original private key locally. Do not reuse another worker's credential with an empty outbox or copy an existing worker's state.
 
 Sync sends actual job/validation summaries and the runner state through the SDK outbox. It sends no captures, source, patch or test output. Protocol v1 does not project the draft PR URL or publication outcome automatically; a successful `validated` status is not a claim that Cloud reported publication. No Cloud response authorizes code execution.
 

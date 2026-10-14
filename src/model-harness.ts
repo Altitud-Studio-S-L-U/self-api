@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isProxy } from 'node:util/types';
-import { isCapturedConsumerPath } from './consumer-files.js';
+import { isCapturedConsumerPath, isConsumerTestPath } from './consumer-files.js';
 import { PlumberError } from './errors.js';
+import { ModelConnectionError } from './model-failure.js';
 import { previewRecipe, serializeMigrationRecipe } from './migration-recipe.js';
 import type { MigrationRecipe, RecipePreview } from './migration-recipe.js';
 
@@ -76,6 +77,7 @@ export interface ModelProposalAdapter extends ModelAdapterIdentity {
 
 export interface ModelMigrationProposal {
   readonly schemaVersion: 1;
+  readonly status: 'proposal-ready';
   readonly requestId: string;
   readonly contextDigest: string;
   readonly recipe: MigrationRecipe;
@@ -87,6 +89,14 @@ export interface ModelMigrationProposal {
   readonly publication: 'not-authorized';
 }
 
+export interface ModelNoProposal extends Omit<ModelMigrationProposal, 'status' | 'recipe' | 'preview'> {
+  readonly status: 'decision-required';
+  readonly summary: string;
+  readonly decisions: ModelProposalContext['requiredDecisions'];
+}
+
+export type ModelProposalOutcome = ModelMigrationProposal | ModelNoProposal;
+
 const MAX_BYTES = 1024 * 1024;
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_CONSENT_MS = 15 * 60_000;
@@ -96,6 +106,9 @@ const SEMANTIC_DECISION = Object.freeze({
 });
 const requests = new WeakMap<ModelProposalRequest, { readonly sensitiveValues: readonly string[] }>();
 const consents = new WeakMap<ModelProposalConsent, { readonly request: ModelProposalRequest; used: boolean }>();
+
+/** Internal orchestration guard: serialized plans cannot authorize even a synthetic provider call. */
+export function isPreparedModelProposal(request: ModelProposalRequest): boolean { return requests.has(request); }
 
 function invalid(message: string): never {
   throw new PlumberError('INVALID_INPUT', message);
@@ -177,13 +190,13 @@ function limits(value: unknown): ModelProposalLimits {
 }
 
 function testPath(path: string): boolean {
-  return /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|\.(?:test|spec)\.[^.]+$/iu.test(path);
+  return isConsumerTestPath(path);
 }
 
 function sourcePath(value: unknown): string {
   const path = text(value, 1024);
-  if (!isCapturedConsumerPath(path) || !/\.(?:tsx?|jsx?|mts|cts|mjs|cjs)$/iu.test(path)
-    || /[:\u0000-\u001f\u007f]/u.test(path)) invalid('Model context requires relative captured JavaScript or TypeScript source paths.');
+  if (!isCapturedConsumerPath(path) || !/\.(?:tsx?|jsx?|mts|cts|mjs|cjs|py|java)$/iu.test(path)
+    || /[:\u0000-\u001f\u007f]/u.test(path)) invalid('Model context requires relative captured JS, TS, Python or Java source paths.');
   return path;
 }
 
@@ -257,7 +270,7 @@ export function prepareModelProposal(options: PrepareModelProposalOptions): Mode
   if (inputBytes > budget.maximumInputBytes) invalid('Selected model context exceeds its serialized input byte budget.');
   const contextDigest = digest(serialized);
   const policyDigest = digest(JSON.stringify({
-    profile: 'model-proposal-v1', adapter, limits: budget,
+    profile: 'model-proposal-v2', adapter, limits: budget,
     sensitiveValueDigests: sensitiveValues.map(digest).sort(),
     maximumAttempts: 1, testsEditable: false, modelAnswersAllowed: false,
   }));
@@ -302,7 +315,7 @@ export async function proposeMigrationWithModel(options: {
   readonly consent: ModelProposalConsent;
   readonly adapter: ModelProposalAdapter;
   readonly signal?: AbortSignal;
-}): Promise<ModelMigrationProposal> {
+}): Promise<ModelProposalOutcome> {
   const startedAt = performance.now();
   const input = object(options, ['request', 'consent', 'adapter'], ['signal']);
   const request = input.request as ModelProposalRequest;
@@ -351,8 +364,9 @@ export async function proposeMigrationWithModel(options: {
       }),
     ]);
     checkDeadline();
-  } catch {
+  } catch (error) {
     // Adapter errors may contain prompts, credentials or provider response bodies.
+    if (error instanceof ModelConnectionError) throw new ModelConnectionError(error.kind, 'INVALID_INPUT');
     invalid('The model proposal failed, was cancelled, or exceeded its deadline; no proposal was accepted.');
   } finally {
     if (timer !== undefined) clearTimeout(timer);
@@ -365,6 +379,38 @@ export async function proposeMigrationWithModel(options: {
   rejectSecrets(output, state.sensitiveValues);
   let parsed: unknown;
   try { parsed = JSON.parse(output); } catch { invalid('The model response must be a single JSON migration recipe.'); }
+  const response = object(parsed, ['schemaVersion', 'summary', 'decisions', 'files']);
+  const mergeDecisions = (decisions: MigrationRecipe['decisions']): ModelProposalContext['requiredDecisions'] => {
+    if (decisions.some(decision => Object.hasOwn(decision, 'answer'))) invalid('Models cannot answer business or semantic decisions on behalf of a reviewer.');
+    const required = new Map(request.context.requiredDecisions.map(decision => [decision.id, decision]));
+    for (const decision of decisions) {
+      if (required.has(decision.id) && required.get(decision.id)!.question !== decision.question) invalid('Model proposals cannot rewrite required business decisions.');
+      required.set(decision.id, { id: decision.id, question: decision.question });
+    }
+    if (required.size > 100) invalid('A model outcome cannot contain more than one hundred review decisions.');
+    return [...required.values()];
+  };
+  if (array(response.files, 50).length === 0) {
+    if (response.schemaVersion !== 1) invalid('Only model outcome schema version 1 is supported.');
+    const summary = text(response.summary, 4096);
+    if (!summary.trim()) invalid('A no-proposal outcome requires a nonempty explanation.');
+    const ids = new Set<string>();
+    const decisions = array(response.decisions, 100).map(value => {
+      const decision = object(value, ['id', 'question']);
+      const id = identifier(decision.id);
+      const question = text(decision.question, 4096);
+      if (!question.trim() || ids.has(id)) invalid('No-proposal decisions require unique identifiers and nonempty questions.');
+      ids.add(id);
+      return { id, question };
+    });
+    if (!decisions.length) invalid('A no-proposal outcome requires at least one unresolved decision.');
+    for (const value of [summary, ...decisions.flatMap(decision => [decision.id, decision.question])]) rejectSecrets(value, state.sensitiveValues);
+    const reviewed = mergeDecisions(decisions);
+    checkDeadline();
+    return { schemaVersion: 1, status: 'decision-required', requestId: request.id, contextDigest: request.contextDigest,
+      summary, decisions: reviewed, authorization: 'not-granted', validation: 'not-run', consumerModified: false,
+      consumerExecuted: false, publication: 'not-authorized' };
+  }
   const serializedRecipe = serializeMigrationRecipe(parsed);
   rejectSecrets(serializedRecipe, state.sensitiveValues);
   const recipe: MigrationRecipe = JSON.parse(serializedRecipe);
@@ -374,18 +420,12 @@ export async function proposeMigrationWithModel(options: {
   for (const value of decodedText) rejectSecrets(value, state.sensitiveValues);
   const selected = new Map(request.context.files.filter(file => file.role === 'source').map(file => [file.path, file]));
   if (recipe.files.some(file => !selected.has(file.path))) invalid('Model proposals cannot expand the selected editable source scope or modify tests.');
-  if (recipe.decisions.some(decision => Object.hasOwn(decision, 'answer'))) invalid('Models cannot answer business or semantic decisions on behalf of a reviewer.');
-  const required = new Map(request.context.requiredDecisions.map(decision => [decision.id, decision]));
-  for (const decision of recipe.decisions) {
-    if (required.has(decision.id) && required.get(decision.id)!.question !== decision.question) invalid('Model proposals cannot rewrite required business decisions.');
-    required.set(decision.id, decision);
-  }
-  const normalized: MigrationRecipe = JSON.parse(serializeMigrationRecipe({ ...recipe, decisions: [...required.values()] }));
+  const normalized: MigrationRecipe = JSON.parse(serializeMigrationRecipe({ ...recipe, decisions: mergeDecisions(recipe.decisions) }));
   const preview = previewRecipe(normalized, [...selected.values()].map(({ path, sha256, text }) => ({ path, sha256, text })));
   // In-process synchronous work cannot be interrupted by a timer; never accept its late output.
   checkDeadline();
   return {
-    schemaVersion: 1, requestId: request.id, contextDigest: request.contextDigest, recipe: normalized, preview,
+    schemaVersion: 1, status: 'proposal-ready', requestId: request.id, contextDigest: request.contextDigest, recipe: normalized, preview,
     authorization: 'not-granted', validation: 'not-run', consumerModified: false,
     consumerExecuted: false, publication: 'not-authorized',
   };

@@ -3,6 +3,7 @@ import { extname } from 'node:path';
 import { isProxy } from 'node:util/types';
 import { parse, type ParserPlugin } from '@babel/parser';
 import { PlumberError } from './errors.js';
+import { isJavaScriptConsumerPath } from './consumer-files.js';
 
 export interface MigrationRecipe {
   readonly schemaVersion: 1;
@@ -42,7 +43,7 @@ export interface RecipePreview {
 
 const MAX_RECIPE_BYTES = 1024 * 1024;
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
-const SOURCE_EXTENSIONS = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts']);
+const SOURCE_EXTENSIONS = new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts', '.py', '.java']);
 const SHA256 = /^[a-f0-9]{64}$/u;
 
 function invalid(message: string): never {
@@ -87,7 +88,7 @@ function sourcePath(path: string): void {
   if (!path || path.startsWith('/') || /[\\:\u0000-\u001f\u007f]/u.test(path) ||
     path.split('/').some(segment => segment === '' || segment === '.' || segment === '..') ||
     !SOURCE_EXTENSIONS.has(extname(path).toLowerCase())) {
-    invalid('Recipe paths must be relative POSIX paths to supported JavaScript or TypeScript source files.');
+    invalid('Recipe paths must be relative POSIX paths to supported JS, TS, Python or Java source files.');
   }
 }
 
@@ -165,6 +166,8 @@ export function serializeMigrationRecipe(input: unknown): string {
 }
 
 function checkSyntax(text: string, path: string): void {
+  // Foreign source is compiled only inside the explicitly approved isolated profile.
+  if (!isJavaScriptConsumerPath(path)) return;
   const extension = extname(path).toLowerCase();
   const plugins: ParserPlugin[] = [];
   if (['.ts', '.tsx', '.mts', '.cts'].includes(extension)) plugins.push('typescript');

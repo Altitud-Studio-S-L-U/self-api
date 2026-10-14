@@ -34,8 +34,8 @@ export function renderValidation(request: MigrationValidationRequest, includeSou
     `Profile: ${escapeTerminal(JSON.stringify(request.spec.profile))}`,
     'Actions: baseline tests, then candidate tests in separate captured copies.',
     'No dependency installation, live checkout writes, network access, or Git publication.',
-    'Only captured JS/TS source and package manifests are available; other data/dependencies are omitted.',
-    `Command in each copy: node ${request.spec.profile.command.join(' ')} ${request.spec.testPaths.map(path => escapeTerminal(JSON.stringify(`/workspace/${path}`))).join(' ')}`,
+    'Only captured JS/TS, Python and Java source and package manifests are available; other data/dependencies are omitted.',
+    `Command in each copy: ${escapeTerminal(JSON.stringify([request.spec.profile.entrypoint, ...request.spec.profile.command, ...request.spec.testPaths.map(path => `/workspace/${path}`)]))}`,
     'Local approval expires after 15 minutes and permits one attempt, including failures.',
   ];
   if (includeSource) {

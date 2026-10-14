@@ -187,7 +187,7 @@ function candidate(value: unknown): PublicationCandidate {
   const files = list(data.files, 50).map((value): PublicationCandidate['files'][number] => {
     const file = record(value, ['path', 'beforeSha256', 'afterSha256', 'before', 'after', 'mode', 'gitBlobId']);
     const path = text(file.path, 1024);
-    if (!isCapturedConsumerPath(path) || !/\.(?:tsx?|jsx?|mts|cts|mjs|cjs)$/iu.test(path)
+    if (!isCapturedConsumerPath(path) || !/\.(?:tsx?|jsx?|mts|cts|mjs|cjs|py|java)$/iu.test(path)
       || /[:\u0000-\u001f\u007f]/u.test(path) || paths.has(path.toLowerCase())) invalid('Publication file paths must be unique captured source paths.');
     paths.add(path.toLowerCase());
     const before = text(file.before, 2 * 1024 * 1024);

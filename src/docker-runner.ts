@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, open, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { loadLocalJson } from './local-file.js';
+import { validateRuntime, type ValidationRuntime } from './validation-runtime.js';
 
 export const DOCKER_PROFILE = Object.freeze({
   id: 'node24-linux-amd64-v2',
@@ -36,10 +37,136 @@ export const DOCKER_PROFILE = Object.freeze({
   ]),
 });
 
+const PYTHON_DRIVER = [
+  'import importlib.util, pathlib, sys, unittest',
+  'for source in sorted(pathlib.Path("/workspace").rglob("*.py")):',
+  '    compile(source.read_bytes(), str(source), "exec")',
+  'suite = unittest.TestSuite()',
+  'for index, test in enumerate(sys.argv[1:]):',
+  '    sys.path.insert(0, str(pathlib.Path(test).parent))',
+  '    name = "keepseam_validation_" + str(index)',
+  '    spec = importlib.util.spec_from_file_location(name, test)',
+  '    module = importlib.util.module_from_spec(spec)',
+  '    sys.modules[name] = module',
+  '    try:',
+  '        spec.loader.exec_module(module)',
+  '    except SystemExit:',
+  '        raise RuntimeError("Selected unittest modules must not exit during import") from None',
+  '    selected = unittest.defaultTestLoader.loadTestsFromModule(module)',
+  '    if selected.countTestCases() == 0:',
+  '        raise RuntimeError("Every selected Python file must expose at least one unittest case")',
+  '    suite.addTests(selected)',
+  'result = unittest.TextTestRunner(verbosity=2).run(suite)',
+  'sys.exit(0 if result.wasSuccessful() else 1)',
+].join('\n');
+
+const JAVA_DRIVER = [
+  'set -eu',
+  'mkdir /tmp/classes',
+  'find /workspace -type f -name "*.java" -print0 | xargs -0 javac -J-Xmx256m -proc:none -d /tmp/classes',
+  'for test do java -ea -Xmx256m --class-path /tmp/classes "$test"; done',
+].join('\n');
+
+export const PYTHON_DOCKER_PROFILE = Object.freeze({
+  ...DOCKER_PROFILE,
+  id: 'python313-linux-amd64-v1',
+  image: 'python@sha256:f040863673aea2570c3ff6a5c3fb4c673a016cbc5375005ad145915922b6b78a',
+  entrypoint: '/usr/local/bin/python3',
+  command: Object.freeze(['-B', '-c', PYTHON_DRIVER]),
+});
+
+export const JAVA_DOCKER_PROFILE = Object.freeze({
+  ...DOCKER_PROFILE,
+  id: 'java25-linux-amd64-v1',
+  image: 'eclipse-temurin@sha256:51ae87bbb1949c1afdff51f6a3e6c5f283d84a4bd68512c9657fdc6605026a49',
+  entrypoint: '/bin/sh',
+  command: Object.freeze(['-c', JAVA_DRIVER, 'keepseam-java-validation']),
+});
+
+const PYTEST_DRIVER = [
+  'import os, pathlib, sys',
+  'os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"',
+  'import pytest',
+  'selected = {pathlib.Path(p).resolve() for p in sys.argv[1:]}',
+  'class Evidence:',
+  '    def __init__(self): self.executed = set()',
+  '    def pytest_collection_finish(self, session):',
+  '        collected = {pathlib.Path(item.path).resolve() for item in session.items}',
+  '        if not selected.issubset(collected): raise RuntimeError("Every selected pytest file must collect a test")',
+  '    def pytest_runtest_logreport(self, report):',
+  '        if report.when == "call" and not report.skipped: self.executed.add(pathlib.Path(report.location[0]).resolve())',
+  '    def pytest_sessionfinish(self, session, exitstatus):',
+  '        if not selected.issubset(self.executed): session.exitstatus = 5',
+  'sys.exit(pytest.main(["-q", "-p", "no:cacheprovider", "-o", "addopts=", "--basetemp=/tmp/pytest", "--", *sys.argv[1:]], plugins=[Evidence()]))',
+].join('\n');
+const MAVEN_DRIVER = [
+  'set -eu',
+  'mkdir /tmp/project',
+  'cp -rs /workspace/. /tmp/project/',
+  'cd /tmp/project',
+  'tests=""',
+  'for test do',
+  '  name=${test#/workspace/src/test/java/}',
+  '  name=${name%.java}',
+  '  name=$(printf "%s" "$name" | tr / .)',
+  '  tests=${tests:+$tests,}$name',
+  'done',
+  'export HOME=/tmp MAVEN_OPTS="-Xmx256m -XX:ActiveProcessorCount=1"',
+  '/opt/maven/bin/mvn -o -B -ntp -s /opt/keepseam/settings.xml -Dmaven.repo.local=/opt/keepseam/repository -Dtest="$tests" -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true -DskipTests=false -Dmaven.test.skip=false -Dmaven.compiler.proc=none -DargLine="-Xmx256m -XX:ActiveProcessorCount=1" test',
+  'exec java -Xmx128m -XX:ActiveProcessorCount=1 --class-path /opt/keepseam/check KeepseamReports /tmp/project/target/surefire-reports "$tests"',
+].join('\n');
+
+function frameworkProfile(input: ValidationRuntime) {
+  const runtime = validateRuntime(input);
+  return Object.freeze({ ...DOCKER_PROFILE,
+    id: runtime.kind === 'pytest' ? 'pytest9-python313-linux-amd64-v1' as const : 'maven3-junit6-java25-linux-amd64-v1' as const,
+    image: runtime.imageId, runtime,
+    entrypoint: runtime.kind === 'pytest' ? '/usr/local/bin/python3' : '/bin/sh',
+    command: Object.freeze(runtime.kind === 'pytest' ? ['-B', '-c', PYTEST_DRIVER] : ['-c', MAVEN_DRIVER, 'keepseam-maven-validation']),
+    timeoutMs: 120_000,
+    isolationArgs: Object.freeze(DOCKER_PROFILE.isolationArgs.map(value => value === '--memory=512m' ? '--memory=768m'
+      : value === '--memory-swap=512m' ? '--memory-swap=768m'
+        : value.startsWith('--tmpfs=') ? '--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777' : value)),
+  });
+}
+
+export type DockerProfile = typeof DOCKER_PROFILE | typeof PYTHON_DOCKER_PROFILE | typeof JAVA_DOCKER_PROFILE | ReturnType<typeof frameworkProfile>;
+const PROFILES: readonly DockerProfile[] = [DOCKER_PROFILE, PYTHON_DOCKER_PROFILE, JAVA_DOCKER_PROFILE];
+
+/** A test selection chooses one closed runtime; consumer metadata cannot supply commands or images. */
+export function dockerProfileForTests(testPaths: readonly string[], runtime?: ValidationRuntime): DockerProfile {
+  if (!Array.isArray(testPaths) || testPaths.length === 0 || testPaths.some(path => !isSupportedDockerTestPath(path))) {
+    throw new Error('Select supported captured tests explicitly.');
+  }
+  const profiles = testPaths.map(path => path.endsWith('.py') ? PYTHON_DOCKER_PROFILE : path.endsWith('.java') ? JAVA_DOCKER_PROFILE : DOCKER_PROFILE);
+  if (profiles.some(profile => profile !== profiles[0])) throw new Error('One validation request cannot mix runtime profiles.');
+  if (runtime !== undefined) {
+    const profile = frameworkProfile(runtime);
+    if (runtime.kind === 'pytest' ? profiles[0] !== PYTHON_DOCKER_PROFILE : profiles[0] !== JAVA_DOCKER_PROFILE
+      || testPaths.some(path => !/^src\/test\/java\/(?:[A-Za-z_$][A-Za-z0-9_$]*\/)*[A-Za-z_$][A-Za-z0-9_$]*\.java$/u.test(path))) {
+      throw new Error('Framework runtime and selected test paths do not match.');
+    }
+    return profile;
+  }
+  return profiles[0]!;
+}
+
+function checkedProfile(id: DockerProfile['id'] | undefined, runtime?: ValidationRuntime): DockerProfile {
+  if (runtime !== undefined) {
+    const profile = frameworkProfile(runtime);
+    if (profile.id !== id) throw new Error('Runtime does not match the approved profile.');
+    return profile;
+  }
+  const profile = PROFILES.find(candidate => candidate.id === (id ?? DOCKER_PROFILE.id));
+  if (!profile) throw new Error('Unknown isolated runtime profile.');
+  return profile;
+}
+
 export interface DockerValidationInput {
   readonly snapshotPath: string;
   readonly testPaths: readonly string[];
   readonly statePath: string;
+  readonly runtime?: ValidationRuntime;
   readonly execution?: DockerExecutionIdentity & { readonly phase: 'baseline' | 'candidate' };
   readonly guard?: () => void;
 }
@@ -54,6 +181,8 @@ export interface DockerRecoveryInput {
   readonly statePath: string;
   readonly execution: DockerExecutionIdentity;
   readonly guard: () => void;
+  readonly profileId?: DockerProfile['id'];
+  readonly runtime?: ValidationRuntime;
 }
 
 export interface DockerRecoveryResult {
@@ -117,7 +246,7 @@ async function checkedPath(path: string, directory: boolean): Promise<string> {
 export function isSupportedDockerTestPath(path: unknown): path is string {
   return typeof path === 'string' && path.length <= 500 && !/[\\:\x00-\x1f\x7f*?\[\]{}()]/.test(path)
     && !path.startsWith('/') && !path.split('/').some(part => part === '' || part === '.' || part === '..' || part.startsWith('.'))
-    && /\.(?:js|mjs|cjs|ts|mts|cts)$/.test(path) && !/\.d\.(?:ts|mts|cts)$/.test(path);
+    && /\.(?:js|mjs|cjs|ts|mts|cts|py|java)$/.test(path) && !/\.d\.(?:ts|mts|cts)$/.test(path);
 }
 
 async function preparePaths(input: DockerValidationInput): Promise<{ snapshot: string; state: string; tests: readonly string[] }> {
@@ -218,6 +347,7 @@ interface ContainerIntent extends DockerExecutionIdentity {
 interface CreationRecord { readonly schemaVersion: 1; readonly intentSha256: string; readonly containerId: string }
 interface RemovalRecord extends CreationRecord { readonly removedAt: string }
 interface Journal {
+  readonly profile: DockerProfile;
   readonly directory: string;
   readonly intent: ContainerIntent;
   readonly intentSha256: string;
@@ -315,7 +445,7 @@ function checkRemoval(value: unknown, intentSha256: string): RemovalRecord {
   checkCreation({ schemaVersion: value.schemaVersion, intentSha256: value.intentSha256, containerId: value.containerId }, intentSha256);
   return value as unknown as RemovalRecord;
 }
-async function readJournal(directory: string, state: string, phase: Phase, identity: DockerExecutionIdentity): Promise<Journal | null> {
+async function readJournal(directory: string, state: string, phase: Phase, identity: DockerExecutionIdentity, profile: DockerProfile): Promise<Journal | null> {
   const intent = await optionalJson(join(directory, `${phase}.intent.json`));
   const created = await optionalJson(join(directory, `${phase}.created.json`));
   const removed = await optionalJson(join(directory, `${phase}.cleanup.json`));
@@ -324,7 +454,7 @@ async function readJournal(directory: string, state: string, phase: Phase, ident
     return null;
   }
   if (!exactFields(intent, INTENT_FIELDS) || intent.schemaVersion !== 1 || intent.phase !== phase
-    || intent.statePathSha256 !== pathHash(state) || intent.profileSha256 !== hashJson(DOCKER_PROFILE)
+    || intent.statePathSha256 !== pathHash(state) || intent.profileSha256 !== hashJson(profile)
     || typeof intent.owner !== 'string' || !UUID.test(intent.owner) || intent.containerName !== `plumber-validation-${intent.owner}`
     || typeof intent.imageId !== 'string' || !IMAGE_ID.test(intent.imageId)
     || typeof intent.commandSha256 !== 'string' || !HASH.test(intent.commandSha256) || !timestamp(intent.recordedAt)
@@ -333,15 +463,16 @@ async function readJournal(directory: string, state: string, phase: Phase, ident
   const createdReceipt = created === undefined ? null : checkCreation(created, intentSha256);
   const removedReceipt = removed === undefined ? null : checkRemoval(removed, intentSha256);
   if (createdReceipt && removedReceipt && createdReceipt.containerId !== removedReceipt.containerId) throw new Error('Journal container identities disagree.');
-  return { directory, intent: intent as unknown as ContainerIntent, intentSha256, created: createdReceipt, removed: removedReceipt };
+  return { profile, directory, intent: intent as unknown as ContainerIntent, intentSha256, created: createdReceipt, removed: removedReceipt };
 }
 function inspectedOwnedContainer(value: unknown, journal: Journal, state: string): string | null {
+  const profile = journal.profile;
   if (!object(value) || typeof value.id !== 'string' || !HASH.test(value.id) || value.name !== `/${journal.intent.containerName}`
     || (journal.created !== null && value.id !== journal.created.containerId)
     || (journal.removed !== null && value.id !== journal.removed.containerId)
-    || value.imageId !== journal.intent.imageId || value.image !== DOCKER_PROFILE.image
+    || value.imageId !== journal.intent.imageId || value.image !== profile.image
     || !object(value.labels) || !Object.entries(labels(journal)).every(([key, expected]) => (value.labels as Record<string, unknown>)[key] === expected)
-    || JSON.stringify(value.entrypoint) !== JSON.stringify([DOCKER_PROFILE.entrypoint])
+    || JSON.stringify(value.entrypoint) !== JSON.stringify([profile.entrypoint])
     || !Array.isArray(value.command) || !value.command.every(item => typeof item === 'string') || hashJson(value.command) !== journal.intent.commandSha256
     || value.user !== '65534:65534' || value.workingDir !== DOCKER_PROFILE.mountTarget
     || value.readonly !== true || value.network !== 'none' || value.privileged !== false
@@ -399,7 +530,10 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
     if (options.platform !== 'linux' || options.arch !== 'x64') {
       return blocked('Docker validation currently requires a Linux x64 host.');
     }
-    const deadline = Date.now() + (options.timeoutMs ?? DOCKER_PROFILE.timeoutMs);
+    let profile: DockerProfile;
+    try { profile = dockerProfileForTests(input.testPaths, input.runtime); }
+    catch { return blocked('Select tests from exactly one supported isolated runtime profile.'); }
+    const deadline = Date.now() + (options.timeoutMs ?? profile.timeoutMs);
     let temporary: string | undefined;
     let state: string | undefined;
     let config: string | undefined;
@@ -435,14 +569,24 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
         const info = await control(['info', '--format', INFO_FORMAT]);
         if (info.status !== 'exited' || info.exitCode !== 0) return preflightFailure(info, 'The fixed local Docker daemon is unavailable.');
         if (!daemonSupportsProfile(info.stdout)) return blocked('The Docker daemon does not report the required Linux isolation and resource controls.');
-        const image = await control(['image', 'inspect', '--format', '{{.Os}}/{{.Architecture}}', DOCKER_PROFILE.image]);
+        const image = await control(['image', 'inspect', '--format', '{{.Os}}/{{.Architecture}}', profile.image]);
         if (image.status !== 'exited' || image.exitCode !== 0) return preflightFailure(image, 'The pinned Docker image is unavailable; provision it explicitly.');
-        if (image.stdout.trim() !== DOCKER_PROFILE.platform) return blocked('The pinned Docker image has an unsupported platform.');
+        if (image.stdout.trim() !== profile.platform) return blocked('The pinned Docker image has an unsupported platform.');
+        if ('runtime' in profile) {
+          const metadata = await control(['image', 'inspect', '--format', '{{json .Config.Labels}}', profile.image]);
+          try {
+            const labels: unknown = JSON.parse(metadata.stdout);
+            if (metadata.status !== 'exited' || metadata.exitCode !== 0 || !object(labels)
+              || labels['io.keepseam.validation.recipe'] !== profile.runtime.recipeSha256
+              || labels['io.keepseam.validation.dependencies'] !== profile.runtime.dependenciesSha256
+              || labels['io.keepseam.validation.framework'] !== profile.runtime.kind) throw new Error('Runtime metadata mismatch');
+          } catch { return blocked('The prepared runtime does not match its approved recipe and dependency manifest.'); }
+        }
         ownership = randomUUID();
         containerName = `plumber-validation-${ownership}`;
-        const command = [...DOCKER_PROFILE.command, ...paths.tests.map(path => `${DOCKER_PROFILE.mountTarget}/${path}`)];
+        const command = [...profile.command, ...paths.tests.map(path => `${profile.mountTarget}/${path}`)];
         if (executionContext !== undefined) {
-          const inspectedImage = await control(['image', 'inspect', '--format', '{{.Id}}', DOCKER_PROFILE.image]);
+          const inspectedImage = await control(['image', 'inspect', '--format', '{{.Id}}', profile.image]);
           if (inspectedImage.status !== 'exited' || inspectedImage.exitCode !== 0 || !IMAGE_ID.test(inspectedImage.stdout.trim())) {
             return preflightFailure(inspectedImage, 'The pinned Docker image identity could not be verified.');
           }
@@ -452,22 +596,22 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
           await checkPrivateDirectory(directory);
           await syncDirectory(state!);
           const intent: ContainerIntent = {
-            schemaVersion: 1, ...executionContext, statePathSha256: pathHash(state!), profileSha256: hashJson(DOCKER_PROFILE),
+            schemaVersion: 1, ...executionContext, statePathSha256: pathHash(state!), profileSha256: hashJson(profile),
             owner: ownership, containerName, imageId: inspectedImage.stdout.trim(),
             commandSha256: hashJson(command), recordedAt: new Date().toISOString(),
           };
           input.guard?.();
           await writeJournal(join(directory, `${executionContext.phase}.intent.json`), intent);
-          journal = { directory, intent, intentSha256: hashJson(intent), created: null, removed: null };
+          journal = { profile, directory, intent, intentSha256: hashJson(intent), created: null, removed: null };
         }
         const containerLabels = journal === undefined ? { [DOCKER_PROFILE.ownershipLabel]: ownership } : labels(journal);
         input.guard?.();
         createAttempted = true;
         const create = await control([
           'create', '--name', containerName, ...Object.entries(containerLabels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
-          '--platform', DOCKER_PROFILE.platform, ...DOCKER_PROFILE.isolationArgs,
-          '--mount', `type=bind,source=${paths.snapshot},target=${DOCKER_PROFILE.mountTarget},${DOCKER_PROFILE.mountOptions}`,
-          '--entrypoint', DOCKER_PROFILE.entrypoint, DOCKER_PROFILE.image, ...command,
+          '--platform', profile.platform, ...profile.isolationArgs,
+          '--mount', `type=bind,source=${paths.snapshot},target=${profile.mountTarget},${profile.mountOptions}`,
+          '--entrypoint', profile.entrypoint, profile.image, ...command,
         ]);
         uncertainCreate = create.status !== 'exited';
         if (create.status !== 'exited' || create.exitCode !== 0) return preflightFailure(create, 'Docker could not create the validation container.');
@@ -571,6 +715,7 @@ export function createDockerRecoveryRunner(options: RunnerOptions): (input: Dock
     let result: DockerRecoveryResult;
     try {
       if (typeof input.guard !== 'function') throw new Error('A recovery ownership guard is required.');
+      const profile = checkedProfile(input.profileId, input.runtime);
       const identity = executionIdentity(input.execution);
       input.guard();
       try { state = await checkPrivateDirectory(input.statePath); }
@@ -587,7 +732,7 @@ export function createDockerRecoveryRunner(options: RunnerOptions): (input: Dock
       }
       const journals: Journal[] = [];
       for (const phase of PHASES) {
-        const journal = await readJournal(directory, state, phase, identity);
+        const journal = await readJournal(directory, state, phase, identity, profile);
         if (journal !== null) journals.push(journal);
       }
       if (journals.length === 0) return { cleanup: 'not-created' };

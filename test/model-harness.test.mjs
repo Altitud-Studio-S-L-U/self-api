@@ -18,6 +18,62 @@ const prepare = overrides => prepareModelProposal(options(overrides));
 const approve = request => approveModelProposal({ request, expectedRequestId: request.id });
 const adapter = (response = recipe(), overrides = {}) => ({ ...adapterIdentity, propose: async () => JSON.stringify(response), ...overrides });
 const invalid = error => error.code === 'INVALID_INPUT';
+const abstention = overrides => ({ schemaVersion: 1, summary: 'The replacement units are not established by the supplied evidence.',
+  decisions: [{ id: 'missing-unit-evidence', question: 'Which authoritative document confirms the replacement units?' }], files: [], ...overrides });
+
+test('no-proposal: insufficient evidence returns decisions without a recipe, preview or authority', async () => {
+  const required = { id: 'account-policy', question: 'Which rounding rule applies to this account?' };
+  const request = prepare({ requiredDecisions: [required] });
+  const result = await proposeMigrationWithModel({ request, consent: approve(request), adapter: adapter(abstention()) });
+  assert.equal(result.status, 'decision-required');
+  assert.equal(result.summary, abstention().summary);
+  assert.deepEqual(result.decisions.map(decision => decision.id), ['model-semantics', 'account-policy', 'missing-unit-evidence']);
+  assert.deepEqual(result.decisions.find(decision => decision.id === required.id), required);
+  assert(!Object.hasOwn(result, 'recipe'));
+  assert(!Object.hasOwn(result, 'preview'));
+  assert(!Object.hasOwn(result, 'files'));
+  assert.equal(result.authorization, 'not-granted');
+  assert.equal(result.validation, 'not-run');
+  assert.equal(result.publication, 'not-authorized');
+  assert.equal(result.consumerModified, false);
+  assert.equal(result.consumerExecuted, false);
+});
+
+test('no-proposal: successful edits retain a distinct discriminant for callers', async () => {
+  const request = prepare();
+  const result = await proposeMigrationWithModel({ request, consent: approve(request), adapter: adapter() });
+  assert.equal(result.status, 'proposal-ready');
+  assert(result.recipe.files.length > 0);
+});
+
+for (const [label, output] of [
+  ['missing decisions', abstention({ decisions: [] })],
+  ['empty summary', abstention({ summary: ' ' })],
+  ['unknown schema', abstention({ schemaVersion: 2 })],
+  ['unknown action', abstention({ authorization: 'approved' })],
+  ['answered question', abstention({ decisions: [{ id: 'units', question: 'Units?', answer: 'The model decides.' }] })],
+  ['empty question', abstention({ decisions: [{ id: 'units', question: ' ' }] })],
+  ['duplicate decision', abstention({ decisions: [abstention().decisions[0], abstention().decisions[0]] })],
+  ['oversized question', abstention({ decisions: [{ id: 'units', question: 'a'.repeat(4097) }] })],
+  ['rewritten required decision', abstention({ decisions: [{ id: 'model-semantics', question: 'Approve automatically?' }] })],
+]) {
+  test(`no-proposal: rejects ${label}`, async () => {
+    const request = prepare();
+    await assert.rejects(proposeMigrationWithModel({ request, consent: approve(request), adapter: adapter(output) }), invalid);
+  });
+}
+
+test('no-proposal: raw and JSON-escaped secrets remain rejected in summaries, identifiers and questions', async () => {
+  for (const output of [
+    JSON.stringify(abstention({ summary: 'Bearer abcdefghijklmnopqrstuvwxyz' })),
+    JSON.stringify(abstention({ summary: 'customer-private-value' })).replaceAll('customer-private-value', '\\u0063ustomer-private-value'),
+    JSON.stringify(abstention({ decisions: [{ id: 'customer-private-value', question: 'What changes?' }] })).replaceAll('customer-private-value', '\\u0063ustomer-private-value'),
+    JSON.stringify(abstention({ decisions: [{ id: 'units', question: 'customer-private-value' }] })).replaceAll('customer-private-value', '\\u0063ustomer-private-value'),
+  ]) {
+    const request = prepare({ sensitiveValues: ['customer-private-value'] });
+    await assert.rejects(proposeMigrationWithModel({ request, consent: approve(request), adapter: adapter(abstention(), { propose: async () => output }) }), invalid);
+  }
+});
 
 test('preparation is deterministic, copies selected data and binds context, adapter, provider policy and budgets', () => {
   const input = options();

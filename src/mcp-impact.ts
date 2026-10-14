@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { extname } from 'node:path';
 import { isProxy } from 'node:util/types';
 import { parse, type ParserPlugin } from '@babel/parser';
-import { captureConsumer, isCapturedConsumerPath, type ConsumerFile } from './consumer-files.js';
+import { captureConsumer, isCapturedConsumerPath, isJavaScriptConsumerPath, type ConsumerFile } from './consumer-files.js';
 import type { SourceLocation } from './consumer-contracts.js';
 import { PlumberError } from './errors.js';
 import { compareMcpCatalogs, loadMcpCatalog, type McpComparisonReport } from './mcp-catalog.js';
@@ -348,9 +348,13 @@ export async function analyzeMcpImpact(options: McpImpactOptions): Promise<McpIm
     && base.catalog.protocolVersion === revision.catalog.protocolVersion && canonical(base.catalog.capabilities) === canonical(revision.catalog.capabilities)
     && base.catalog.completeness === 'complete' && revision.catalog.completeness === 'complete';
   const context = { consistent, serverId: base.catalog.serverId, authContextId: base.catalog.authContextId, tools: new Set(base.catalog.tools.map((tool) => tool.name)) };
-  const inspections = capture.files.map((file) => inspect(file, bindings.filter((binding) => binding.file === file.path), context));
+  const inspections = capture.files.filter(file => isJavaScriptConsumerPath(file.path))
+    .map((file) => inspect(file, bindings.filter((binding) => binding.file === file.path), context));
   const calls = inspections.flatMap((inspection) => inspection.calls);
   const issues = inspections.flatMap((inspection) => inspection.issues);
+  for (const file of capture.files.filter(file => !isJavaScriptConsumerPath(file.path))) {
+    issues.push({ code: 'unsupported-language', location: { file: file.path, line: 1, column: 1 } });
+  }
   for (const binding of bindings) if (!capture.files.some((file) => file.path === binding.file)) issues.push({ code: 'binding-file-not-captured', location: { file: binding.file, line: 1, column: 1 } });
   const matches: McpImpactReport['matches'][number][] = [];
   const unmappedChangeIndexes: number[] = [];

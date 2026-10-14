@@ -1,14 +1,28 @@
-import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { constants, closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, parse, sep } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import type { DatabaseSync } from 'node:sqlite';
 import { PlumberError } from './errors.js';
+import { checkWindowsPermissions } from './windows-permissions.js';
 
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
 export const serviceFiles = Object.freeze({ lock: 'worker-service.sqlite3', status: 'worker-service.status.json', stop: 'worker-service.stop.json', log: 'worker-service.log', archive: 'worker-service.previous.log' });
 const MAX_LOG_BYTES = 1024 * 1024;
 const flags = constants.O_WRONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK);
+
+/** Native failures are useful to operators; arbitrary error text and paths are not safe log fields. */
+export function serviceFailureDetails(error: unknown): { systemCode?: string; operation?: string } {
+  try {
+    if (!(error instanceof Error)) return {};
+    const code = Object.getOwnPropertyDescriptor(error, 'code')?.value as unknown;
+    const operation = Object.getOwnPropertyDescriptor(error, 'syscall')?.value as unknown;
+    return {
+      ...(typeof code === 'string' && ['EACCES', 'EPERM', 'EBUSY', 'ENOENT', 'ENOSPC', 'EIO', 'EISDIR', 'ENOTDIR', 'EMFILE', 'ENFILE', 'EROFS'].includes(code) ? { systemCode: code } : {}),
+      ...(typeof operation === 'string' && ['rename', 'open', 'read', 'write', 'stat', 'lstat', 'unlink', 'close', 'fsync'].includes(operation) ? { operation } : {}),
+    };
+  } catch { return {}; }
+}
 
 /** These checks supplement, rather than replace, the dedicated OS account and operator-provisioned directory ACL. */
 export function checkServicePath(path: string, kind: 'directory' | 'config' | 'secret'): void {
@@ -30,29 +44,7 @@ export function checkServicePath(path: string, kind: 'directory' | 'config' | 's
 
 /** Windows has no meaningful POSIX mode bits. Inspect native DACLs without modifying the user's permissions. */
 export function checkWindowsServiceAcl(path: string, privateAccess: boolean): void {
-  if (process.platform !== 'win32') return;
-  const script = `
-$ErrorActionPreference = 'Stop'
-$path = $env:KEEPSEAM_ACL_PATH
-$acl = Get-Acl -LiteralPath $path
-$allowed = @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544')
-$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-if ($allowed -notcontains $owner) { exit 2 }
-foreach ($rule in $acl.Access) {
-  if ($rule.AccessControlType -ne 'Allow') { continue }
-  $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-  if ($allowed -contains $sid) { continue }
-  if ($env:KEEPSEAM_ACL_PRIVATE -eq '1') { exit 2 }
-  $write = [System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership
-  if (($rule.FileSystemRights -band $write) -ne 0) { exit 2 }
-}
-`;
-  try {
-    execFileSync(join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-      { env: { ...process.env, PSModulePath: join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
-        KEEPSEAM_ACL_PATH: path, KEEPSEAM_ACL_PRIVATE: privateAccess ? '1' : '0' }, windowsHide: true, stdio: 'pipe', timeout: 30_000, maxBuffer: 4096 });
-  } catch { invalid('The service account requires restricted native ACLs on configuration, state and credentials.'); }
+  checkWindowsPermissions([path], privateAccess);
 }
 
 function assertRegularIfPresent(path: string): boolean {
@@ -73,10 +65,40 @@ function ownedWrite(path: string, bytes: string, append = false): void {
 export function writeServiceSnapshot(directory: string, filename: string, value: unknown): void {
   const path = join(directory, filename);
   assertRegularIfPresent(path);
+  const previous = process.platform === 'win32' && existsSync(path) ? lstatSync(path, { bigint: true }) : undefined;
   const temporary = `${path}.next`;
   // A previous crash may leave this one bounded, private intermediate; no arbitrary temporary files are removed.
-  ownedWrite(temporary, `${JSON.stringify(value)}\n`);
-  renameSync(temporary, path);
+  const bytes = `${JSON.stringify(value)}\n`;
+  if (Buffer.byteLength(bytes) > 16_384) invalid('Service runtime record exceeds its fixed limit.');
+  ownedWrite(temporary, bytes);
+  const parent = previous ? lstatSync(directory, { bigint: true }) : undefined;
+  const staged = previous ? lstatSync(temporary, { bigint: true }) : undefined;
+  try { renameSync(temporary, path); }
+  catch (error) {
+    if (!previous || !['EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    // MoveFileEx can report access denied while a Windows reader still holds the
+    // destination open. Wait only for that atomic replacement, without deleting
+    // the old snapshot, rewriting staging, or repairing any native permissions.
+    checkWindowsPermissions([directory, path, temporary], true);
+    try { accessSync(path, constants.W_OK); accessSync(temporary, constants.W_OK); }
+    catch { throw error; }
+    // The fixed wait budget starts after the separately bounded native ACL check.
+    const until = performance.now() + 1000;
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    while (performance.now() < until) {
+      assertRegularIfPresent(path); assertRegularIfPresent(temporary);
+      const current = lstatSync(path, { bigint: true }), next = lstatSync(temporary, { bigint: true }), container = lstatSync(directory, { bigint: true });
+      if (current.dev !== previous.dev || current.ino !== previous.ino || next.dev !== staged!.dev || next.ino !== staged!.ino
+        || container.dev !== parent!.dev || container.ino !== parent!.ino || !container.isDirectory() || container.isSymbolicLink()
+        || readFileSync(temporary, 'utf8') !== bytes) invalid('Service snapshot changed during atomic replacement.');
+      try { renameSync(temporary, path); return; }
+      catch (attempt) {
+        if (!['EPERM', 'EACCES'].includes((attempt as NodeJS.ErrnoException).code ?? '')) throw attempt;
+      }
+      Atomics.wait(pause, 0, 0, Math.min(10, Math.max(0, until - performance.now())));
+    }
+    throw error;
+  }
 }
 
 export function appendServiceLog(directory: string, value: unknown): void {

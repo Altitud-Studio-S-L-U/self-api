@@ -5,6 +5,7 @@ import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { isProxy } from 'node:util/types';
 import { PlumberError } from './errors.js';
+import { checkWindowsPermissions } from './windows-permissions.js';
 import { readLocalBytes } from './local-file.js';
 import { compareMcpCatalogs, type McpComparisonReport } from './mcp-catalog.js';
 import { compareJsonExamples, compareJsonSchemas, type JsonExampleComparison, type JsonSchemaComparison } from './json-schema.js';
@@ -177,13 +178,16 @@ async function openSourceStore(statePath: string, existing = true) {
     const state = worker.statePath;
     worker.close();
     const databasePath = join(state, FILE_NAME);
+    const permissionPaths = [state];
     for (const suffix of ['', '-journal', '-wal', '-shm']) {
       try {
         const attributes = lstatSync(`${databasePath}${suffix}`);
-        if (attributes.isSymbolicLink() || !attributes.isFile() ||
+        if (attributes.isSymbolicLink() || !attributes.isFile() || attributes.nlink !== 1 ||
           (process.platform !== 'win32' && (attributes.mode & 0o077) !== 0)) invalid('Source database files must be regular private local files.');
+        permissionPaths.push(`${databasePath}${suffix}`);
       } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
     }
+    checkWindowsPermissions(permissionPaths, true);
     if (existing && !lstatSync(databasePath).isFile()) invalid('Register a source before observing it.');
     try { closeSync(openSync(databasePath, 'wx', 0o600)); }
     catch (error) { if (errorCode(error) !== 'EEXIST') throw error; }

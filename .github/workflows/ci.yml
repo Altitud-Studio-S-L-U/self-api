@@ -20,54 +20,108 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # Windows serial native-permission checks need a larger bounded budget,
+    # including dependency setup and package validation.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 10 }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           package-manager-cache: false
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm engine:setup
       - run: pnpm dev:check
+      - run: pnpm docs:check
   isolated-validation:
     name: isolated validation (Linux x64)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           package-manager-cache: false
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm engine:setup
       # Explicit trusted setup; the runtime itself uses --pull=never.
       - run: docker pull node@sha256:51b1100cc2a83d370c6a60952e3f2989c8a43159d0e38586e090f3b3326efefd
+      - run: docker pull python@sha256:f040863673aea2570c3ff6a5c3fb4c673a016cbc5375005ad145915922b6b78a
+      - run: docker pull eclipse-temurin@sha256:51ae87bbb1949c1afdff51f6a3e6c5f283d84a4bd68512c9657fdc6605026a49
+      - run: pnpm build
+      - run: node tooling/prepare-validation-runtime.mjs pytest work/audit/pytest-runtime.json
+      - run: node tooling/prepare-validation-runtime.mjs maven-junit work/audit/maven-junit-runtime.json
       - run: pnpm test:isolated
   native-supervision:
     name: native service (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          # Keep the required check name stable while pinning the restricted host.
+          - os: ubuntu-latest
+            runner: ubuntu-24.04
+          - os: windows-latest
+            runner: windows-latest
+          - os: macos-latest
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           package-manager-cache: false
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - if: runner.os == 'Windows'
+        run: node --test tooling/service-native-windows-fixture.test.mjs
       - run: node tooling/service-native-smoke.mjs
+      - if: runner.os == 'Linux'
+        run: node tooling/service-native-smoke.mjs --user --expect-namespace-denial
+  user-supervision:
+    name: user service (Ubuntu 22.04)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # systemd 249 delegates memory and pids by default, but user CPU quotas
+      # also require cpu delegation. This runner is disposable.
+      - run: sudo systemctl set-property --runtime "user@$(id -u).service" 'Delegate=cpu memory pids'
+      - run: node tooling/service-native-smoke.mjs --user
+
+  acceptance:
+    name: SDK acceptance
+    if: always()
+    needs: [check, isolated-validation, native-supervision, user-supervision]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every verification job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: node -e 'if(Object.values(JSON.parse(process.env.RESULTS)).some(job=>job.result !== "success")) process.exit(1)'

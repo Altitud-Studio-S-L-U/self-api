@@ -9,6 +9,8 @@ export interface WorkerServiceConfig {
   readonly allowHttp: boolean;
   readonly openApi?: { readonly enginePath: string; readonly intervalMs: number };
   readonly sources?: { readonly intervalMs: number };
+  readonly models?: { readonly configPath: string };
+  readonly license?: { readonly credentialsPath: string; readonly trustPath: string; readonly leasePath?: string };
   readonly cloud?: { readonly credentialsPath: string; readonly statePath: string; readonly integrationIds: readonly string[]; readonly intervalMs: number };
 }
 
@@ -54,7 +56,7 @@ function interval(value: unknown, fallback: number): number {
 
 export function normalizeWorkerServiceConfig(value: unknown, target: WorkerServiceTarget = process.platform === 'win32' ? 'windows' : 'systemd'): WorkerServiceConfig {
   if (!['systemd', 'launchd', 'windows'].includes(target)) invalid('Choose systemd, launchd or windows.');
-  const config = record(value, ['schemaVersion', 'statePath', 'allowHttp', 'openApi', 'sources', 'cloud']);
+  const config = record(value, ['schemaVersion', 'statePath', 'allowHttp', 'openApi', 'sources', 'cloud', 'license', 'models']);
   if (config['schemaVersion'] !== 1 || (config['allowHttp'] !== undefined && typeof config['allowHttp'] !== 'boolean')) {
     invalid('Service configuration requires schemaVersion 1 and an explicit boolean HTTP policy.');
   }
@@ -88,7 +90,20 @@ export function normalizeWorkerServiceConfig(value: unknown, target: WorkerServi
     cloud = Object.freeze({ credentialsPath: servicePath(input['credentialsPath'], target), statePath: cloudPath,
       integrationIds: Object.freeze([...ids] as string[]), intervalMs: interval(input['intervalMs'], 60_000) });
   }
+  let license: WorkerServiceConfig['license'];
+  if (config['license'] !== undefined) {
+    const input = record(config['license'], ['credentialsPath', 'trustPath', 'leasePath']);
+    license = Object.freeze({ credentialsPath: servicePath(input['credentialsPath'], target), trustPath: servicePath(input['trustPath'], target),
+      ...(input['leasePath'] !== undefined ? { leasePath: servicePath(input['leasePath'], target) } : {}) });
+  }
+  let models: WorkerServiceConfig['models'];
+  if (config['models'] !== undefined) {
+    const input = record(config['models'], ['configPath']);
+    models = Object.freeze({ configPath: servicePath(input['configPath'], target) });
+  }
   return Object.freeze({ schemaVersion: 1, statePath, allowHttp: config['allowHttp'] === true,
+    ...(models ? { models } : {}),
+    ...(license ? { license } : {}),
     ...(openApi ? { openApi } : {}), ...(sources ? { sources } : {}), ...(cloud ? { cloud } : {}) });
 }
 
@@ -98,7 +113,9 @@ export interface WorkerServiceManifestOptions {
   readonly target: WorkerServiceTarget;
   readonly nodePath: string;
   readonly cliPath: string;
-  /** Unix dedicated account. Windows intentionally uses the built-in LocalService account without a password. */
+  /** systemd only; defaults to system. User services inherit the non-root manager's identity. */
+  readonly scope?: 'system' | 'user';
+  /** Unix system account; invalid for systemd user scope. Windows uses LocalService without a password. */
   readonly user?: string;
   readonly name?: string;
 }
@@ -109,6 +126,9 @@ const windowsArgument = (value: string): string => `"${value.replace(/(\\*)"/gu,
 
 export function renderWorkerServiceManifest(options: WorkerServiceManifestOptions): string {
   if (!['systemd', 'launchd', 'windows'].includes(options.target)) invalid('Choose systemd, launchd or windows.');
+  const scope = options.scope === undefined ? 'system' : options.scope;
+  if (!['system', 'user'].includes(scope) || (options.scope !== undefined && options.target !== 'systemd')) invalid('Service scope is system or user and applies only to systemd.');
+  if (scope === 'user' && options.user !== undefined) invalid('User services inherit their manager identity; omit the user option.');
   const config = normalizeWorkerServiceConfig(options.config, options.target);
   const configPath = servicePath(options.configPath, options.target);
   const node = servicePath(options.nodePath, options.target);
@@ -135,19 +155,23 @@ export function renderWorkerServiceManifest(options: WorkerServiceManifestOption
 `;
   }
   const user = options.user;
-  if (typeof user !== 'string' || !/^[a-z_][a-z0-9_-]{0,31}$/u.test(user) || user === 'root') invalid('Choose a dedicated non-root Unix account.');
+  if (scope === 'system' && (typeof user !== 'string' || !/^[a-z_][a-z0-9_-]{0,31}$/u.test(user) || user === 'root')) invalid('Choose a dedicated non-root Unix account.');
   if (options.target === 'systemd') {
     const writePaths = [config.statePath, ...(config.cloud ? [config.cloud.statePath] : [])].map(value => systemd(value)).join(' ');
+    // Explicit tmpfs mounts make namespaces mandatory. PrivateTmp alone can be
+    // silently ignored by systemd when a host denies mount namespace setup.
+    const temporaryStorage = scope === 'user'
+      ? 'TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=64M /var/tmp:rw,nosuid,nodev,size=64M'
+      : 'PrivateTmp=true';
     return `[Unit]
 Description=Keepseam local contract observer
-After=network-online.target
-Wants=network-online.target
+${scope === 'user' ? 'AssertUser=!root' : 'After=network-online.target\nWants=network-online.target'}
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
 Type=exec
-User=${user}
+${scope === 'user' ? 'PrivateUsers=true' : `User=${user}`}
 UMask=0077
 WorkingDirectory=${config.statePath.replaceAll('%', '%%')}
 ExecStart=${[node, cli, 'worker-service', 'run', '--config', configPath].map(value => systemd(value, true)).join(' ')}
@@ -155,10 +179,17 @@ Restart=on-failure
 RestartSec=30
 TimeoutStopSec=180
 KillSignal=SIGTERM
+KillMode=control-group
+OOMPolicy=stop
+CPUQuota=100%
+MemoryHigh=384M
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=128
 NoNewPrivileges=true
-PrivateTmp=true
+${temporaryStorage}
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=${scope === 'user' ? 'read-only' : 'true'}
 ReadWritePaths=${writePaths}
 RestrictSUIDSGID=true
 LockPersonality=true
@@ -169,7 +200,7 @@ LogRateLimitIntervalSec=30
 LogRateLimitBurst=30
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=${scope === 'user' ? 'default.target' : 'multi-user.target'}
 `;
   }
   const args = [node, cli, 'worker-service', 'run', '--config', configPath].map(value => `    <string>${xml(value)}</string>`).join('\n');
@@ -180,7 +211,7 @@ WantedBy=multi-user.target
   <key>ProgramArguments</key><array>
 ${args}
   </array>
-  <key>UserName</key><string>${xml(user)}</string>
+  <key>UserName</key><string>${xml(user!)}</string>
   <key>WorkingDirectory</key><string>${xml(config.statePath)}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>

@@ -115,14 +115,14 @@ export async function prepareJobPublicationCandidate(input: JobPublicationOption
         outcomeDigest: digest(JSON.stringify(outcome)) },
       git: { canonicalRootId: git.canonicalRootId, headSha: git.headSha, treeSha: git.treeSha, consumerDigest: git.consumerDigest },
       destination: target, files,
-      pullRequest: { title: 'Update API integration', draft: true, body: [
+      pullRequest: { title: 'Update API integration', body: [
         `Proposes ${files.length} source file change(s) from the reviewed local migration plan.`, '',
         outcome.status === 'passed' ? 'Selected baseline and candidate tests passed in the approved validation profile.'
           : 'Validation improved: selected baseline tests failed and candidate tests passed. The baseline failure remains part of the review.',
         'This evidence covers the selected tests only; it does not establish general API compatibility.', '',
         `Plan: ${request.plan.id}`, `Validation request: ${request.id}`, `Local base commit: ${git.headSha}`, '',
         'This is a local draft proposal. Remote repository identity and base revision have not been verified; publication is not authorized.',
-      ].join('\n') }, consumerModified: false,
+      ].join('\n'), draft: true }, consumerModified: false,
     };
     const id = digest(JSON.stringify(content));
     return { ...content, id, headBranch: `feat/api-${id.slice(0, 12)}` };

@@ -99,7 +99,10 @@ function checkJsonDepth(json: string): void {
 }
 
 export async function loadLocalJson(filePath: string, maxBytes: number): Promise<unknown> {
-  const bytes = await readLocalBytes(filePath, maxBytes);
+  return parseLocalJson(await readLocalBytes(filePath, maxBytes));
+}
+
+export function parseLocalJson(bytes: Uint8Array): unknown {
   let json: string;
   try {
     json = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
