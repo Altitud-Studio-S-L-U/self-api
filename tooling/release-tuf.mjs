@@ -62,7 +62,7 @@ export function authenticatedReleaseMetadata(root, role, bytes) {
 export function pinnedReleaseRoot(rootBytes, rootSha256, now) {
   requireReleaseValue(Buffer.isBuffer(rootBytes) && rootBytes.length <= 512000 && releaseHash(rootBytes) === rootSha256, 'Pinned TUF root mismatch.');
   const root = JSON.parse(rootBytes.toString('utf8')).signed;
-  requireReleaseValue(root?._type === 'root' && root.consistent_snapshot === false && Date.parse(root.expires) > now, 'Unsupported or expired pinned TUF root.');
+  requireReleaseValue(root?._type === 'root' && typeof root.consistent_snapshot === 'boolean' && Date.parse(root.expires) > now, 'Unsupported or expired pinned TUF root.');
   authenticatedReleaseMetadata(root, 'root', rootBytes);
   return root;
 }
@@ -81,6 +81,7 @@ export function signedReleaseEnvelope(root, roleKeys, role, signed) {
 }
 export function requireImportBundleBounds(bundle, { refresh = false } = {}) {
   requireReleaseValue(bundle.manifest.length <= 16384 && bundle.metadata.targets.length <= 16384
+    && (bundle.channel === undefined || typeof bundle.channel === 'string' && Buffer.byteLength(bundle.channel) <= 4096)
     && bundle.metadata.snapshot.length <= 8192 && bundle.metadata.timestamp.length <= 8192
     && Buffer.byteLength(JSON.stringify({ requestId: '00000000-0000-4000-8000-000000000000', ...(refresh ? { expectedRevision: 2147483646 } : {}), bundle })) <= 30000,
   'Release metadata exceeds the bounded Cloud import contract.');
