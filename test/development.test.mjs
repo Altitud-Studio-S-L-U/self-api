@@ -1,15 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { runDevelopment } from '../tooling/development.mjs';
 
-const manifestFile = new URL('../tooling/delivery.json', import.meta.url);
-
-test('development status separates pending review from the next implementation milestone', async () => {
-  const before = await readFile(manifestFile, 'utf8');
-  const { items } = JSON.parse(before);
+test('development status describes operational commands without loading a delivery roadmap', () => {
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('../tooling/development.mjs', import.meta.url)), 'status'], {
     cwd: fileURLToPath(new URL('../tooling', import.meta.url)),
     encoding: 'utf8',
@@ -18,23 +13,15 @@ test('development status separates pending review from the next implementation m
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0);
   assert.equal(result.stderr, '');
-  const nextId = result.stdout.match(/^Next implementation: (.+)$/mu)?.[1];
-  const next = items.find(item => item.id === nextId);
-  if (items.some(item => ['planned', 'in-progress'].includes(item.status))) {
-    assert.ok(next && ['planned', 'in-progress'].includes(next.status));
-    for (const criterion of next.acceptance) assert.ok(result.stdout.includes(criterion));
-  } else {
-    assert.equal(nextId, undefined);
-  }
-  for (const item of items.filter(item => item.status === 'in-review')) {
-    assert.notEqual(nextId, item.id);
-    if (item.pullRequest) assert.ok(result.stdout.includes(item.pullRequest));
-  }
-  assert.equal(await readFile(manifestFile, 'utf8'), before);
+  assert.match(result.stdout, /Build: pnpm build/u);
+  assert.match(result.stdout, /Validation: pnpm dev:check/u);
+  assert.match(result.stdout, /Local laboratory: pnpm dev:local --help/u);
+  assert.match(result.stdout, /CLI: pnpm keepseam --help/u);
+  assert.match(result.stdout, /Technical documentation: docs\/technical-guide\.pdf/u);
+  assert.doesNotMatch(result.stdout, /Next implementation|planned|in-progress|milestone|delivery\.json/u);
 });
 
-test('development check propagates results without changing delivery state', async () => {
-  const before = await readFile(manifestFile, 'utf8');
+test('development check propagates success and failures without claiming completion', async () => {
   for (const exitCode of [0, 17]) {
     let stderr = '';
     let stdout = '';
@@ -53,7 +40,7 @@ test('development check propagates results without changing delivery state', asy
       assert.equal(stdout, '');
       assert.match(stderr, /Checks failed \(exit 17\)/u);
     }
-    assert.equal(await readFile(manifestFile, 'utf8'), before);
+    assert.doesNotMatch(stdout + stderr, /completed|Delivery|milestone/u);
   }
 });
 

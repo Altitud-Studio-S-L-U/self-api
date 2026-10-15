@@ -19,6 +19,7 @@ export async function runModelConnectionsCli(args: string[], options: {
   const controller = new AbortController(), stop = (): void => { controller.abort(); };
   let store: ModelConnectionStore | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let checkingLocalConnection = false;
   try {
     const parsed = parseArgs({ args, strict: true, allowPositionals: true, tokens: true, options: {
       state: { type: 'string' }, model: { type: 'string' }, connection: { type: 'string' },
@@ -67,13 +68,21 @@ export async function runModelConnectionsCli(args: string[], options: {
     if (!await (options.confirm ?? confirmLocalRequest)(id)) { stdout('Connection check cancelled; no inference performed.\n'); return 1; }
     process.on('SIGINT', stop); process.on('SIGTERM', stop);
     timer = setTimeout(stop, runtime.configuration.limits.timeoutMs);
-    for (const connectionId of ids) await runtime.verify(connectionId, controller.signal, true);
+    for (const connectionId of ids) {
+      checkingLocalConnection = runtime.connection(connectionId).provider === 'local-openai-compatible';
+      await runtime.verify(connectionId, controller.signal, true);
+    }
     if (values['startup-checks']) store.authorizeStartupProbe(runtime.configurationDigest);
     stdout(jsonLine({ connections: runtime.states(), startupChecksAuthorized: values['startup-checks'] === true, privateCodeSent: false }));
     return 0;
   } catch (error) {
     stderr(jsonLine({ error: error instanceof PlumberError ? { code: error.code, message: error.message,
-      ...(error instanceof ModelConnectionError ? { failure: error.kind } : {}) }
+      ...(error instanceof ModelConnectionError ? { failure: error.kind,
+        ...(checkingLocalConnection && error.kind === 'transient' ? {
+          action: 'check-local-model-service',
+          hint: 'Check that the local model service is reachable and its configured model has finished loading, then verify again. Functional checks remain limited to 30 seconds.',
+        } : {}),
+      } : {}) }
       : { code: 'INVALID_INPUT', message: 'The local model connection command failed; no private code was sent.' } }));
     return 2;
   } finally {

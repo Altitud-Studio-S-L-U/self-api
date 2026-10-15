@@ -12,3 +12,5 @@ Examples: `feat/api-scan`, `fix/schema-diff`, `hotfix/token-expiry`.
 ## README scope
 
 Keep READMEs technical: implemented architecture, data contracts, dependencies, installation, operation and known limitations. Exclude hosting price comparisons, product pricing and commercial plans.
+
+Keep development plans, roadmaps, backlogs and delivery tracking outside repositories in an external temporary directory; technical documentation describes current contracts and operating procedures.

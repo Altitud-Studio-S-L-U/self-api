@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { ModelConnectionStore, ModelConnections, readModelConnectionStatus } from '../dist/index.js';
+import { ModelConnectionError, ModelConnectionStore, ModelConnections, readModelConnectionStatus } from '../dist/index.js';
 import { runModelConnectionsCli } from '../dist/model-connections-cli.js';
 import { checkWindowsPermissions } from '../dist/windows-permissions.js';
 import { controlledModel } from './helpers/job-proposal.mjs';
 
 async function fixture(t) {
-  const parent = resolve('work/test-model-connections'); await mkdir(parent, { recursive: true });
+  const parent = resolve(process.env.KEEPSEAM_TEST_WORK ?? join(tmpdir(), 'keepseam-model-connections-tests')); await mkdir(parent, { recursive: true });
   const directory = await mkdtemp(join(await realpath(parent), 'case-'));
   checkWindowsPermissions([directory], true, directory);
   t.after(async () => {
@@ -71,4 +72,39 @@ test('remote checks require explicit disclosure consent and reject raw keys or c
   await writeFile(f.modelPath, JSON.stringify({ ...remote, connections: [{ ...remote.connections[0], apiKey: 'fictional-secret' }] }));
   const invalid = await invoke(['model-connections', 'verify', ...f.args, '--allow-remote'], { confirm: async () => { assert.fail('Literal secrets cannot reach consent.'); } });
   assert.equal(invalid.code, 2); assert(!invalid.stderr.includes('fictional-secret')); assert.equal(f.model.checks.length, 0);
+});
+
+test('only a transient local probe failure recommends preparing the local service, without relaxing deadlines or exposing provider data', async t => {
+  const f = await fixture(t);
+  for (const failure of ['transient', 'credentials', 'permission', 'model', 'quota', 'invalid-response', 'cancelled']) {
+    const result = await invoke(['model-connections', 'verify', ...f.args], {
+      confirm: async () => true, dependencies: { probe: async () => { throw new ModelConnectionError(failure); } },
+    });
+    assert.equal(result.code, 2);
+    const error = JSON.parse(result.stderr).error;
+    assert.equal(error.failure, failure);
+    if (failure === 'transient') {
+      assert.equal(error.action, 'check-local-model-service');
+      assert.match(error.hint, /service is reachable/u);
+      assert.match(error.hint, /finished loading/u);
+      assert.match(error.hint, /limited to 30 seconds/u);
+    } else {
+      assert.equal(error.action, undefined);
+      assert.equal(error.hint, undefined);
+    }
+    const request = JSON.parse(result.stdout.trim().split('\n')[0]);
+    assert.equal(request.timeoutMs, 120000);
+    assert.equal(request.maximumChecks, 1);
+    assert.equal(request.destinations[0].maximumOutputTokens, 128);
+  }
+  await writeFile(f.modelPath, JSON.stringify({ ...f.configuration, connections: [{ ...f.configuration.connections[0],
+    revision: 2, provider: 'openai', endpoint: undefined, apiKeyEnv: 'KEEPSEAM_TEST_MISSING_API_KEY' }] }));
+  const remote = await invoke(['model-connections', 'verify', ...f.args, '--allow-remote'], {
+    confirm: async () => true, dependencies: { probe: async () => { throw new ModelConnectionError('transient'); } },
+  });
+  assert.equal(remote.code, 2);
+  const remoteError = JSON.parse(remote.stderr).error;
+  assert.equal(remoteError.failure, 'transient');
+  assert.equal(remoteError.action, undefined);
+  assert.equal(remoteError.hint, undefined);
 });
