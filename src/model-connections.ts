@@ -264,12 +264,17 @@ export function prepareModelRoute(connections: ModelConnections, requests: reado
 }
 
 export function approveModelRoute(options: { readonly request: ModelRouteRequest; readonly expectedRequestId: string; readonly allowRemote?: boolean; readonly expiresAt?: number }): ModelRouteConsent {
-  if (!plans.has(options.request) || options.expectedRequestId !== options.request.id) invalid('Inspect and confirm the exact model route, destinations, revisions and limits first.');
-  if (options.request.attempts.some(attempt => attempt.request.adapter.location === 'remote') && options.allowRemote !== true) invalid('Each remote destination requires explicit disclosure and functional-check consent.');
-  const now = Date.now(), expiresAt = options.expiresAt ?? now + 5 * 60_000;
+  const input = { ...record(options, ['request', 'expectedRequestId'], ['allowRemote', 'expiresAt']) };
+  const request = input['request'] as ModelRouteRequest;
+  const allowRemote = input['allowRemote'];
+  if (allowRemote !== undefined && typeof allowRemote !== 'boolean') invalid('Remote model consent must be an explicit boolean.');
+  if (!plans.has(request) || input['expectedRequestId'] !== request.id) invalid('Inspect and confirm the exact model route, destinations, revisions and limits first.');
+  if (request.attempts.some(attempt => attempt.request.adapter.location === 'remote') && allowRemote !== true) invalid('Each remote destination requires explicit disclosure and functional-check consent.');
+  const now = Date.now(), expiresAt = input['expiresAt'] === undefined ? now + 5 * 60_000 : input['expiresAt'];
+  if (typeof expiresAt !== 'number') invalid('Model routing consent must expire within fifteen minutes.');
   if (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + 15 * 60_000) invalid('Model routing consent must expire within fifteen minutes.');
-  const consent = Object.freeze({ id: randomUUID(), requestId: options.request.id, expiresAt });
-  approvals.set(consent, { request: options.request, used: false });
+  const consent = Object.freeze({ id: randomUUID(), requestId: request.id, expiresAt });
+  approvals.set(consent, { request, used: false });
   return consent;
 }
 
@@ -291,27 +296,32 @@ export interface ModelRouteResult<T extends ModelProposalOutcome = ModelProposal
 export function runModelRoute<T extends ModelProposalOutcome>(options: ModelRouteOptions & { readonly execute: ModelRouteExecution<T> }): Promise<ModelRouteResult<T>>;
 export function runModelRoute(options: ModelRouteOptions): Promise<ModelRouteResult>;
 export async function runModelRoute(options: ModelRouteOptions & { readonly execute?: ModelRouteExecution<ModelProposalOutcome> }): Promise<ModelRouteResult> {
-  const connections = plans.get(options.request), approval = approvals.get(options.consent);
-  if (!connections || !approval || approval.request !== options.request || approval.used || options.consent.expiresAt <= Date.now()) invalid('Model route consent is missing, expired, consumed or bound to another request.');
-  if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) invalid('Model route cancellation requires an AbortSignal.');
+  const input = { ...record(options, ['request', 'consent'], ['signal', 'onAlert', 'execute']) };
+  const request = input['request'] as ModelRouteRequest, consent = input['consent'] as ModelRouteConsent;
+  const externalSignal = input['signal'], onAlert = input['onAlert'];
+  const execute = input['execute'] as ModelRouteExecution<ModelProposalOutcome> | undefined;
+  if (externalSignal !== undefined && !(externalSignal instanceof AbortSignal)) invalid('Model route cancellation requires an AbortSignal.');
+  if (onAlert !== undefined && typeof onAlert !== 'function' || execute !== undefined && typeof execute !== 'function') invalid('Model route hooks must be functions.');
+  const connections = plans.get(request), approval = approvals.get(consent);
+  if (!connections || !approval || approval.request !== request || approval.used || consent.expiresAt <= Date.now()) invalid('Model route consent is missing, expired, consumed or bound to another request.');
   const release = connections.acquire();
   approval.used = true;
   const controller = new AbortController();
-  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
-  const timer = setTimeout(() => controller.abort(), options.request.limits.timeoutMs);
-  const deadline = performance.now() + options.request.limits.timeoutMs;
+  const signal = externalSignal ? AbortSignal.any([externalSignal, controller.signal]) : controller.signal;
+  const timer = setTimeout(() => controller.abort(), request.limits.timeoutMs);
+  const deadline = performance.now() + request.limits.timeoutMs;
   const alerts: ModelRoutingAlert[] = [];
-  const emit = (alert: ModelRoutingAlert): void => { alerts.push(Object.freeze(alert)); options.onAlert?.(alert); };
+  const emit = (alert: ModelRoutingAlert): void => { alerts.push(Object.freeze(alert)); onAlert?.(alert); };
   let generations = 0, functionalChecks = 0, reservedOutputTokens = 0;
   let lastFailure: ModelConnectionError | undefined;
   const checked = new Set<string>();
   const check = (): void => {
     if (signal.aborted || performance.now() >= deadline) { controller.abort(); throw new ModelConnectionError('cancelled'); }
-    if (options.consent.expiresAt <= Date.now()) invalid('Model route consent expired; the remaining chain is stopped.');
+    if (consent.expiresAt <= Date.now()) invalid('Model route consent expired; the remaining chain is stopped.');
   };
   const reserve = (id: string, tokens: number): void => {
     check();
-    if (reservedOutputTokens + tokens > options.request.limits.maximumTotalOutputTokens) {
+    if (reservedOutputTokens + tokens > request.limits.maximumTotalOutputTokens) {
       emit({ event: 'budget-exhausted', connectionId: id, reason: 'output-token-budget' });
       invalid('The authorized model output token budget is exhausted.');
     }
@@ -334,11 +344,11 @@ export async function runModelRoute(options: ModelRouteOptions & { readonly exec
     try { await connections.verify(id, signal); } catch (error) { connectionFailure(id, error); }
   };
   try {
-    for (const attempt of options.request.attempts) {
+    for (const attempt of request.attempts) {
       check();
       if (connections.credentialEpoch(attempt.connectionId) !== attempt.credentialEpoch) invalid('A credential changed after this route was prepared; review a new request.');
     }
-    for (const attempt of options.request.attempts) {
+    for (const attempt of request.attempts) {
       check();
       await ensureFresh(attempt.connectionId);
       if (connections.credentialEpoch(attempt.connectionId) !== attempt.credentialEpoch) invalid('A credential changed after this route was prepared; review a new request.');
@@ -347,12 +357,11 @@ export async function runModelRoute(options: ModelRouteOptions & { readonly exec
       if (attempt.connectionId !== connections.configuration.primary) emit({ event: 'fallback-selected', connectionId: attempt.connectionId, reason: lastFailure?.kind ?? 'transient' });
       reserve(attempt.connectionId, connections.connection(attempt.connectionId).maximumOutputTokens);
       generations++;
-      const consent = approveModelProposal({ request: attempt.request, expectedRequestId: attempt.request.id,
-        ...(adapter.location === 'remote' ? { allowRemote: true } : {}), expiresAt: options.consent.expiresAt });
+      const proposalConsent = approveModelProposal({ request: attempt.request, expectedRequestId: attempt.request.id,
+        ...(adapter.location === 'remote' ? { allowRemote: true } : {}), expiresAt: consent.expiresAt });
       try {
-        const execute = options.execute;
-        const outcome = await boundedOperation(signal, () => execute ? execute(attempt.request, consent, adapter, signal)
-          : proposeMigrationWithModel({ request: attempt.request, consent, adapter, signal }));
+        const outcome = await boundedOperation(signal, () => execute ? execute(attempt.request, proposalConsent, adapter, signal)
+          : proposeMigrationWithModel({ request: attempt.request, consent: proposalConsent, adapter, signal }));
         check();
         return Object.freeze({ outcome, connectionId: attempt.connectionId, generations, functionalChecks, reservedOutputTokens, alerts: Object.freeze(alerts) });
       } catch (error) {

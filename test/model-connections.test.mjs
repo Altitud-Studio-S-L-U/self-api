@@ -152,6 +152,71 @@ test('a serialized request, edited request, different context or changed policy 
   assert.equal(f.calls.length, 0); assert.equal(f.checks.length, 0); assert.equal(other.checks.length, 0);
 });
 
+test('execution rejects an accessor that substitutes unapproved context without reading it or consuming consent', async () => {
+  const f = setup(), request = f.plan(), consent = f.approve(request);
+  const { maximumTotalOutputTokens: _total, ...limits } = f.runtime.configuration.limits;
+  const { propose: _propose, ...adapter } = f.runtime.adapter('first');
+  const substituted = prepareModelRoute(f.runtime, [prepareModelProposal({ ...context, adapter, limits,
+    evidence: [{ id: 'provider', text: 'UNAPPROVED substituted context: total becomes amount.' }] })]);
+  let reads = 0;
+  const envelope = { consent, get request() { return ++reads <= 2 ? request : substituted; } };
+  await assert.rejects(runModelRoute(envelope), { code: 'INVALID_INPUT' });
+  assert.equal(reads, 0); assert.equal(f.calls.length, 0); assert.equal(f.checks.length, 0);
+  await runModelRoute({ request, consent });
+  assert.equal(f.calls[0].context.evidence[0].text, context.evidence[0].text);
+});
+
+test('approval rejects executable envelopes before reading fields or granting authority', () => {
+  const f = setup(), request = f.plan();
+  let reads = 0;
+  for (const options of [
+    { get request() { reads++; return request; }, expectedRequestId: request.id, allowRemote: true },
+    new Proxy({ request, expectedRequestId: request.id, allowRemote: true }, { get(target, key) { reads++; return target[key]; } }),
+    { request, expectedRequestId: request.id, allowRemote: true, unexpected: true },
+    { request, expectedRequestId: request.id, allowRemote: 'true' },
+    { request, expectedRequestId: request.id, allowRemote: true, expiresAt: null },
+  ]) assert.throws(() => approveModelRoute(options), { code: 'INVALID_INPUT' });
+  assert.equal(reads, 0); assert.equal(f.checks.length, 0); assert.equal(f.calls.length, 0);
+  assert.equal(f.approve(request).requestId, request.id);
+});
+
+test('invalid execution envelopes and hooks do not run I/O or consume a valid consent', async () => {
+  const f = setup(), request = f.plan(), consent = f.approve(request);
+  let reads = 0;
+  for (const options of [
+    new Proxy({ request, consent }, { get(target, key) { reads++; return target[key]; } }),
+    { request, consent, get onAlert() { reads++; return () => {}; } },
+    { request, consent, unexpected: true },
+    { request, consent, onAlert: true },
+    { request, consent, execute: Promise.resolve() },
+  ]) await assert.rejects(runModelRoute(options), { code: 'INVALID_INPUT' });
+  assert.equal(reads, 0); assert.equal(f.checks.length, 0); assert.equal(f.calls.length, 0);
+  await runModelRoute({ request, consent }); assert.equal(f.calls.length, 1);
+});
+
+test('a pending route retains its original consent, context and hooks when the outer options change', async () => {
+  let resume, entered;
+  const reached = new Promise(resolve => { entered = resolve; });
+  const f = setup(configuration(true), {
+    probe: async model => { if (model === 'first') { entered(); await new Promise(resolve => { resume = resolve; }); } },
+    generate: async model => { if (model === 'first') throw new ModelConnectionError('transient'); return JSON.stringify(recipe); },
+  });
+  const request = f.plan(), originalAlerts = [], replacedAlerts = [];
+  const options = { request, consent: f.approve(request), onAlert: alert => originalAlerts.push(alert) };
+  const execution = runModelRoute(options);
+  await reached;
+  options.request = setup().plan();
+  options.consent = { id: 'unapproved', requestId: options.request.id, expiresAt: 0 };
+  options.onAlert = alert => replacedAlerts.push(alert);
+  options.execute = async () => { throw new Error('A replacement hook must never execute.'); };
+  resume();
+  const result = await execution;
+  assert.equal(result.connectionId, 'second'); assert.equal(result.generations, 2);
+  assert.deepEqual(originalAlerts.map(alert => alert.event), ['connection-degraded', 'fallback-selected']);
+  assert.deepEqual(replacedAlerts, []);
+  assert(f.calls.every(call => call.context.evidence[0].text === context.evidence[0].text));
+});
+
 test('functional receipts expire after five minutes, are never polled at idle, and cannot survive process restart as fresh authority', async () => {
   let now = 10_000;
   const stored = new Map(), persistence = { read: id => stored.get(id), write: state => stored.set(state.id, state) };
