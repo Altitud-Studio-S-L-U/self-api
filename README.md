@@ -6,6 +6,20 @@ The maintained technical documentation is [technical-guide.pdf](docs/technical-g
 
 Manual local SDK/CLI operations remain available without a Cloud license. Every automatic `worker-service` requires a separately trusted, identity-bound signed license; otherwise it starts paused. Connected suspension pauses Keepseam automation, preserving the customer's API and local evidence. Offline authorization lasts at most 24 hours and never outlives its entitlement; revocation and the clock watermark survive restart.
 
+Linux worker bootstrap is offline and file-based. Its commands:
+
+- `keepseam setup init --dir <private-directory>` creates a 0700 directory and a new ES256 installation key. It prints only the public identity to paste in Keepseam Cloud, and pins the Cloud origin (`https://keepseam.com` unless `--cloud` is given) and the state directory.
+- `keepseam setup complete --dir <private-directory> < enrollment.json` reads the one-time enrollment JSON from stdin, never from argv or a terminal. Stdin may come from a protected file or a secret manager, and the command keeps no extra copy of it.
+  - It accepts the enrollment only from the pinned origin and for that key.
+  - It writes `credentials.json` and an observation-only `worker.json`, both 0600. That configuration reads no credentials and shares nothing with Cloud.
+  - Files are never overwritten. If a run stops between the two files, re-running it with the same enrollment completes it. The pending key is removed only after both files are verified on disk.
+- `keepseam doctor --dir <private-directory>` reports permissions, enrollment, configuration and whether `GH_TOKEN` is present for the existing publication commands. It never prints secret values. `--online` checks network reach to the Cloud liveness endpoint, not authentication.
+
+Recovery after a crash is manual by design: nothing resumes automatically, and unknown files are never deleted. A crash while a file is written can leave `setup.lock` and a named `<file>.<uuid>.tmp`. `doctor` tells the cases apart:
+
+- `TEMPORARY_SECOND_LINK`: the temporary file is the same file (same inode) as an existing destination. Once no setup command runs, remove that temporary file and `setup.lock`.
+- `TEMPORARY_ONLY_COPY`: there is no matching destination, because the crash came before the file was linked. The temporary file may be the only copy of the key or credentials, so keep it. Recovering it is manual. Inspect it, and rename it to its destination only when that destination is missing; if a different copy already exists, do not replace it. Otherwise start again in a new directory.
+
 Release operators use `pnpm release:sign --config /absolute/operator/release.json` after building and reviewing the platform archives. Its `delivery/` directory contains the bounded Cloud import request, flat artifacts, exact PDF, public trust root and hash inventory. Import creates a draft; separate approval publishes it. The PDF explains native certificates, notarization, protected signing runners, trust provisioning and installation. No production release or trust identity is bundled.
 
 Signing and offline `release:refresh` also export a separate `repository/` transport tree. New root ceremonies use `consistent_snapshot:true`: versioned metadata and hash-prefixed targets retain immutable identities. Existing roots with `false` remain supported without modification. Keep the canonical operator files outside the served tree. When configured, Cloud serves approved releases through an authenticated worker update feed and renews timestamp/snapshot metadata in a separate signing process. The updater stages only the SDK package, with installation separately authorized.

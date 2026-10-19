@@ -25,6 +25,7 @@ import { runPublicationCommandCli } from './publication-command-cli.js';
 import { runClientUpdateCli } from './client-update-cli.js';
 import { runJobProposalCli } from './job-proposal-cli.js';
 import { runModelConnectionsCli } from './model-connections-cli.js';
+import { runWorkerSetupCli } from './worker-setup-cli.js';
 
 interface CliOptions {
   readonly compare?: typeof compareOpenApi;
@@ -65,6 +66,10 @@ const help = `Usage: keepseam compare <base.json> <revision.json> --engine <path
        keepseam http-subscribe <policy.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
        keepseam worker --once --state <directory> --engine <path> [--subscription <id>] [--http] [--json]
        keepseam worker-loop --state <directory> --engine <path> [--cycles <1-1000>] [--interval-ms <1000-3600000>] [--run-approved] [--http] [--json]
+       keepseam setup init --dir <absolute-private-directory> [--state <absolute-directory>] [--cloud <https-origin>]
+       keepseam setup identity --dir <absolute-private-directory>
+       keepseam setup complete --dir <absolute-private-directory> [--interval-ms <1000-3600000>] < enrollment.json
+       keepseam doctor --dir <absolute-private-directory> [--online] [--json]
        keepseam worker-service run|status|stop --config <absolute-json>
        keepseam client-update check|stage|status --config <absolute-json>
        keepseam worker-service render --config <absolute-json> --target systemd|launchd|windows --node <absolute-path> --cli <absolute-path> [--scope system|user] [--user <unix-account>] [--name <service-name>]
@@ -207,6 +212,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   if (args.includes('--help') || args.includes('-h')) {
     (options.stdout ?? ((text: string) => { process.stdout.write(text); }))(help);
     return 0;
+  }
+  if (args[0] === 'setup' || args[0] === 'doctor') {
+    return runWorkerSetupCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
   }
   if (args[0] === 'client-update') {
     return runClientUpdateCli(args, { ...(options.stdout ? { stdout: options.stdout } : {}), ...(options.stderr ? { stderr: options.stderr } : {}) });
