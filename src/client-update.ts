@@ -253,6 +253,12 @@ async function database(directory: string, kind: Kind, readOnly = false): Promis
   } catch (error) { db.close(); throw error; }
 }
 
+/** Every trusted value of a store: its update row and the hash of each cached metadata file. */
+function storeState(db: DatabaseSync): string {
+  return digest(JSON.stringify({ row: db.prepare('SELECT policy,sequence,version,release_json,status_json FROM update_state WHERE id=1').get(),
+    metadata: db.prepare('SELECT name,bytes FROM metadata ORDER BY name').all().map(entry => [entry.name, digest(entry.bytes as Uint8Array)]) }));
+}
+
 async function readStatus(kind: Kind, options: { readonly statePath: string }): Promise<ClientUpdateStatus | WorkerUpdateStatus | null> {
   const input = record(options, ['statePath']);
   let db: DatabaseSync | undefined;
@@ -320,7 +326,7 @@ async function update(kind: Kind, options: ClientUpdateOptions | WorkerUpdateOpt
   let db: DatabaseSync | undefined, scratch: string | undefined, directory: string | undefined, activeTransaction = false, failed = false;
   let previous: ClientUpdateStatus | WorkerUpdateStatus | null = null;
   // The worker watermark records the last release observed and authenticated, not the last completed download.
-  let observed: WorkerRelease | undefined;
+  let observed: WorkerRelease | undefined, superseded = false;
   let fetcher: ReleaseFetcher | undefined;
   let cached: (() => void) | undefined;
   try {
@@ -440,9 +446,12 @@ async function update(kind: Kind, options: ClientUpdateOptions | WorkerUpdateOpt
       db.prepare('UPDATE update_state SET sequence=?,version=?,release_json=?,status_json=? WHERE id=1').run(observed.sequence, observed.version,
         JSON.stringify(observed), JSON.stringify({ schemaVersion: 1, artifact: 'worker-linux-x64', state: 'available', reason: 'none',
           checkedAt: new Date().toISOString(), release: observed, artifactPath: null, installedVersion: null, installation: 'not-authorized' }));
+      const committed = storeState(db);
       db.exec('COMMIT'); activeTransaction = false;
-      // busy_timeout is 0: if another updater takes the store between the two transactions, this attempt fails closed.
       db.exec('BEGIN EXCLUSIVE'); activeTransaction = true;
+      // Another updater may have completed its own transaction while the store was unlocked. Continue only on the exact
+      // state this attempt committed; otherwise stop without writing, leaving the newer trust and watermark untouched.
+      if (storeState(db) !== committed) { superseded = true; throw new ClientUpdateError('state-unavailable'); }
     }
     // The SDK must run on this Node.js; the portable worker carries its own runtime.
     if (kind === 'sdk' && compareVersion(process.versions.node, candidate.minimumNodeVersion) < 0) invalid();
@@ -494,7 +503,7 @@ async function update(kind: Kind, options: ClientUpdateOptions | WorkerUpdateOpt
     const failure = fetcher?.failure ?? error;
     const reason: Exclude<ClientUpdateReason, 'none'> = timedOut ? 'deadline-exceeded' : controller.signal.aborted ? 'cancelled'
       : failure instanceof ClientUpdateError ? failure.reason : 'verification-failed';
-    if (db && activeTransaction) {
+    if (db && activeTransaction && !superseded) {
       try {
         cached?.();
         const checkedAt = new Date().toISOString();

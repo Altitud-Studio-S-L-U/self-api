@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
 import { createServer, request as httpRequest } from 'node:http';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile, readdir } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile, readdir } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { after, before, test } from 'node:test';
@@ -951,6 +951,77 @@ test('a worker stage cut between the archive rename and its final COMMIT keeps t
   assert.equal(archiveCalls(connection), 0); assert.deepEqual(await readFile(recovered.artifactPath), second.worker);
   // Each crashed attempt keeps its scratch directory for inspection; nothing deletes it automatically.
   assert.equal((await readdir(f.item.statePath)).filter(name => name.startsWith('check-')).length, 2);
+});
+
+// Another updater completes its own transaction exactly while this one has released the store between its two
+// transactions: the child's DatabaseSync.exec is patched so that, just before it takes the store again, the state of a
+// real newer check is written in. Only this fixture process is affected.
+const interleavingScenario = String.raw`
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
+const require = createRequire(import.meta.url), { DatabaseSync } = require('node:sqlite');
+const input = JSON.parse(readFileSync(process.argv[1], 'utf8'));
+const exec = DatabaseSync.prototype.exec;
+let interleaved = false;
+DatabaseSync.prototype.exec = function (sql) {
+  if (sql === 'BEGIN EXCLUSIVE' && !interleaved) {
+    interleaved = true;
+    const newer = new DatabaseSync(input.newerStore, { readOnly: true });
+    const row = newer.prepare('SELECT sequence,version,release_json,status_json FROM update_state WHERE id=1').get();
+    const metadata = newer.prepare('SELECT name,bytes FROM metadata').all(); newer.close();
+    const other = new DatabaseSync(input.store);
+    exec.call(other, 'BEGIN EXCLUSIVE');
+    other.prepare('UPDATE update_state SET sequence=?,version=?,release_json=?,status_json=? WHERE id=1').run(row.sequence, row.version, row.release_json, row.status_json);
+    exec.call(other, 'DELETE FROM metadata');
+    for (const entry of metadata) other.prepare('INSERT INTO metadata VALUES(?,?)').run(entry.name, entry.bytes);
+    exec.call(other, 'COMMIT'); other.close();
+  }
+  return exec.call(this, sql);
+};
+const files = new Map(Object.entries(input.files).map(([url, bytes]) => [url, Buffer.from(bytes, 'base64')]));
+const { stageWorkerUpdate } = await import(input.module);
+const request = (url, options, callback) => {
+  const emitter = new EventEmitter();
+  emitter.end = () => queueMicrotask(() => {
+    const token = Buffer.from(JSON.stringify({ access_token: 'c'.repeat(64), token_type: 'DPoP', expires_in: 300, scope: 'worker:updates' }));
+    const body = options.method === 'POST' ? token : files.get(url.href);
+    const response = Readable.from([body ?? Buffer.alloc(0)]);
+    Object.assign(response, { statusCode: body ? 200 : 404, headers: options.method === 'POST' ? { 'content-type': 'application/json' } : {}, rawHeaders: [] });
+    callback(response);
+  });
+  return emitter;
+};
+try {
+  await stageWorkerUpdate({ statePath: input.statePath, repository: input.repository }, { resolve: async () => [{ address: '8.8.8.8', family: 4 }], request });
+  console.log(JSON.stringify({ interleaved, rejected: false }));
+} catch (error) { console.log(JSON.stringify({ interleaved, rejected: true, reason: error.reason })); }`;
+
+test('a worker stage that finds a newer store after retaking it stops without overwriting that trust or watermark', async t => {
+  const f = await cloudFixture(t), second = workerFeed({ version: '0.3.0', sequence: 2 }), third = workerFeed({ version: '0.4.0', sequence: 3 });
+  await stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, workerFeed().files)));
+  // The newer state is produced by a real check of sequence 3 on a copy of this store, so its policy and trust are genuine.
+  const newerPath = join(f.item.directory, 'newer-state'); await cp(f.item.statePath, newerPath, { recursive: true });
+  assert.equal((await checkWorkerUpdate({ statePath: newerPath, repository: f.item.repository }, cloudDependencies(await cloudTransport(f, third.files)))).release.sequence, 3);
+  const inputPath = join(f.item.directory, 'interleaving.json'), store = join(f.item.statePath, 'worker-updates.sqlite3'), newerStore = join(newerPath, 'worker-updates.sqlite3');
+  await writeFile(inputPath, JSON.stringify({ module: new URL('../dist/client-update.js', import.meta.url).href, statePath: f.item.statePath, repository: f.item.repository,
+    store, newerStore, files: Object.fromEntries([...second.files].map(([url, bytes]) => [url, bytes.toString('base64')])) }), { mode: 0o600 });
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', interleavingScenario, inputPath], { encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' });
+  assert.equal(run.signal, null, run.stderr); assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { interleaved: true, rejected: true, reason: 'state-unavailable' });
+  // The store holds exactly the newer updater's row and trusted metadata; the stale attempt wrote nothing and staged nothing.
+  const { DatabaseSync } = await import('node:sqlite');
+  const contents = path => {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      return { row: db.prepare('SELECT policy,sequence,version,release_json,status_json FROM update_state WHERE id=1').get(),
+        metadata: db.prepare('SELECT name,bytes FROM metadata ORDER BY name').all().map(entry => [entry.name, sha(entry.bytes)]) };
+    } finally { db.close(); }
+  };
+  assert.deepEqual(contents(store), contents(newerStore));
+  assert.equal((await readWorkerUpdateStatus({ statePath: f.item.statePath })).release.sequence, 3);
+  assert.equal((await archives(f.item.statePath)).includes(`${sha(second.worker)}.tar.gz`), false);
 });
 
 test('the client-update command selects the worker only through its explicit artifact field', async t => {
