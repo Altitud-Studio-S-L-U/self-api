@@ -1,16 +1,17 @@
-import { createPrivateKey, createPublicKey, randomBytes, randomUUID, sign, verify } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, sign, verify } from 'node:crypto';
 import { chmod, link, lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import { dirname, join, parse, sep } from 'node:path';
 import { isProxy } from 'node:util/types';
 import { calculateJwkThumbprint, importJWK, type JWK } from 'jose';
 import { generateCloudWorkerIdentity, type CloudCredentials } from './cloud-connection.js';
 import { PlumberError } from './errors.js';
-import { loadLocalJson } from './local-file.js';
+import { loadLocalJson, parseLocalJson, readLocalBytes } from './local-file.js';
+import { normalizeWorkerLicenseTrust, verifyWorkerLicense, type WorkerLicenseTrust } from './worker-license.js';
 import { normalizeWorkerServiceConfig, servicePath, type WorkerServiceConfig, type WorkerServiceTarget } from './worker-service-config.js';
 import { checkServicePath, serviceFailureDetails } from './worker-service-state.js';
 
 /** One private directory holds the installation key, then the enrolled credentials and the service configuration. */
-export const workerSetupFiles = Object.freeze({ pending: 'identity.pending.json', credentials: 'credentials.json', config: 'worker.json', lock: 'setup.lock', state: 'state' });
+export const workerSetupFiles = Object.freeze({ pending: 'identity.pending.json', credentials: 'credentials.json', config: 'worker.json', trust: 'license-trust.json', lock: 'setup.lock', state: 'state' });
 export const defaultCloudOrigin = 'https://keepseam.com';
 /** Kept equal to package.json engines by test. */
 export const supportedNode = Object.freeze({ major: 24, minor: 21 });
@@ -18,7 +19,9 @@ export const supportedNode = Object.freeze({ major: 24, minor: 21 });
 export interface WorkerPublicIdentity { readonly installationId: string; readonly publicJwk: JWK; readonly fingerprint: string }
 export interface WorkerSetupResult { readonly credentialsPath: string; readonly configPath: string; readonly statePath: string; readonly fingerprint: string }
 export interface WorkerDoctorCheck { readonly id: string; readonly status: 'ok' | 'warn' | 'fail'; readonly code?: string }
-export interface WorkerDoctorReport { readonly ok: boolean; readonly checks: readonly WorkerDoctorCheck[] }
+/** configSha256 is the exact hash of worker.json, used to name the revision an explicit configuration update replaces. */
+export interface WorkerDoctorReport { readonly ok: boolean; readonly checks: readonly WorkerDoctorCheck[]; readonly configSha256?: string }
+export interface WorkerTrustResult { readonly trustPath: string; readonly keys: readonly { readonly kid: string; readonly publicKeySha256: string }[] }
 export interface WorkerDoctorOptions {
   readonly directory: string;
   /** Opt-in: one GET of the Cloud liveness endpoint. It proves network reach only, not authentication or enrollment. */
@@ -288,6 +291,46 @@ export async function completeWorkerSetup(options: { readonly directory: string;
   });
 }
 
+/** Same canonical form as Keepseam Cloud's license key fingerprint: SHA-256 of {crv,kty,x,y}. */
+function licenseKeySha256(key: { crv?: unknown; kty?: unknown; x?: unknown; y?: unknown }): string {
+  return createHash('sha256').update(JSON.stringify({ crv: key.crv, kty: key.kty, x: key.x, y: key.y })).digest('hex');
+}
+function licenseTrust(value: unknown): WorkerLicenseTrust {
+  try { return normalizeWorkerLicenseTrust(value); } catch { invalid('The license trust document is malformed.'); }
+}
+/** The origin a trust document must name: the enrolled credentials once setup is complete, the pinned pending origin before. */
+async function pinnedOrigin(directory: string): Promise<string> {
+  const enrolled = join(directory, workerSetupFiles.credentials);
+  if (!(await missing(enrolled))) { checkServicePath(enrolled, 'secret'); return credentials(await loadLocalJson(enrolled, 16_384)).baseUrl; }
+  return (await pendingIdentity(directory)).cloudOrigin;
+}
+
+/**
+ * Installs the public license trust for this worker. Every key must match a fingerprint the operator obtained separately
+ * from Keepseam Cloud: printing a hash proves nothing, so missing, extra or different keys are refused. Nothing is downloaded.
+ */
+export async function installWorkerLicenseTrust(options: { readonly directory: string; readonly trust: unknown; readonly expected: Readonly<Record<string, string>> }): Promise<WorkerTrustResult> {
+  const directory = setupDirectory(options.directory);
+  const expected = plain(options.expected, Object.keys(options.expected ?? {}), 'Give the expected fingerprint of every key as kid=sha256.');
+  if (!Object.keys(expected).length || Object.values(expected).some(value => typeof value !== 'string' || !hex.test(value))) invalid('Give the expected fingerprint of every key as kid=sha256.');
+  return withSetupLock(directory, async () => {
+    const trust = licenseTrust(options.trust);
+    if (trust.issuer !== await pinnedOrigin(directory)) invalid('The trust issuer differs from the Cloud origin pinned for this worker.');
+    const keys = trust.keys.map(key => {
+      // Importing proves each public key is a point on the curve before it is trusted.
+      try { createPublicKey({ key: { kty: key.kty, crv: key.crv, x: key.x, y: key.y } as never, format: 'jwk' }); } catch { invalid('The license trust document is malformed.'); }
+      return Object.freeze({ kid: key.kid as string, publicKeySha256: licenseKeySha256(key) });
+    });
+    const kids = keys.map(key => key.kid);
+    if (kids.length !== Object.keys(expected).length || kids.some(kid => !Object.hasOwn(expected, kid))) invalid('The expected fingerprints must name exactly the keys of the trust document.');
+    if (keys.some(key => expected[key.kid] !== key.publicKeySha256)) invalid('A license key does not match its expected fingerprint; nothing was installed.');
+    const trustPath = join(directory, workerSetupFiles.trust);
+    await placeOrMatch(trustPath, trust, 'secret', licenseTrust);
+    await syncDirectory(directory);
+    return Object.freeze({ trustPath, keys: Object.freeze(keys) });
+  });
+}
+
 /** Read-only diagnosis with a stable code per check. Secret values never enter the report. */
 export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<WorkerDoctorReport> {
   const checks: WorkerDoctorCheck[] = [];
@@ -326,12 +369,35 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
     await publicIdentity(value.installationId, value.privateJwk);
     enrolled = value;
   });
-  let config: WorkerServiceConfig | undefined;
+  let config: WorkerServiceConfig | undefined, configSha256: string | undefined;
   await attempt('config', 'CONFIG_INVALID', async () => {
     const path = join(directory, workerSetupFiles.config);
     checkServicePath(path, 'config');
-    config = normalizeWorkerServiceConfig(await loadLocalJson(path, 64 * 1024), target());
+    const bytes = await readLocalBytes(path, 64 * 1024);
+    config = normalizeWorkerServiceConfig(parseLocalJson(bytes), target());
+    configSha256 = createHash('sha256').update(bytes).digest('hex');
   });
+  const trustPath = config?.license?.trustPath ?? join(directory, workerSetupFiles.trust);
+  let trust: WorkerLicenseTrust | undefined;
+  if (config?.license || !(await missing(trustPath))) {
+    await attempt('license-trust', 'TRUST_INVALID', async () => {
+      checkServicePath(trustPath, 'secret');
+      const value = licenseTrust(await loadLocalJson(trustPath, 16_384));
+      if (enrolled && value.issuer !== enrolled.baseUrl) throw new Error('issuer');
+      trust = value;
+    });
+  }
+  // A signature and expiry checked offline say nothing about revocation or about the service's persisted license state.
+  const leasePath = config?.license?.leasePath;
+  if (leasePath && trust && enrolled && !(await missing(leasePath))) {
+    let code = 'LEASE_INVALID', status: WorkerDoctorCheck['status'] = 'fail';
+    try {
+      checkServicePath(leasePath, 'secret');
+      const claims = await verifyWorkerLicense(await loadLocalJson(leasePath, 16_384) as string, trust, enrolled, Date.now(), true);
+      [status, code] = claims.decision !== 'allowed' ? ['warn', 'LEASE_SUSPENDED'] : claims.exp * 1000 <= Date.now() ? ['warn', 'LEASE_EXPIRED'] : ['ok', 'LEASE_SIGNATURE_VALID'];
+    } catch { [status, code] = ['fail', 'LEASE_INVALID']; }
+    add('license-lease', status, code);
+  }
   if (config) {
     const current = config;
     await attempt('state', 'STATE_UNSAFE', () => { checkServicePath(current.statePath, 'directory'); });
@@ -350,8 +416,8 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
       if (response.status !== 200) throw new Error('unavailable');
     });
   }
-  return report(checks);
+  return report(checks, configSha256);
 }
-function report(checks: WorkerDoctorCheck[]): WorkerDoctorReport {
-  return Object.freeze({ ok: checks.every(check => check.status !== 'fail'), checks: Object.freeze(checks) });
+function report(checks: WorkerDoctorCheck[], configSha256?: string): WorkerDoctorReport {
+  return Object.freeze({ ok: checks.every(check => check.status !== 'fail'), checks: Object.freeze(checks), ...(configSha256 ? { configSha256 } : {}) });
 }
