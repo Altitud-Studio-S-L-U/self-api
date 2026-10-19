@@ -16,6 +16,8 @@ import type { CloudUpdateAuthorization } from './client-update-auth.js';
 import { ClientUpdateError, type ClientUpdateReason } from './client-update-errors.js';
 
 export const UPDATE_ARTIFACT_LIMIT = 32 * 1024 * 1024;
+/** Only the portable worker selector accepts archives this large; the SDK keeps its own limit. */
+export const WORKER_ARTIFACT_LIMIT = 64 * 1024 * 1024;
 export const UPDATE_METADATA_LIMIT = 1024 * 1024;
 type Transfer = { readonly kind: 'download'; readonly path: string; readonly absentRoot: boolean; created: boolean; readonly proof?: string; readonly token?: string }
   | { readonly kind: 'token'; readonly body: string; readonly proof: string };
@@ -50,7 +52,10 @@ export class ReleaseFetcher implements Fetcher {
   get failure(): ClientUpdateError | undefined { return this.observedFailure; }
   constructor(private readonly metadataUrl: string, private readonly targetsUrl: string,
     private readonly temporaryDirectory: string, private readonly signal: AbortSignal,
-    private readonly dependencies: ClientUpdateDependencies = {}, private readonly authorization?: CloudUpdateAuthorization) {}
+    private readonly dependencies: ClientUpdateDependencies = {}, private readonly authorization?: CloudUpdateAuthorization,
+    private readonly artifactLimit: number = UPDATE_ARTIFACT_LIMIT) {
+    if (artifactLimit !== UPDATE_ARTIFACT_LIMIT && artifactLimit !== WORKER_ARTIFACT_LIMIT) throw new Error('Update download limit.');
+  }
 
   async downloadBytes(url: string, maximum: number): Promise<Buffer> {
     return this.downloadFile(url, Math.min(maximum, UPDATE_METADATA_LIMIT), async file => readFile(file));
@@ -73,7 +78,7 @@ export class ReleaseFetcher implements Fetcher {
       || parsed.username || parsed.password || parsed.search || parsed.hash || /[\\%\s]/u.test(url)
       || relative.split('/').some(part => !part || part === '.' || part === '..')
       || !/^[a-zA-Z0-9._/-]+$/u.test(relative)) throw new Error('Release destination denied.');
-    const limit = isMetadata ? UPDATE_METADATA_LIMIT : UPDATE_ARTIFACT_LIMIT;
+    const limit = isMetadata ? UPDATE_METADATA_LIMIT : this.artifactLimit;
     if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > limit) throw new Error('Update download limit.');
     if (this.authorization && (isMetadata ? !/^(?:timestamp\.json|[1-9]\d{0,9}\.(?:root|snapshot|targets)\.json)$/u.test(relative)
       : !/^(?:[a-zA-Z0-9._-]+\/)*[a-f0-9]{64}\.[a-zA-Z0-9._-]+$/u.test(relative))) throw new Error('Release destination denied.');
@@ -147,7 +152,7 @@ export class ReleaseFetcher implements Fetcher {
           let bytes = 0, chunks = 0;
           const bounds = new Transform({ transform: (chunk: Buffer, _encoding, done) => {
             bytes += chunk.length; this.received += chunk.length; chunks++;
-            done(bytes > maximum || chunks > 65_536 || this.received > UPDATE_ARTIFACT_LIMIT + 8 * UPDATE_METADATA_LIMIT
+            done(bytes > maximum || chunks > 65_536 || this.received > this.artifactLimit + 8 * UPDATE_METADATA_LIMIT
               ? new ClientUpdateError('verification-failed') : null, chunk);
           } });
           const chunksReceived: Buffer[] = [];
@@ -191,7 +196,7 @@ export class ReleaseFetcher implements Fetcher {
     try {
       for await (const chunk of response) {
         bytes += chunk.length; this.received += chunk.length; count++;
-        if (bytes > 4096 || count > 4096 || this.received > UPDATE_ARTIFACT_LIMIT + 8 * UPDATE_METADATA_LIMIT) break;
+        if (bytes > 4096 || count > 4096 || this.received > this.artifactLimit + 8 * UPDATE_METADATA_LIMIT) break;
         chunks.push(Buffer.from(chunk));
       }
       if (bytes <= 4096 && count <= 4096) {

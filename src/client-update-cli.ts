@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError, type ClientUpdateRepository } from './client-update.js';
+import { checkClientUpdate, checkWorkerUpdate, stageClientUpdate, stageWorkerUpdate, readClientUpdateStatus, readWorkerUpdateStatus, ClientUpdateError,
+  type ClientUpdateRepository, type CloudClientUpdateRepository } from './client-update.js';
 import { jsonLine } from './cli-presentation.js';
 import { loadLocalJson } from './local-file.js';
 import { servicePath } from './worker-service-config.js';
@@ -19,14 +20,27 @@ export async function runClientUpdateCli(args: string[], output: { readonly stdo
     const configPath = servicePath(parsed.values.config, process.platform === 'win32' ? 'windows' : 'systemd');
     checkServicePath(configPath, 'config'); checkWindowsServiceAcl(configPath, false);
     const config = await loadLocalJson(configPath, 16_384);
-    if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).length !== 2
-      || !Object.hasOwn(config, 'statePath') || !Object.hasOwn(config, 'repository')) throw new ClientUpdateError('verification-failed');
+    // Without "artifact" the configuration selects the SDK exactly as before; "worker-linux-x64" selects the portable
+    // worker, whose state directory, store and watermark are its own.
+    const keys = config && typeof config === 'object' && !Array.isArray(config) ? Object.keys(config).sort().join() : '';
+    if (keys !== 'repository,statePath' && keys !== 'artifact,repository,statePath') throw new ClientUpdateError('verification-failed');
+    const worker = Object.hasOwn(config as object, 'artifact');
+    if (worker && (config as { artifact: unknown }).artifact !== 'worker-linux-x64') throw new ClientUpdateError('verification-failed');
     const statePath = (config as { statePath: string }).statePath;
-    if (action === 'status') { stdout(jsonLine({ status: await readClientUpdateStatus({ statePath }) })); return 0; }
+    if (action === 'status') {
+      stdout(jsonLine({ status: worker ? await readWorkerUpdateStatus({ statePath }) : await readClientUpdateStatus({ statePath }) })); return 0;
+    }
+    const repository = (config as { repository: ClientUpdateRepository }).repository;
+    if (worker) {
+      process.on('SIGINT', cancel); process.on('SIGTERM', cancel);
+      // A public repository is refused inside the updater, before credentials, state or network.
+      const options = { statePath, repository: repository as CloudClientUpdateRepository, signal: controller.signal };
+      stdout(jsonLine(await (action === 'stage' ? stageWorkerUpdate(options) : checkWorkerUpdate(options)))); return 0;
+    }
     const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { name?: unknown; version?: unknown };
     if (metadata.name !== 'keepseam-client' || typeof metadata.version !== 'string') throw new ClientUpdateError('verification-failed');
     process.on('SIGINT', cancel); process.on('SIGTERM', cancel);
-    const options = { statePath, currentVersion: metadata.version, repository: (config as { repository: ClientUpdateRepository }).repository, signal: controller.signal };
+    const options = { statePath, currentVersion: metadata.version, repository, signal: controller.signal };
     const result = await (action === 'stage' ? stageClientUpdate(options) : checkClientUpdate(options));
     stdout(jsonLine(result)); return 0;
   } catch (error) {

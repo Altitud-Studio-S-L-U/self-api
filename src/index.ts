@@ -69,8 +69,9 @@ export type { McpClientBinding, McpImpactOptions, McpConsumerCall, McpImpactRepo
 export { initWorkerSetup, readWorkerPublicIdentity, completeWorkerSetup, installWorkerLicenseTrust, enableWorkerLicense, diagnoseWorker, workerSetupFiles, defaultCloudOrigin, supportedNode } from './worker-setup.js';
 export type { WorkerPublicIdentity, WorkerSetupResult, WorkerTrustResult, WorkerConfigUpdate, WorkerDoctorCheck, WorkerDoctorReport, WorkerDoctorOptions } from './worker-setup.js';
 export { runWorkerSetupCli } from './worker-setup-cli.js';
-export { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from './client-update.js';
-export type { ClientUpdateOptions, ClientUpdateRepository, PublicClientUpdateRepository, CloudClientUpdateRepository, ClientRelease, ClientUpdateStatus, ClientUpdateReason, ClientUpdateDependencies } from './client-update.js';
+export { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, checkWorkerUpdate, stageWorkerUpdate, readWorkerUpdateStatus, ClientUpdateError } from './client-update.js';
+export type { ClientUpdateOptions, ClientUpdateRepository, PublicClientUpdateRepository, CloudClientUpdateRepository, ClientRelease, ClientUpdateStatus, ClientUpdateReason, ClientUpdateDependencies,
+  WorkerUpdateOptions, WorkerRelease, WorkerUpdateStatus } from './client-update.js';
 export { validateRuntime } from './validation-runtime.js';
 export { prepareValidationRuntime } from './validation-runtime-prepare.js';
 export type { ValidationRuntime, ValidationFramework } from './validation-runtime.js';
