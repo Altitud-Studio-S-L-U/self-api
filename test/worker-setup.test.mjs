@@ -269,3 +269,21 @@ test('a temporary file left before linking is reported as a possible only copy a
   const copies = await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} });
   assert.equal(copies.checks.find(check => check.id === 'temporary-only-copies').code, 'TEMPORARY_ONLY_COPY');
 });
+
+test('a lock replaced by a directory, a link or an oversized file is neither followed nor read without bound, and is kept', async t => {
+  const { withSetupLock } = await import('../dist/worker-setup.js');
+  const directory = join(await workspace(t), 'worker'); await mkdir(directory, { mode: 0o700 });
+  const lock = join(directory, workerSetupFiles.lock);
+  // Replaced by a directory: rejected on type before any read.
+  await assert.rejects(withSetupLock(directory, async () => { await rm(lock); await mkdir(lock); }), /released safely/u);
+  assert.equal((await stat(lock)).isDirectory(), true); await rm(lock, { recursive: true });
+  // Same file, grown past the bound: the identity matches, the bounded read refuses it, and the lock stays.
+  await assert.rejects(withSetupLock(directory, async () => { await writeFile(lock, ' '.repeat(64 * 1024), { flag: 'a' }); }), /released safely/u);
+  assert.equal(existsSync(lock), true); await rm(lock);
+  if (posix) {
+    // Replaced by a link to the original lock, which still holds the right token: the link is not followed or removed.
+    const kept = join(directory, 'original.lock');
+    await assert.rejects(withSetupLock(directory, async () => { await link(lock, kept); await rm(lock); await symlink(kept, lock); }), /released safely/u);
+    assert.equal((await import('node:fs')).lstatSync(lock).isSymbolicLink(), true); assert.equal(existsSync(kept), true);
+  }
+});

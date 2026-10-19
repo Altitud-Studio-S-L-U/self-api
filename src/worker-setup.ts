@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, randomBytes, randomUUID, sign, verify } from 'node:crypto';
-import { chmod, link, lstat, mkdir, open, readdir, readFile, unlink } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import { dirname, join, parse, sep } from 'node:path';
 import { isProxy } from 'node:util/types';
 import { calculateJwkThumbprint, importJWK, type JWK } from 'jose';
@@ -168,19 +168,25 @@ export async function withSetupLock<T>(directory: string, action: () => Promise<
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') invalid('Another setup command holds this directory, or an interrupted one left setup.lock. Confirm none is running before removing it.');
     throw error;
   }
-  let owned: { dev: number; ino: number };
+  let owned: { dev: bigint; ino: bigint };
   try {
     await handle.writeFile(`${JSON.stringify({ token, pid: process.pid, startedAt: new Date().toISOString() })}\n`); await handle.sync();
-    const info = await handle.stat(); owned = { dev: info.dev, ino: info.ino };
+    const info = await handle.stat({ bigint: true }); owned = { dev: info.dev, ino: info.ino };
   } finally { await handle.close(); }
   let result: T | undefined, failure: unknown, failed = false;
   try { result = await action(); } catch (error) { failure = error; failed = true; }
-  // Only the lock this command created is removed: the same file holding the same token.
+  // Only the lock this command created is removed: the same regular file holding the same token. Type and identity are
+  // checked before anything is read; the read is bounded and never follows a link; identity is checked again before unlink.
+  const ours = async (): Promise<boolean> => {
+    const info = await lstat(path, { bigint: true });
+    return info.isFile() && info.dev === owned.dev && info.ino === owned.ino;
+  };
   let released = false, cleanup: unknown = new Error('setup.lock was replaced');
   try {
-    const info = await lstat(path);
-    const content = JSON.parse(await readFile(path, 'utf8')) as { token?: unknown };
-    if (info.isFile() && info.dev === owned.dev && info.ino === owned.ino && content.token === token) { await unlink(path); released = true; }
+    if (await ours()) {
+      const content = await loadLocalJson(path, 4096) as { token?: unknown } | null;
+      if (content?.token === token && await ours()) { await unlink(path); released = true; }
+    }
   } catch (error) { cleanup = error; released = false; }
   if (!released) invalidAfter(`${failed ? failureMessage(failure) : 'The command finished, but '}setup.lock could not be released safely. Confirm no setup command is running, then remove it.`, failure, failed, cleanup);
   if (failed) throw failure;
