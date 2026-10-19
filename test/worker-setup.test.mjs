@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -286,4 +287,24 @@ test('a lock replaced by a directory, a link or an oversized file is neither fol
     await assert.rejects(withSetupLock(directory, async () => { await link(lock, kept); await rm(lock); await symlink(kept, lock); }), /released safely/u);
     assert.equal((await import('node:fs')).lstatSync(lock).isSymbolicLink(), true); assert.equal(existsSync(kept), true);
   }
+});
+
+// POSIX only. Nothing ever writes to these FIFOs, so any blocking open or read would hang until the timeout.
+test('FIFOs in place of the lock, the credentials or the trust input are refused without blocking', { skip: !posix, timeout: 10_000 }, async t => {
+  const { withSetupLock } = await import('../dist/worker-setup.js');
+  const fifo = path => execFileSync('mkfifo', ['-m', '0600', path]);
+  const root = await workspace(t), directory = join(root, 'worker'), identity = await initWorkerSetup({ directory });
+  await completeWorkerSetup({ directory, enrollment: enrollmentFor(identity) });
+  const lock = join(directory, workerSetupFiles.lock);
+  await assert.rejects(withSetupLock(directory, async () => { await rm(lock); fifo(lock); }), /released safely/u);
+  assert.equal((await import('node:fs')).lstatSync(lock).isFIFO(), true); await rm(lock);
+  const trust = join(root, 'trust.json'); fifo(trust);
+  const out = [], err = [], io = { stdout: text => out.push(text), stderr: text => err.push(text), platform: 'linux' };
+  assert.equal(await runWorkerSetupCli(['setup', 'trust', '--dir', directory, '--trust', trust, '--key', `license-a=${'a'.repeat(64)}`], io), 2);
+  assert.equal(out.length, 0); assert.equal(existsSync(join(directory, workerSetupFiles.trust)), false);
+  const credentials = join(directory, workerSetupFiles.credentials);
+  await rm(credentials); fifo(credentials);
+  const report = await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} });
+  assert.equal(report.checks.find(check => check.id === 'credentials').code, 'CREDENTIALS_INVALID');
+  assert.equal(existsSync(lock), false);
 });

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, parse, resolve } from 'node:path';
 import { after, test } from 'node:test';
@@ -99,6 +100,14 @@ test('rejects remote, device, missing, and directory inputs', async () => {
   ]) {
     await assert.rejects(readLocalBytes(path, recipeLimit), invalidInput);
   }
+});
+
+// POSIX only: Windows has no FIFOs at ordinary paths. No writer ever opens it, so a blocking open would hang until the timeout.
+test('rejects a FIFO without blocking on it', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
+  const path = join(temporaryDirectory, `${fixtureNumber++}-fifo.json`);
+  execFileSync('mkfifo', ['-m', '0600', path]);
+  await assert.rejects(readLocalBytes(path, recipeLimit), invalidInput);
+  await assert.rejects(loadLocalJson(path, recipeLimit), invalidInput);
 });
 
 test('rejects linked files and ancestor junctions without reading their targets', async () => {
