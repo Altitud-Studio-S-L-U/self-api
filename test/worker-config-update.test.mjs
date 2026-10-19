@@ -103,3 +103,37 @@ test('the command line requires the explicit license change and the expected has
   assert.equal(await runWorkerSetupCli(['setup', 'config', '--dir', directory, '--license', '--expect', sha(original)], io), 0);
   assert.equal(JSON.parse(out.pop()).changed, true); assert.match(err.pop(), /next service start/u);
 });
+
+test('a backup interrupted while being written is reported as a second link or a possible only copy', async t => {
+  const { directory, original } = await ready(t);
+  await enableWorkerLicense({ directory, expectedSha256: sha(original) });
+  const previous = join(directory, workerSetupFiles.previous), orphan = `${previous}.0f8b2c1e-6d4a-4c3b-9a2e-1b2c3d4e5f60.tmp`;
+  const code = async () => Object.fromEntries((await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} })).checks.map(check => [check.id, check.code]));
+  await (await import('node:fs/promises')).link(previous, orphan);
+  assert.equal((await code())['temporary-second-links'], 'TEMPORARY_SECOND_LINK');
+  await rm(orphan); await writeFile(orphan, await readFile(previous), { mode: 0o600 }); await rm(previous);
+  assert.equal((await code())['temporary-only-copies'], 'TEMPORARY_ONLY_COPY'); assert.equal(existsSync(orphan), true);
+});
+
+test('cloud sharing bound to another installation is refused without mutation; the same binding elsewhere is accepted', async t => {
+  const { directory, configPath, previousPath, original } = await ready(t);
+  const other = await ready(t), otherCredentials = join(other.directory, workerSetupFiles.credentials);
+  const withCloud = async credentialsPath => {
+    const config = JSON.parse(original);
+    const bytes = Buffer.from(JSON.stringify({ ...config, openApi: { enginePath: join(directory, 'oasdiff') },
+      cloud: { credentialsPath, statePath: join(directory, 'cloud-state'), integrationIds: ['a'.repeat(64)] } }));
+    await rm(configPath); await writeFile(configPath, bytes, { mode: 0o600 });
+    return bytes;
+  };
+  const foreign = await withCloud(otherCredentials);
+  await assert.rejects(enableWorkerLicense({ directory, expectedSha256: sha(foreign) }), /CLOUD_BINDING_CONFLICT/u);
+  assert.deepEqual(await readFile(configPath), foreign); assert.equal(existsSync(previousPath), false);
+  // A separate copy of this installation's credentials names the same binding, as the service compares it.
+  const copy = join(directory, 'cloud-credentials.json');
+  await writeFile(copy, await readFile(join(directory, workerSetupFiles.credentials)), { mode: 0o600 });
+  const same = await withCloud(copy);
+  const result = await enableWorkerLicense({ directory, expectedSha256: sha(same) });
+  assert.equal(result.changed, true); assert.deepEqual(await readFile(previousPath), same);
+  const updated = normalizeWorkerServiceConfig(JSON.parse(await readFile(configPath)));
+  assert.equal(updated.cloud.credentialsPath, copy); assert.equal(updated.license.credentialsPath, join(directory, workerSetupFiles.credentials));
+});

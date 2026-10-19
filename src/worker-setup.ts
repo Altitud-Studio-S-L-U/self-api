@@ -360,6 +360,14 @@ export async function enableWorkerLicense(options: { readonly directory: string;
     if (licenseTrust(await loadLocalJson(trustPath, 16_384)).issuer !== enrolled.baseUrl) invalid('The license trust names another Cloud origin; nothing was changed.');
     // No leasePath: the service bootstraps an empty license store from it only, renews through authenticated control,
     // and refuses to start when a configured lease file is absent.
+    // The service requires Cloud sharing and the license to name one installation; refuse a combination it would reject.
+    if (current.cloud) {
+      checkServicePath(current.cloud.credentialsPath, 'secret');
+      const shared = credentials(await loadLocalJson(current.cloud.credentialsPath, 16_384));
+      if (shared.baseUrl !== enrolled.baseUrl || shared.installationId !== enrolled.installationId || shared.projectId !== enrolled.projectId) {
+        invalid('Cloud sharing in worker.json belongs to another installation (CLOUD_BINDING_CONFLICT); nothing was changed.');
+      }
+    }
     const license = { credentialsPath, trustPath };
     if (current.license) {
       if (JSON.stringify(current.license) !== JSON.stringify(license)) invalid('worker.json already has a different license section (LICENSE_CONFLICT); nothing was changed.');
@@ -372,6 +380,9 @@ export async function enableWorkerLicense(options: { readonly directory: string;
       checkServicePath(previousPath, 'config');
       if (!(await readLocalBytes(previousPath, 64 * 1024)).equals(currentBytes)) invalid('worker.json.previous holds a different configuration (PREVIOUS_CONFLICT); nothing was changed.');
     }
+    // The previous revision's directory entry must be durable before the current one is replaced; otherwise stop here.
+    try { await syncDirectory(directory); }
+    catch (error) { invalidAfter(`${failureMessage(error)}worker.json.previous could not be made durable; worker.json was not replaced.`, error, false, error); }
     const staged = `${configPath}.${randomUUID()}.tmp`;
     const handle = await open(staged, 'wx', 0o600);
     try { await handle.writeFile(nextBytes); await handle.sync(); } finally { await handle.close(); }
@@ -409,7 +420,7 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
   if (!(await missing(join(directory, workerSetupFiles.lock)))) add('lock', 'fail', 'SETUP_LOCKED');
   // A crash while writing can leave a named temporary file. After link(2) it is a second link of its destination and can be
   // removed by hand once no command runs; before link(2) it may be the only copy and must be kept. Unknown files are never touched.
-  const temporary = /^((?:identity\.pending|credentials|worker|license-trust)\.json)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
+  const temporary = /^((?:identity\.pending|credentials|worker|license-trust)\.json|worker\.json\.previous)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
   let secondLinks = false, onlyCopies = false;
   for (const name of await readdir(directory)) {
     const match = temporary.exec(name);
