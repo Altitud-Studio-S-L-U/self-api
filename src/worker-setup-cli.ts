@@ -43,7 +43,8 @@ export async function runWorkerSetupCli(args: string[], cli: WorkerSetupCliOptio
       const parsed = options(args, { dir: { type: 'string' }, online: { type: 'boolean' }, json: { type: 'boolean' } });
       if (parsed.positionals.length !== 1 || !parsed.values.dir) throw new PlumberError('INVALID_INPUT', 'doctor requires --dir.');
       const report = await diagnoseWorker({ directory: parsed.values.dir, online: parsed.values.online === true });
-      stdout(parsed.values.json ? jsonLine(report) : report.checks.map(check => `${check.status.padEnd(4)} ${check.id}${check.code ? ` ${check.code}` : ''}\n`).join(''));
+      stdout(parsed.values.json ? jsonLine(report) : report.checks.map(check => `${check.status.padEnd(4)} ${check.id}${check.code ? ` ${check.code}` : ''}\n`).join('')
+        + (report.configSha256 ? `config-sha256 ${report.configSha256}\n` : ''));
       return report.ok ? 0 : 1;
     }
     const action = args[1];

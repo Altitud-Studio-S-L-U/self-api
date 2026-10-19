@@ -94,7 +94,10 @@ test('doctor reports the configuration hash, the trust and a pure offline lease 
   assert.equal(await code(), 'LEASE_EXPIRED');
   await rm(leasePath); await writeFile(leasePath, await lease({ decision: 'suspended', entitlementExpiresAt: null }), { mode: 0o600 });
   assert.equal(await code(), 'LEASE_SUSPENDED');
-  await rm(leasePath); await writeFile(leasePath, JSON.stringify(JSON.parse(valid).replace(/.$/u, 'A')), { mode: 0o600 });
+  // Change a full character inside the signature: the last base64url character can carry only padding bits.
+  const token = JSON.parse(valid), at = token.lastIndexOf('.') + 10;
+  const tampered = `${token.slice(0, at)}${token[at] === 'A' ? 'B' : 'A'}${token.slice(at + 1)}`;
+  await rm(leasePath); await writeFile(leasePath, JSON.stringify(tampered), { mode: 0o600 });
   assert.equal(await code(), 'LEASE_INVALID');
   // A trust whose issuer no longer matches the credentials fails the doctor.
   await rm(join(directory, workerSetupFiles.trust));
