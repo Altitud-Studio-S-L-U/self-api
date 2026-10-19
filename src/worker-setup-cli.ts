@@ -1,8 +1,8 @@
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { jsonLine } from './cli-presentation.js';
 import { PlumberError } from './errors.js';
-import { parseLocalJson } from './local-file.js';
-import { completeWorkerSetup, diagnoseWorker, initWorkerSetup, readWorkerPublicIdentity } from './worker-setup.js';
+import { loadLocalJson, parseLocalJson } from './local-file.js';
+import { completeWorkerSetup, diagnoseWorker, enableWorkerLicense, initWorkerSetup, installWorkerLicenseTrust, readWorkerPublicIdentity } from './worker-setup.js';
 
 export interface WorkerSetupCliOptions {
   readonly stdout?: (text: string) => void;
@@ -17,7 +17,7 @@ function options<const T extends NonNullable<ParseArgsConfig['options']>>(args: 
   const parsed = parseArgs({ args, strict: true, allowPositionals: true, tokens: true, options: allowed });
   const seen = new Set<string>();
   for (const token of parsed.tokens) if (token.kind === 'option') {
-    if (seen.has(token.name)) throw new PlumberError('INVALID_INPUT', 'Repeated setup options are not supported.');
+    if (seen.has(token.name) && !(allowed[token.name] as { multiple?: boolean } | undefined)?.multiple) throw new PlumberError('INVALID_INPUT', 'Repeated setup options are not supported.');
     seen.add(token.name);
   }
   return parsed;
@@ -43,11 +43,36 @@ export async function runWorkerSetupCli(args: string[], cli: WorkerSetupCliOptio
       const parsed = options(args, { dir: { type: 'string' }, online: { type: 'boolean' }, json: { type: 'boolean' } });
       if (parsed.positionals.length !== 1 || !parsed.values.dir) throw new PlumberError('INVALID_INPUT', 'doctor requires --dir.');
       const report = await diagnoseWorker({ directory: parsed.values.dir, online: parsed.values.online === true });
-      stdout(parsed.values.json ? jsonLine(report) : report.checks.map(check => `${check.status.padEnd(4)} ${check.id}${check.code ? ` ${check.code}` : ''}\n`).join(''));
+      stdout(parsed.values.json ? jsonLine(report) : report.checks.map(check => `${check.status.padEnd(4)} ${check.id}${check.code ? ` ${check.code}` : ''}\n`).join('')
+        + (report.configSha256 ? `config-sha256 ${report.configSha256}\n` : ''));
       return report.ok ? 0 : 1;
     }
     const action = args[1];
-    if (args[0] !== 'setup' || !action || !['init', 'identity', 'complete'].includes(action)) throw new PlumberError('INVALID_INPUT', 'setup requires init, identity or complete.');
+    if (args[0] !== 'setup' || !action || !['init', 'identity', 'complete', 'trust', 'config'].includes(action)) throw new PlumberError('INVALID_INPUT', 'setup requires init, identity, complete, trust or config.');
+    if (action === 'config') {
+      const parsed = options(args, { dir: { type: 'string' }, license: { type: 'boolean' }, expect: { type: 'string' } });
+      if (parsed.positionals.length !== 2 || !parsed.values.dir || parsed.values.license !== true || !parsed.values.expect) {
+        throw new PlumberError('INVALID_INPUT', 'setup config requires --dir, --license and --expect <config-sha256 from doctor>.');
+      }
+      const result = await enableWorkerLicense({ directory: parsed.values.dir, expectedSha256: parsed.values.expect });
+      stdout(jsonLine(result));
+      stderr(result.changed ? 'License section added. It applies at the next service start; worker.json.previous keeps the replaced revision.\n' : 'The license section was already present; nothing was changed.\n');
+      return 0;
+    }
+    if (action === 'trust') {
+      const parsed = options(args, { dir: { type: 'string' }, trust: { type: 'string' }, key: { type: 'string', multiple: true } });
+      if (parsed.positionals.length !== 2 || !parsed.values.dir || !parsed.values.trust || !parsed.values.key?.length) {
+        throw new PlumberError('INVALID_INPUT', 'setup trust requires --dir, --trust and one --key kid=sha256 per key, as shown by Keepseam Cloud.');
+      }
+      const expected: Record<string, string> = Object.create(null);
+      for (const value of parsed.values.key) {
+        const match = /^([a-zA-Z0-9_-]{1,64})=([a-f0-9]{64})$/u.exec(value);
+        if (!match || Object.hasOwn(expected, match[1]!)) throw new PlumberError('INVALID_INPUT', 'Each --key must be a distinct kid=sha256.');
+        expected[match[1]!] = match[2]!;
+      }
+      stdout(jsonLine(await installWorkerLicenseTrust({ directory: parsed.values.dir, trust: await loadLocalJson(parsed.values.trust, 16_384), expected: { ...expected } })));
+      return 0;
+    }
     if (action === 'init') {
       const parsed = options(args, { dir: { type: 'string' }, state: { type: 'string' }, cloud: { type: 'string' } });
       if (parsed.positionals.length !== 2 || !parsed.values.dir) throw new PlumberError('INVALID_INPUT', 'setup init requires --dir.');

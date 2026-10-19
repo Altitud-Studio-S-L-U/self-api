@@ -66,8 +66,8 @@ export { prepareHttpSource, captureHttpSource, HttpSourceError } from './http-so
 export type { HttpSourcePolicy, HttpSourceSnapshot, HttpSourceCredentials, CaptureHttpSourceOptions, HttpSourceAddress, HttpSourceTransportRequest, HttpSourceTransportResponse, HttpSourceDependencies, HttpSourceCapture, HttpSourceFailure } from './http-source.js';
 export { analyzeMcpImpact } from './mcp-impact.js';
 export type { McpClientBinding, McpImpactOptions, McpConsumerCall, McpImpactReport } from './mcp-impact.js';
-export { initWorkerSetup, readWorkerPublicIdentity, completeWorkerSetup, diagnoseWorker, workerSetupFiles, defaultCloudOrigin, supportedNode } from './worker-setup.js';
-export type { WorkerPublicIdentity, WorkerSetupResult, WorkerDoctorCheck, WorkerDoctorReport, WorkerDoctorOptions } from './worker-setup.js';
+export { initWorkerSetup, readWorkerPublicIdentity, completeWorkerSetup, installWorkerLicenseTrust, enableWorkerLicense, diagnoseWorker, workerSetupFiles, defaultCloudOrigin, supportedNode } from './worker-setup.js';
+export type { WorkerPublicIdentity, WorkerSetupResult, WorkerTrustResult, WorkerConfigUpdate, WorkerDoctorCheck, WorkerDoctorReport, WorkerDoctorOptions } from './worker-setup.js';
 export { runWorkerSetupCli } from './worker-setup-cli.js';
 export { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from './client-update.js';
 export type { ClientUpdateOptions, ClientUpdateRepository, PublicClientUpdateRepository, CloudClientUpdateRepository, ClientRelease, ClientUpdateStatus, ClientUpdateReason, ClientUpdateDependencies } from './client-update.js';

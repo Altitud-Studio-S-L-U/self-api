@@ -13,7 +13,25 @@ Linux worker bootstrap is offline and file-based. Its commands:
   - It accepts the enrollment only from the pinned origin and for that key.
   - It writes `credentials.json` and an observation-only `worker.json`, both 0600. That configuration reads no credentials and shares nothing with Cloud.
   - Files are never overwritten. If a run stops between the two files, re-running it with the same enrollment completes it. The pending key is removed only after both files are verified on disk.
-- `keepseam doctor --dir <private-directory>` reports permissions, enrollment, configuration and whether `GH_TOKEN` is present for the existing publication commands. It never prints secret values. `--online` checks network reach to the Cloud liveness endpoint, not authentication.
+- `keepseam setup trust --dir <private-directory> --trust <public-trust.json> --key <kid>=<sha256> ...` installs the public license trust.
+  - The issuer must be the pinned origin, and every key must match the fingerprint shown for it in Keepseam Cloud. Use the same `kid=sha256` form, obtained separately for each key.
+  - Missing, extra or different keys are refused, and nothing is downloaded.
+- `keepseam setup config --dir <private-directory> --license --expect <config-sha256>` adds a license section to `worker.json` that uses the enrolled credentials and the installed trust.
+  - It has no lease file: the service renews its license through authenticated control.
+  - It changes only the exact revision named by the hash that `doctor` prints, keeps every other option, and preserves the replaced bytes in `worker.json.previous`. It refuses a different previous revision or license section, and it applies at the next service start.
+  - Setup commands are serialized. A writer that ignores `setup.lock` is detected only up to a final check before the replacement, so the private directory and its dedicated account remain the trust boundary.
+  - If verification fails after the replacement, the new revision may already be in place. Compare hashes with `doctor`; nothing is rolled back automatically.
+- `keepseam doctor --dir <private-directory>` reports permissions, enrollment, configuration, license trust, a configured lease's offline signature and expiry, the configuration hash, and whether `GH_TOKEN` is present for the existing publication commands.
+  - It never prints secret values or license claims.
+  - An offline signature says nothing about revocation or the service's own license state.
+  - `--online` checks network reach to the Cloud liveness endpoint, not authentication.
+
+To roll back a configuration update manually:
+
+1. Stop the service.
+2. Keep a copy of the current `worker.json`, since it may be the only copy of the new revision.
+3. Check that `worker.json.previous` is the revision you want.
+4. Rename `worker.json.previous` over `worker.json`.
 
 Recovery after a crash is manual by design: nothing resumes automatically, and unknown files are never deleted. A crash while a file is written can leave `setup.lock` and a named `<file>.<uuid>.tmp`. `doctor` tells the cases apart:
 

@@ -1,16 +1,17 @@
-import { createPrivateKey, createPublicKey, randomBytes, randomUUID, sign, verify } from 'node:crypto';
-import { chmod, link, lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
+import { createHash, createPrivateKey, createPublicKey, randomBytes, randomUUID, sign, verify } from 'node:crypto';
+import { chmod, link, lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
 import { dirname, join, parse, sep } from 'node:path';
 import { isProxy } from 'node:util/types';
 import { calculateJwkThumbprint, importJWK, type JWK } from 'jose';
 import { generateCloudWorkerIdentity, type CloudCredentials } from './cloud-connection.js';
 import { PlumberError } from './errors.js';
-import { loadLocalJson } from './local-file.js';
+import { loadLocalJson, parseLocalJson, readLocalBytes } from './local-file.js';
+import { normalizeWorkerLicenseTrust, verifyWorkerLicense, type WorkerLicenseTrust } from './worker-license.js';
 import { normalizeWorkerServiceConfig, servicePath, type WorkerServiceConfig, type WorkerServiceTarget } from './worker-service-config.js';
 import { checkServicePath, serviceFailureDetails } from './worker-service-state.js';
 
 /** One private directory holds the installation key, then the enrolled credentials and the service configuration. */
-export const workerSetupFiles = Object.freeze({ pending: 'identity.pending.json', credentials: 'credentials.json', config: 'worker.json', lock: 'setup.lock', state: 'state' });
+export const workerSetupFiles = Object.freeze({ pending: 'identity.pending.json', credentials: 'credentials.json', config: 'worker.json', previous: 'worker.json.previous', trust: 'license-trust.json', lock: 'setup.lock', state: 'state' });
 export const defaultCloudOrigin = 'https://keepseam.com';
 /** Kept equal to package.json engines by test. */
 export const supportedNode = Object.freeze({ major: 24, minor: 21 });
@@ -18,7 +19,10 @@ export const supportedNode = Object.freeze({ major: 24, minor: 21 });
 export interface WorkerPublicIdentity { readonly installationId: string; readonly publicJwk: JWK; readonly fingerprint: string }
 export interface WorkerSetupResult { readonly credentialsPath: string; readonly configPath: string; readonly statePath: string; readonly fingerprint: string }
 export interface WorkerDoctorCheck { readonly id: string; readonly status: 'ok' | 'warn' | 'fail'; readonly code?: string }
-export interface WorkerDoctorReport { readonly ok: boolean; readonly checks: readonly WorkerDoctorCheck[] }
+/** configSha256 is the exact hash of worker.json, used to name the revision an explicit configuration update replaces. */
+export interface WorkerDoctorReport { readonly ok: boolean; readonly checks: readonly WorkerDoctorCheck[]; readonly configSha256?: string }
+export interface WorkerConfigUpdate { readonly changed: boolean; readonly configPath: string; readonly previousPath: string; readonly configSha256: string }
+export interface WorkerTrustResult { readonly trustPath: string; readonly keys: readonly { readonly kid: string; readonly publicKeySha256: string }[] }
 export interface WorkerDoctorOptions {
   readonly directory: string;
   /** Opt-in: one GET of the Cloud liveness endpoint. It proves network reach only, not authentication or enrollment. */
@@ -143,7 +147,7 @@ async function writeExclusive(path: string, value: unknown): Promise<void> {
   const handle = await open(temporary, 'wx', 0o600);
   let failure: unknown, failed = false;
   try {
-    try { await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`); await handle.sync(); } finally { await handle.close(); }
+    try { await handle.writeFile(Buffer.isBuffer(value) ? value : `${JSON.stringify(value, null, 2)}\n`); await handle.sync(); } finally { await handle.close(); }
     await link(temporary, path);
   } catch (error) { failure = error; failed = true; }
   try { await unlink(temporary); }
@@ -288,6 +292,117 @@ export async function completeWorkerSetup(options: { readonly directory: string;
   });
 }
 
+/** Same canonical form as Keepseam Cloud's license key fingerprint: SHA-256 of {crv,kty,x,y}. */
+function licenseKeySha256(key: { crv?: unknown; kty?: unknown; x?: unknown; y?: unknown }): string {
+  return createHash('sha256').update(JSON.stringify({ crv: key.crv, kty: key.kty, x: key.x, y: key.y })).digest('hex');
+}
+function licenseTrust(value: unknown): WorkerLicenseTrust {
+  let trust: WorkerLicenseTrust;
+  try { trust = normalizeWorkerLicenseTrust(value); } catch { invalid('The license trust document is malformed.'); }
+  // Importing proves each public key is a point on the curve before it is trusted.
+  for (const key of trust.keys) {
+    try { createPublicKey({ key: { kty: key.kty, crv: key.crv, x: key.x, y: key.y } as never, format: 'jwk' }); } catch { invalid('The license trust document is malformed.'); }
+  }
+  return trust;
+}
+/** The origin a trust document must name: the enrolled credentials once setup is complete, the pinned pending origin before. */
+async function pinnedOrigin(directory: string): Promise<string> {
+  const enrolled = join(directory, workerSetupFiles.credentials);
+  if (!(await missing(enrolled))) { checkServicePath(enrolled, 'secret'); return credentials(await loadLocalJson(enrolled, 16_384)).baseUrl; }
+  return (await pendingIdentity(directory)).cloudOrigin;
+}
+
+/**
+ * Installs the public license trust for this worker. Every key must match a fingerprint the operator obtained separately
+ * from Keepseam Cloud: printing a hash proves nothing, so missing, extra or different keys are refused. Nothing is downloaded.
+ */
+export async function installWorkerLicenseTrust(options: { readonly directory: string; readonly trust: unknown; readonly expected: Readonly<Record<string, string>> }): Promise<WorkerTrustResult> {
+  const directory = setupDirectory(options.directory);
+  const expected = plain(options.expected, Object.keys(options.expected ?? {}), 'Give the expected fingerprint of every key as kid=sha256.');
+  if (!Object.keys(expected).length || Object.values(expected).some(value => typeof value !== 'string' || !hex.test(value))) invalid('Give the expected fingerprint of every key as kid=sha256.');
+  return withSetupLock(directory, async () => {
+    const trust = licenseTrust(options.trust);
+    if (trust.issuer !== await pinnedOrigin(directory)) invalid('The trust issuer differs from the Cloud origin pinned for this worker.');
+    const keys = trust.keys.map(key => Object.freeze({ kid: key.kid as string, publicKeySha256: licenseKeySha256(key) }));
+    const kids = keys.map(key => key.kid);
+    if (kids.length !== Object.keys(expected).length || kids.some(kid => !Object.hasOwn(expected, kid))) invalid('The expected fingerprints must name exactly the keys of the trust document.');
+    if (keys.some(key => expected[key.kid] !== key.publicKeySha256)) invalid('A license key does not match its expected fingerprint; nothing was installed.');
+    const trustPath = join(directory, workerSetupFiles.trust);
+    await placeOrMatch(trustPath, trust, 'secret', licenseTrust);
+    await syncDirectory(directory);
+    return Object.freeze({ trustPath, keys: Object.freeze(keys) });
+  });
+}
+
+const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
+/**
+ * Adds the license section to worker.json as an explicit update of one exact revision, named by the hash of its bytes.
+ * Cooperating writers are serialized by setup.lock and a stale hash changes nothing. A second check just before the
+ * replacement narrows, but cannot close, the window for a writer that ignores the lock: the private directory and its
+ * dedicated account remain the trust boundary. The replaced bytes are kept in worker.json.previous.
+ */
+export async function enableWorkerLicense(options: { readonly directory: string; readonly expectedSha256: string }): Promise<WorkerConfigUpdate> {
+  const directory = setupDirectory(options.directory);
+  if (typeof options.expectedSha256 !== 'string' || !hex.test(options.expectedSha256)) invalid('Give --expect as the config-sha256 reported by doctor.');
+  return withSetupLock(directory, async () => {
+    const configPath = join(directory, workerSetupFiles.config), previousPath = join(directory, workerSetupFiles.previous);
+    const credentialsPath = join(directory, workerSetupFiles.credentials), trustPath = join(directory, workerSetupFiles.trust);
+    checkServicePath(configPath, 'config');
+    const currentBytes = await readLocalBytes(configPath, 64 * 1024);
+    if (sha256(currentBytes) !== options.expectedSha256) invalid('worker.json is not the revision named by --expect (EXPECT_MISMATCH); nothing was changed. Run doctor for its current hash.');
+    const current = normalizeWorkerServiceConfig(parseLocalJson(currentBytes), target());
+    checkServicePath(credentialsPath, 'secret');
+    const enrolled = credentials(await loadLocalJson(credentialsPath, 16_384));
+    await publicIdentity(enrolled.installationId, enrolled.privateJwk);
+    if (await missing(trustPath)) invalid('Install the license trust with setup trust first; nothing was changed.');
+    checkServicePath(trustPath, 'secret');
+    if (licenseTrust(await loadLocalJson(trustPath, 16_384)).issuer !== enrolled.baseUrl) invalid('The license trust names another Cloud origin; nothing was changed.');
+    // No leasePath: the service bootstraps an empty license store from it only, renews through authenticated control,
+    // and refuses to start when a configured lease file is absent.
+    // The service requires Cloud sharing and the license to name one installation; refuse a combination it would reject.
+    if (current.cloud) {
+      checkServicePath(current.cloud.credentialsPath, 'secret');
+      const shared = credentials(await loadLocalJson(current.cloud.credentialsPath, 16_384));
+      if (shared.baseUrl !== enrolled.baseUrl || shared.installationId !== enrolled.installationId || shared.projectId !== enrolled.projectId) {
+        invalid('Cloud sharing in worker.json belongs to another installation (CLOUD_BINDING_CONFLICT); nothing was changed.');
+      }
+    }
+    const license = { credentialsPath, trustPath };
+    if (current.license) {
+      if (JSON.stringify(current.license) !== JSON.stringify(license)) invalid('worker.json already has a different license section (LICENSE_CONFLICT); nothing was changed.');
+      return Object.freeze({ changed: false, configPath, previousPath, configSha256: options.expectedSha256 });
+    }
+    const nextBytes = Buffer.from(`${JSON.stringify(normalizeWorkerServiceConfig({ ...current, license }, target()), null, 2)}\n`);
+    // The replaced revision is kept byte for byte, never over a different one.
+    if (await missing(previousPath)) await writeExclusive(previousPath, currentBytes);
+    else {
+      checkServicePath(previousPath, 'config');
+      if (!(await readLocalBytes(previousPath, 64 * 1024)).equals(currentBytes)) invalid('worker.json.previous holds a different configuration (PREVIOUS_CONFLICT); nothing was changed.');
+    }
+    // The previous revision's directory entry must be durable before the current one is replaced; otherwise stop here.
+    try { await syncDirectory(directory); }
+    catch (error) { invalidAfter(`${failureMessage(error)}worker.json.previous could not be made durable; worker.json was not replaced.`, error, false, error); }
+    const staged = `${configPath}.${randomUUID()}.tmp`;
+    const handle = await open(staged, 'wx', 0o600);
+    try { await handle.writeFile(nextBytes); await handle.sync(); } finally { await handle.close(); }
+    if (sha256(await readLocalBytes(configPath, 64 * 1024)) !== options.expectedSha256) {
+      invalid(`worker.json changed during the update; it was not replaced. The staged configuration ${staged} and worker.json.previous were kept.`);
+    }
+    try { await rename(staged, configPath); }
+    catch (error) { invalidAfter(`${failureMessage(error)}worker.json was not replaced; the staged configuration ${staged} was kept.`, error, false, error); }
+    // After the rename the new revision may be in place even if this verification fails: report that, never success or rollback.
+    try {
+      await syncDirectory(directory);
+      checkServicePath(configPath, 'config');
+      if (!(await readLocalBytes(configPath, 64 * 1024)).equals(nextBytes)) throw new Error('verification');
+    } catch (error) {
+      invalidAfter(`${failureMessage(error)}worker.json may already hold the new configuration (${sha256(nextBytes)}) but it could not be verified. Compare it with doctor's config-sha256 before acting; nothing was rolled back.`, error, false, error);
+    }
+    return Object.freeze({ changed: true, configPath, previousPath, configSha256: sha256(nextBytes) });
+  });
+}
+
 /** Read-only diagnosis with a stable code per check. Secret values never enter the report. */
 export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<WorkerDoctorReport> {
   const checks: WorkerDoctorCheck[] = [];
@@ -305,7 +420,7 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
   if (!(await missing(join(directory, workerSetupFiles.lock)))) add('lock', 'fail', 'SETUP_LOCKED');
   // A crash while writing can leave a named temporary file. After link(2) it is a second link of its destination and can be
   // removed by hand once no command runs; before link(2) it may be the only copy and must be kept. Unknown files are never touched.
-  const temporary = /^((?:identity\.pending|credentials|worker)\.json)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
+  const temporary = /^((?:identity\.pending|credentials|worker|license-trust)\.json|worker\.json\.previous)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
   let secondLinks = false, onlyCopies = false;
   for (const name of await readdir(directory)) {
     const match = temporary.exec(name);
@@ -326,12 +441,54 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
     await publicIdentity(value.installationId, value.privateJwk);
     enrolled = value;
   });
-  let config: WorkerServiceConfig | undefined;
+  let config: WorkerServiceConfig | undefined, configSha256: string | undefined;
   await attempt('config', 'CONFIG_INVALID', async () => {
     const path = join(directory, workerSetupFiles.config);
     checkServicePath(path, 'config');
-    config = normalizeWorkerServiceConfig(await loadLocalJson(path, 64 * 1024), target());
+    const bytes = await readLocalBytes(path, 64 * 1024);
+    config = normalizeWorkerServiceConfig(parseLocalJson(bytes), target());
+    configSha256 = createHash('sha256').update(bytes).digest('hex');
   });
+  // The license is checked against the credentials the service will actually load, not against this directory's by default.
+  let licenseCredentials: CloudCredentials | undefined = enrolled;
+  const licenseCredentialsPath = config?.license?.credentialsPath;
+  if (licenseCredentialsPath && licenseCredentialsPath !== credentialsPath) {
+    licenseCredentials = undefined;
+    await attempt('license-credentials', 'LICENSE_CREDENTIALS_INVALID', async () => {
+      checkServicePath(licenseCredentialsPath, 'secret');
+      const value = credentials(await loadLocalJson(licenseCredentialsPath, 16_384));
+      await publicIdentity(value.installationId, value.privateJwk);
+      licenseCredentials = value;
+    });
+  }
+  const trustPath = config?.license?.trustPath ?? join(directory, workerSetupFiles.trust);
+  let trust: WorkerLicenseTrust | undefined;
+  if (config?.license || !(await missing(trustPath))) {
+    await attempt('license-trust', 'TRUST_INVALID', async () => {
+      checkServicePath(trustPath, 'secret');
+      const value = licenseTrust(await loadLocalJson(trustPath, 16_384));
+      const owner = config?.license ? licenseCredentials : enrolled;
+      if (!owner || value.issuer !== owner.baseUrl) throw new Error('issuer');
+      trust = value;
+    });
+  }
+  // A signature and expiry checked offline say nothing about revocation or about the service's persisted license state.
+  const leasePath = config?.license?.leasePath;
+  if (leasePath) {
+    // The service refuses to start when a configured lease file is absent, so its absence is a failure, not a skip.
+    if (await missing(leasePath)) add('license-lease', 'fail', 'LEASE_MISSING');
+    else if (!trust || !licenseCredentials) add('license-lease', 'fail', 'LEASE_UNVERIFIED');
+    else {
+      const [verifiedTrust, verifiedCredentials] = [trust, licenseCredentials];
+      let code = 'LEASE_INVALID', status: WorkerDoctorCheck['status'] = 'fail';
+      try {
+        checkServicePath(leasePath, 'secret');
+        const claims = await verifyWorkerLicense(await loadLocalJson(leasePath, 16_384) as string, verifiedTrust, verifiedCredentials, Date.now(), true);
+        [status, code] = claims.decision !== 'allowed' ? ['warn', 'LEASE_SUSPENDED'] : claims.exp * 1000 <= Date.now() ? ['warn', 'LEASE_EXPIRED'] : ['ok', 'LEASE_SIGNATURE_VALID'];
+      } catch { [status, code] = ['fail', 'LEASE_INVALID']; }
+      add('license-lease', status, code);
+    }
+  }
   if (config) {
     const current = config;
     await attempt('state', 'STATE_UNSAFE', () => { checkServicePath(current.statePath, 'directory'); });
@@ -350,8 +507,8 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
       if (response.status !== 200) throw new Error('unavailable');
     });
   }
-  return report(checks);
+  return report(checks, configSha256);
 }
-function report(checks: WorkerDoctorCheck[]): WorkerDoctorReport {
-  return Object.freeze({ ok: checks.every(check => check.status !== 'fail'), checks: Object.freeze(checks) });
+function report(checks: WorkerDoctorCheck[], configSha256?: string): WorkerDoctorReport {
+  return Object.freeze({ ok: checks.every(check => check.status !== 'fail'), checks: Object.freeze(checks), ...(configSha256 ? { configSha256 } : {}) });
 }
