@@ -70,6 +70,7 @@ const help = `Usage: keepseam compare <base.json> <revision.json> --engine <path
        keepseam setup identity --dir <absolute-private-directory>
        keepseam setup complete --dir <absolute-private-directory> [--interval-ms <1000-3600000>] < enrollment.json
        keepseam setup trust --dir <absolute-private-directory> --trust <public-trust.json> --key <kid>=<sha256> [--key ...]
+       keepseam setup config --dir <absolute-private-directory> --license --expect <config-sha256>
        keepseam doctor --dir <absolute-private-directory> [--online] [--json]
        keepseam worker-service run|status|stop --config <absolute-json>
        keepseam client-update check|stage|status --config <absolute-json>

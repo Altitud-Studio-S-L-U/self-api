@@ -2,7 +2,7 @@ import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { jsonLine } from './cli-presentation.js';
 import { PlumberError } from './errors.js';
 import { loadLocalJson, parseLocalJson } from './local-file.js';
-import { completeWorkerSetup, diagnoseWorker, initWorkerSetup, installWorkerLicenseTrust, readWorkerPublicIdentity } from './worker-setup.js';
+import { completeWorkerSetup, diagnoseWorker, enableWorkerLicense, initWorkerSetup, installWorkerLicenseTrust, readWorkerPublicIdentity } from './worker-setup.js';
 
 export interface WorkerSetupCliOptions {
   readonly stdout?: (text: string) => void;
@@ -48,7 +48,17 @@ export async function runWorkerSetupCli(args: string[], cli: WorkerSetupCliOptio
       return report.ok ? 0 : 1;
     }
     const action = args[1];
-    if (args[0] !== 'setup' || !action || !['init', 'identity', 'complete', 'trust'].includes(action)) throw new PlumberError('INVALID_INPUT', 'setup requires init, identity, complete or trust.');
+    if (args[0] !== 'setup' || !action || !['init', 'identity', 'complete', 'trust', 'config'].includes(action)) throw new PlumberError('INVALID_INPUT', 'setup requires init, identity, complete, trust or config.');
+    if (action === 'config') {
+      const parsed = options(args, { dir: { type: 'string' }, license: { type: 'boolean' }, expect: { type: 'string' } });
+      if (parsed.positionals.length !== 2 || !parsed.values.dir || parsed.values.license !== true || !parsed.values.expect) {
+        throw new PlumberError('INVALID_INPUT', 'setup config requires --dir, --license and --expect <config-sha256 from doctor>.');
+      }
+      const result = await enableWorkerLicense({ directory: parsed.values.dir, expectedSha256: parsed.values.expect });
+      stdout(jsonLine(result));
+      stderr(result.changed ? 'License section added. It applies at the next service start; worker.json.previous keeps the replaced revision.\n' : 'The license section was already present; nothing was changed.\n');
+      return 0;
+    }
     if (action === 'trust') {
       const parsed = options(args, { dir: { type: 'string' }, trust: { type: 'string' }, key: { type: 'string', multiple: true } });
       if (parsed.positionals.length !== 2 || !parsed.values.dir || !parsed.values.trust || !parsed.values.key?.length) {
