@@ -49,7 +49,12 @@ test('init rejects unsafe locations and non-HTTPS Cloud origins before generatin
     await assert.rejects(initWorkerSetup({ directory: open }));
     const real = join(root, 'real'); await mkdir(real, { mode: 0o700 }); await symlink(real, join(root, 'alias'));
     await assert.rejects(initWorkerSetup({ directory: join(root, 'alias', 'worker') }), /links/u);
+    // Rejected before the first write: nothing was created behind the link.
+    assert.equal(existsSync(join(real, 'worker')), false);
+    await assert.rejects(initWorkerSetup({ directory: join(root, 'fresh'), statePath: join(root, 'alias', 'state') }), /links/u);
+    assert.equal(existsSync(join(real, 'state')), false); assert.equal(existsSync(join(root, 'fresh')), false);
   }
+  await assert.rejects(initWorkerSetup({ directory: join(root, 'missing-parent', 'worker') }), /parent of a setup directory/u);
 });
 
 test('complete binds the enrollment to the local key and writes observation-only configuration', async t => {
@@ -181,4 +186,44 @@ test('the command line reads the enrollment only from a pipe and keeps secrets o
 test('the supported Node line matches the package engines', async () => {
   const engines = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).engines.node;
   assert.equal(engines, `>=${supportedNode.major}.${supportedNode.minor}.0 <${supportedNode.major + 1}`);
+});
+
+test('a key whose private scalar does not match its public coordinates is refused everywhere', async t => {
+  const root = await workspace(t), other = await initWorkerSetup({ directory: join(root, 'other') });
+  const otherKey = JSON.parse(await readFile(join(root, 'other', workerSetupFiles.pending), 'utf8')).privateJwk;
+  for (const [name, d] of [['mixed', otherKey.d], ['zero', Buffer.alloc(32).toString('base64url')],
+    ['order', Buffer.from('FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551', 'hex').toString('base64url')]]) {
+    const directory = join(root, name), identity = await initWorkerSetup({ directory });
+    const pendingPath = join(directory, workerSetupFiles.pending), pending = JSON.parse(await readFile(pendingPath, 'utf8'));
+    await rm(pendingPath); await writeFile(pendingPath, JSON.stringify({ ...pending, privateJwk: { ...pending.privateJwk, d } }), { mode: 0o600 });
+    await assert.rejects(readWorkerPublicIdentity({ directory }), /P-256 key|does not match/u);
+    await assert.rejects(completeWorkerSetup({ directory, enrollment: enrollmentFor(identity) }), /P-256 key|does not match/u);
+    assert.equal(existsSync(join(directory, workerSetupFiles.credentials)), false);
+    // Enrolled credentials carrying such a key fail the doctor without the key entering the report.
+    const credentialsPath = join(directory, workerSetupFiles.credentials);
+    await writeFile(credentialsPath, JSON.stringify({ ...enrollmentFor(identity), privateJwk: { ...pending.privateJwk, d } }), { mode: 0o600 });
+    await rm(pendingPath);
+    const report = await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} });
+    assert.equal(report.checks.find(check => check.id === 'credentials').code, 'CREDENTIALS_INVALID');
+    for (const secret of [d, pending.privateJwk.x, clientSecret]) assert.ok(!JSON.stringify(report).includes(secret));
+  }
+  assert.ok(other.fingerprint);
+});
+
+test('the setup lock is released only when it is still the file and token this command created', async t => {
+  const { withSetupLock } = await import('../dist/worker-setup.js');
+  const directory = join(await workspace(t), 'worker'); await mkdir(directory, { mode: 0o700 });
+  const lock = join(directory, workerSetupFiles.lock);
+  assert.equal(await withSetupLock(directory, async () => 'done'), 'done');
+  assert.equal(existsSync(lock), false);
+  // A replaced lock is kept and reported, whether the command succeeded or failed; the original failure stays visible.
+  await assert.rejects(withSetupLock(directory, async () => { await rm(lock); await writeFile(lock, '{"token":"someone-else"}', { mode: 0o600 }); return 'done'; }),
+    /could not be released safely/u);
+  assert.equal(JSON.parse(await readFile(lock, 'utf8')).token, 'someone-else');
+  await rm(lock);
+  await assert.rejects(withSetupLock(directory, async () => {
+    await rm(lock); await writeFile(lock, '{"token":"someone-else"}', { mode: 0o600 });
+    await completeWorkerSetup({ directory: join(directory, 'absent'), enrollment: {} });
+  }), error => /could not be released safely/u.test(error.message) && error.message.length > 'setup.lock could not be released safely.'.length);
+  assert.equal(existsSync(lock), true);
 });

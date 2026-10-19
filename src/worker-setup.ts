@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import { chmod, link, lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createPrivateKey, createPublicKey, randomBytes, randomUUID, sign, verify } from 'node:crypto';
+import { chmod, link, lstat, mkdir, open, readdir, readFile, unlink } from 'node:fs/promises';
+import { dirname, join, parse, sep } from 'node:path';
 import { isProxy } from 'node:util/types';
 import { calculateJwkThumbprint, importJWK, type JWK } from 'jose';
 import { generateCloudWorkerIdentity, type CloudCredentials } from './cloud-connection.js';
@@ -50,10 +50,20 @@ function privateJwk(value: unknown): JWK {
   if (key['kty'] !== 'EC' || key['crv'] !== 'P-256') invalid('The installation key is not a P-256 key.');
   return { kty: 'EC', crv: 'P-256', x: scalar(key['x']), y: scalar(key['y']), d: scalar(key['d']) };
 }
+/** A local signature over a fresh challenge proves the private scalar matches the public coordinates; neither leaves the process. */
+function provePair(key: JWK, publicJwk: JWK): void {
+  let matches = false;
+  try {
+    const challenge = randomBytes(32);
+    const signature = sign('sha256', challenge, { key: createPrivateKey({ key: key as never, format: 'jwk' }), dsaEncoding: 'ieee-p1363' });
+    matches = verify('sha256', challenge, { key: createPublicKey({ key: publicJwk as never, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, signature);
+  } catch { matches = false; }
+  if (!matches) invalid('The installation key does not match its public identity.');
+}
 async function publicIdentity(installationId: string, key: JWK): Promise<WorkerPublicIdentity> {
-  // Importing proves the private scalar is usable; only the public half leaves this function.
   try { await importJWK(key, 'ES256'); } catch { invalid('The installation key is not a P-256 key.'); }
   const publicJwk = { kty: 'EC', crv: 'P-256', x: key.x!, y: key.y! };
+  provePair(key, publicJwk);
   return Object.freeze({ installationId, publicJwk: Object.freeze(publicJwk), fingerprint: await calculateJwkThumbprint(publicJwk) });
 }
 function cloudOrigin(value: unknown): string {
@@ -79,35 +89,76 @@ async function syncDirectory(directory: string): Promise<void> {
   const handle = await open(directory, 'r');
   try { await handle.sync(); } finally { await handle.close(); }
 }
+/** Every existing ancestor must be a real directory before anything is created beneath it, so nothing lands behind a link. */
+async function checkAncestors(path: string): Promise<void> {
+  const root = parse(path).root;
+  let current = root;
+  for (const part of dirname(path).slice(root.length).split(sep).filter(Boolean)) {
+    current = join(current, part);
+    let info;
+    // Nothing exists below a missing ancestor, and mkdir never creates parents, so the walk can stop there.
+    try { info = await lstat(current); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    if (info.isSymbolicLink() || !info.isDirectory()) invalid('Setup directories and their ancestors cannot be links.');
+  }
+}
 async function privateDirectory(path: string): Promise<void> {
-  try { await mkdir(path, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; return; }
+  await checkAncestors(path);
+  try { await mkdir(path, { mode: 0o700 }); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') invalid('The parent of a setup directory must already exist.');
+    if (code !== 'EEXIST') throw error;
+    return;
+  }
   if (process.platform !== 'win32') await chmod(path, 0o700);
 }
-/** link(2) fails with EEXIST instead of replacing, so an existing file is never overwritten, even by a racing writer. */
+function failureMessage(error: unknown): string { return error instanceof PlumberError ? `${error.message} ` : ''; }
+/**
+ * link(2) fails with EEXIST instead of replacing, so an existing file is never overwritten, even by a racing writer.
+ * A temporary copy that cannot be removed is reported, never ignored: it would leave the key with a second link.
+ */
 async function writeExclusive(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   const handle = await open(temporary, 'wx', 0o600);
+  let failure: unknown, failed = false;
   try {
     try { await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`); await handle.sync(); } finally { await handle.close(); }
     await link(temporary, path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') invalid('A setup file already exists; nothing was overwritten.');
-    throw error;
-  } finally { await unlink(temporary).catch(() => undefined); }
+  } catch (error) { failure = error; failed = true; }
+  try { await unlink(temporary); }
+  catch { invalid(`${failed ? failureMessage(failure) : ''}The temporary file ${temporary} could not be removed; delete it before retrying. The pending key was kept.`); }
+  if (failed) {
+    if ((failure as NodeJS.ErrnoException).code === 'EEXIST') invalid('A setup file already exists; nothing was overwritten.');
+    throw failure;
+  }
 }
 /** Commands on one directory are serialized. A lock left by an interrupted command is reported, never removed automatically. */
-async function withSetupLock<T>(directory: string, action: () => Promise<T>): Promise<T> {
-  const path = join(directory, workerSetupFiles.lock);
+/** Exported for tests only; the package entry does not re-export it. */
+export async function withSetupLock<T>(directory: string, action: () => Promise<T>): Promise<T> {
+  const path = join(directory, workerSetupFiles.lock), token = randomUUID();
   let handle;
   try { handle = await open(path, 'wx', 0o600); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') invalid('Another setup command holds this directory, or an interrupted one left setup.lock. Confirm none is running before removing it.');
     throw error;
   }
+  let owned: { dev: number; ino: number };
   try {
-    try { await handle.writeFile(`${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`); } finally { await handle.close(); }
-    return await action();
-  } finally { await unlink(path).catch(() => undefined); }
+    await handle.writeFile(`${JSON.stringify({ token, pid: process.pid, startedAt: new Date().toISOString() })}\n`); await handle.sync();
+    const info = await handle.stat(); owned = { dev: info.dev, ino: info.ino };
+  } finally { await handle.close(); }
+  let result: T | undefined, failure: unknown, failed = false;
+  try { result = await action(); } catch (error) { failure = error; failed = true; }
+  // Only the lock this command created is removed: the same file holding the same token.
+  let released = false;
+  try {
+    const info = await lstat(path);
+    const content = JSON.parse(await readFile(path, 'utf8')) as { token?: unknown };
+    if (info.isFile() && info.dev === owned.dev && info.ino === owned.ino && content.token === token) { await unlink(path); released = true; }
+  } catch { released = false; }
+  if (!released) invalid(`${failed ? failureMessage(failure) : 'The command finished, but '}setup.lock could not be released safely. Confirm no setup command is running, then remove it.`);
+  if (failed) throw failure;
+  return result as T;
 }
 function setupDirectory(directory: unknown): string {
   const path = servicePath(directory, target());
@@ -119,8 +170,11 @@ async function pendingIdentity(directory: string): Promise<PendingIdentity> {
   checkServicePath(path, 'secret');
   const value = plain(await loadLocalJson(path, 16_384), ['schemaVersion', 'installationId', 'privateJwk', 'cloudOrigin', 'statePath'], 'The pending installation identity is malformed.');
   if (value['schemaVersion'] !== 1 || typeof value['installationId'] !== 'string' || !hex.test(value['installationId'])) invalid('The pending installation identity is malformed.');
-  return { installationId: value['installationId'], privateJwk: privateJwk(value['privateJwk']), cloudOrigin: cloudOrigin(value['cloudOrigin']),
+  const pending = { installationId: value['installationId'], privateJwk: privateJwk(value['privateJwk']), cloudOrigin: cloudOrigin(value['cloudOrigin']),
     statePath: servicePath(value['statePath'], target()) };
+  // The key pair is proven before any file is written from it.
+  await publicIdentity(pending.installationId, pending.privateJwk);
+  return pending;
 }
 /** Writes the expected file, or accepts an identical one left by an interrupted run; anything else is a conflict. */
 async function placeOrMatch<T>(path: string, expected: T, kind: 'secret' | 'config', parse: (value: unknown) => T): Promise<void> {
@@ -140,6 +194,8 @@ export async function initWorkerSetup(options: { readonly directory: string; rea
   const origin = cloudOrigin(options.cloudOrigin ?? defaultCloudOrigin);
   const statePath = servicePath(options.statePath ?? join(directory, workerSetupFiles.state), target());
   if (statePath === directory) invalid('The service state needs its own directory.');
+  // Both locations are checked before the first write, so a rejected path never leaves a directory behind.
+  await checkAncestors(directory); await checkAncestors(statePath);
   await privateDirectory(directory);
   checkServicePath(directory, 'directory');
   return withSetupLock(directory, async () => {
