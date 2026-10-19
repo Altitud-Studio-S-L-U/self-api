@@ -118,3 +118,58 @@ test('the command line takes one distinct kid=sha256 per key and reads the publi
   assert.equal(await runWorkerSetupCli(['setup', 'trust', '--dir', directory, '--trust', trustFile, '--key', good], io), 0);
   assert.equal(JSON.parse(out.pop()).keys[0].publicKeySha256, fingerprint(key.publicJwk));
 });
+
+async function licensedConfig(directory, license) {
+  const path = join(directory, workerSetupFiles.config), config = JSON.parse(await readFile(path, 'utf8'));
+  await rm(path); await writeFile(path, JSON.stringify({ ...config, license }), { mode: 0o600 });
+}
+const checks = async directory => Object.fromEntries((await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} })).checks.map(check => [check.id, check.code ?? check.status]));
+
+test('a configured but absent lease file fails the doctor, as it fails the service at start', async t => {
+  const { directory } = await enrolled(t);
+  const key = await licenseKey('license-a');
+  await installWorkerLicenseTrust({ directory, trust: document(key), expected: expected(key) });
+  await licensedConfig(directory, { credentialsPath: join(directory, workerSetupFiles.credentials), trustPath: join(directory, workerSetupFiles.trust), leasePath: join(directory, 'absent-lease.json') });
+  assert.equal((await checks(directory))['license-lease'], 'LEASE_MISSING');
+});
+
+test('the lease is verified against the credentials the configuration names, or declared unverified', async t => {
+  const { root, directory } = await enrolled(t);
+  const key = await licenseKey('license-a');
+  await installWorkerLicenseTrust({ directory, trust: document(key), expected: expected(key) });
+  // A lease that is valid for this installation's own credentials.
+  const own = JSON.parse(await readFile(join(directory, workerSetupFiles.credentials), 'utf8')), now = Math.floor(Date.now() / 1000);
+  const valid = await new SignJWT({ schemaVersion: 1, workerId: randomUUID(), organizationId: randomUUID(), installationId: own.installationId, projectId,
+    jkt: await calculateJwkThumbprint({ kty: 'EC', crv: 'P-256', x: own.privateJwk.x, y: own.privateJwk.y }), revision: 1, decision: 'allowed', entitlementExpiresAt: now + 7200 })
+    .setProtectedHeader({ alg: 'ES256', kid: 'license-a', typ: 'keepseam-worker-license+jwt' }).setIssuer(origin).setAudience('keepseam-worker-automation')
+    .setIssuedAt(now).setExpirationTime(now + 3600).sign(key.privateKey);
+  const leasePath = join(directory, 'lease.json'); await writeFile(leasePath, JSON.stringify(valid), { mode: 0o600 });
+  const trustPath = join(directory, workerSetupFiles.trust);
+  await licensedConfig(directory, { credentialsPath: join(directory, workerSetupFiles.credentials), trustPath, leasePath });
+  assert.equal((await checks(directory))['license-lease'], 'LEASE_SIGNATURE_VALID');
+  await licensedConfig(directory, { credentialsPath: join(root, 'elsewhere.json'), trustPath, leasePath });
+  let result = await checks(directory);
+  assert.equal(result['license-credentials'], 'LICENSE_CREDENTIALS_INVALID'); assert.equal(result['license-lease'], 'LEASE_UNVERIFIED');
+  assert.equal(result['license-trust'], 'TRUST_INVALID');
+  // With another installation's valid credentials configured, the same lease is checked against them and no longer verifies.
+  const other = await enrolled(t), otherCredentials = join(other.directory, workerSetupFiles.credentials);
+  await licensedConfig(directory, { credentialsPath: otherCredentials, trustPath, leasePath });
+  result = await checks(directory);
+  assert.equal(result['license-credentials'], 'ok'); assert.equal(result['license-trust'], 'ok'); assert.equal(result['license-lease'], 'LEASE_INVALID');
+});
+
+test('persisted trust with an off-curve key and interrupted trust writes are reported', async t => {
+  const { directory } = await enrolled(t);
+  const [first, second] = [await licenseKey('license-a'), await licenseKey('license-b')];
+  const trustPath = join(directory, workerSetupFiles.trust);
+  await writeFile(trustPath, JSON.stringify(document({ publicJwk: { ...first.publicJwk, y: second.publicJwk.y } })), { mode: 0o600 });
+  assert.equal((await checks(directory))['license-trust'], 'TRUST_INVALID');
+  await rm(trustPath);
+  await installWorkerLicenseTrust({ directory, trust: document(first), expected: expected(first) });
+  const leftover = `${trustPath}.0f8b2c1e-6d4a-4c3b-9a2e-1b2c3d4e5f60.tmp`;
+  await (await import('node:fs/promises')).link(trustPath, leftover);
+  assert.equal((await checks(directory))['temporary-second-links'], 'TEMPORARY_SECOND_LINK');
+  await rm(leftover); await writeFile(leftover, await readFile(trustPath), { mode: 0o600 }); await rm(trustPath);
+  const result = await checks(directory);
+  assert.equal(result['temporary-only-copies'], 'TEMPORARY_ONLY_COPY'); assert.equal(existsSync(leftover), true);
+});

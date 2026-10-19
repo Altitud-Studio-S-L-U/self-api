@@ -296,7 +296,13 @@ function licenseKeySha256(key: { crv?: unknown; kty?: unknown; x?: unknown; y?: 
   return createHash('sha256').update(JSON.stringify({ crv: key.crv, kty: key.kty, x: key.x, y: key.y })).digest('hex');
 }
 function licenseTrust(value: unknown): WorkerLicenseTrust {
-  try { return normalizeWorkerLicenseTrust(value); } catch { invalid('The license trust document is malformed.'); }
+  let trust: WorkerLicenseTrust;
+  try { trust = normalizeWorkerLicenseTrust(value); } catch { invalid('The license trust document is malformed.'); }
+  // Importing proves each public key is a point on the curve before it is trusted.
+  for (const key of trust.keys) {
+    try { createPublicKey({ key: { kty: key.kty, crv: key.crv, x: key.x, y: key.y } as never, format: 'jwk' }); } catch { invalid('The license trust document is malformed.'); }
+  }
+  return trust;
 }
 /** The origin a trust document must name: the enrolled credentials once setup is complete, the pinned pending origin before. */
 async function pinnedOrigin(directory: string): Promise<string> {
@@ -316,11 +322,7 @@ export async function installWorkerLicenseTrust(options: { readonly directory: s
   return withSetupLock(directory, async () => {
     const trust = licenseTrust(options.trust);
     if (trust.issuer !== await pinnedOrigin(directory)) invalid('The trust issuer differs from the Cloud origin pinned for this worker.');
-    const keys = trust.keys.map(key => {
-      // Importing proves each public key is a point on the curve before it is trusted.
-      try { createPublicKey({ key: { kty: key.kty, crv: key.crv, x: key.x, y: key.y } as never, format: 'jwk' }); } catch { invalid('The license trust document is malformed.'); }
-      return Object.freeze({ kid: key.kid as string, publicKeySha256: licenseKeySha256(key) });
-    });
+    const keys = trust.keys.map(key => Object.freeze({ kid: key.kid as string, publicKeySha256: licenseKeySha256(key) }));
     const kids = keys.map(key => key.kid);
     if (kids.length !== Object.keys(expected).length || kids.some(kid => !Object.hasOwn(expected, kid))) invalid('The expected fingerprints must name exactly the keys of the trust document.');
     if (keys.some(key => expected[key.kid] !== key.publicKeySha256)) invalid('A license key does not match its expected fingerprint; nothing was installed.');
@@ -348,7 +350,7 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
   if (!(await missing(join(directory, workerSetupFiles.lock)))) add('lock', 'fail', 'SETUP_LOCKED');
   // A crash while writing can leave a named temporary file. After link(2) it is a second link of its destination and can be
   // removed by hand once no command runs; before link(2) it may be the only copy and must be kept. Unknown files are never touched.
-  const temporary = /^((?:identity\.pending|credentials|worker)\.json)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
+  const temporary = /^((?:identity\.pending|credentials|worker|license-trust)\.json)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
   let secondLinks = false, onlyCopies = false;
   for (const name of await readdir(directory)) {
     const match = temporary.exec(name);
@@ -377,26 +379,45 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
     config = normalizeWorkerServiceConfig(parseLocalJson(bytes), target());
     configSha256 = createHash('sha256').update(bytes).digest('hex');
   });
+  // The license is checked against the credentials the service will actually load, not against this directory's by default.
+  let licenseCredentials: CloudCredentials | undefined = enrolled;
+  const licenseCredentialsPath = config?.license?.credentialsPath;
+  if (licenseCredentialsPath && licenseCredentialsPath !== credentialsPath) {
+    licenseCredentials = undefined;
+    await attempt('license-credentials', 'LICENSE_CREDENTIALS_INVALID', async () => {
+      checkServicePath(licenseCredentialsPath, 'secret');
+      const value = credentials(await loadLocalJson(licenseCredentialsPath, 16_384));
+      await publicIdentity(value.installationId, value.privateJwk);
+      licenseCredentials = value;
+    });
+  }
   const trustPath = config?.license?.trustPath ?? join(directory, workerSetupFiles.trust);
   let trust: WorkerLicenseTrust | undefined;
   if (config?.license || !(await missing(trustPath))) {
     await attempt('license-trust', 'TRUST_INVALID', async () => {
       checkServicePath(trustPath, 'secret');
       const value = licenseTrust(await loadLocalJson(trustPath, 16_384));
-      if (enrolled && value.issuer !== enrolled.baseUrl) throw new Error('issuer');
+      const owner = config?.license ? licenseCredentials : enrolled;
+      if (!owner || value.issuer !== owner.baseUrl) throw new Error('issuer');
       trust = value;
     });
   }
   // A signature and expiry checked offline say nothing about revocation or about the service's persisted license state.
   const leasePath = config?.license?.leasePath;
-  if (leasePath && trust && enrolled && !(await missing(leasePath))) {
-    let code = 'LEASE_INVALID', status: WorkerDoctorCheck['status'] = 'fail';
-    try {
-      checkServicePath(leasePath, 'secret');
-      const claims = await verifyWorkerLicense(await loadLocalJson(leasePath, 16_384) as string, trust, enrolled, Date.now(), true);
-      [status, code] = claims.decision !== 'allowed' ? ['warn', 'LEASE_SUSPENDED'] : claims.exp * 1000 <= Date.now() ? ['warn', 'LEASE_EXPIRED'] : ['ok', 'LEASE_SIGNATURE_VALID'];
-    } catch { [status, code] = ['fail', 'LEASE_INVALID']; }
-    add('license-lease', status, code);
+  if (leasePath) {
+    // The service refuses to start when a configured lease file is absent, so its absence is a failure, not a skip.
+    if (await missing(leasePath)) add('license-lease', 'fail', 'LEASE_MISSING');
+    else if (!trust || !licenseCredentials) add('license-lease', 'fail', 'LEASE_UNVERIFIED');
+    else {
+      const [verifiedTrust, verifiedCredentials] = [trust, licenseCredentials];
+      let code = 'LEASE_INVALID', status: WorkerDoctorCheck['status'] = 'fail';
+      try {
+        checkServicePath(leasePath, 'secret');
+        const claims = await verifyWorkerLicense(await loadLocalJson(leasePath, 16_384) as string, verifiedTrust, verifiedCredentials, Date.now(), true);
+        [status, code] = claims.decision !== 'allowed' ? ['warn', 'LEASE_SUSPENDED'] : claims.exp * 1000 <= Date.now() ? ['warn', 'LEASE_EXPIRED'] : ['ok', 'LEASE_SIGNATURE_VALID'];
+      } catch { [status, code] = ['fail', 'LEASE_INVALID']; }
+      add('license-lease', status, code);
+    }
   }
   if (config) {
     const current = config;
