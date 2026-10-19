@@ -7,7 +7,7 @@ import { generateCloudWorkerIdentity, type CloudCredentials } from './cloud-conn
 import { PlumberError } from './errors.js';
 import { loadLocalJson } from './local-file.js';
 import { normalizeWorkerServiceConfig, servicePath, type WorkerServiceConfig, type WorkerServiceTarget } from './worker-service-config.js';
-import { checkServicePath } from './worker-service-state.js';
+import { checkServicePath, serviceFailureDetails } from './worker-service-state.js';
 
 /** One private directory holds the installation key, then the enrolled credentials and the service configuration. */
 export const workerSetupFiles = Object.freeze({ pending: 'identity.pending.json', credentials: 'credentials.json', config: 'worker.json', lock: 'setup.lock', state: 'state' });
@@ -112,7 +112,28 @@ async function privateDirectory(path: string): Promise<void> {
   }
   if (process.platform !== 'win32') await chmod(path, 0o700);
 }
-function failureMessage(error: unknown): string { return error instanceof PlumberError ? `${error.message} ` : ''; }
+const setupOperations = ['open', 'read', 'write', 'stat', 'lstat', 'unlink', 'close', 'fsync', 'link', 'mkdir', 'chmod'];
+/** Reports a failure by its own message or by a sanitized system code and operation, never by arbitrary error text or paths. */
+function failureMessage(error: unknown): string {
+  if (error instanceof PlumberError) return `${error.message} `;
+  const { systemCode } = serviceFailureDetails(error);
+  const syscall = error instanceof Error ? Object.getOwnPropertyDescriptor(error, 'syscall')?.value as unknown : undefined;
+  const operation = typeof syscall === 'string' && setupOperations.includes(syscall) ? syscall : undefined;
+  const detail = [systemCode, operation].filter(Boolean).join(', ');
+  return `The setup step failed${detail ? ` (${detail})` : ''}. `;
+}
+/** The original causes stay attached for programmatic inspection; only the sanitized message is ever printed. */
+function invalidAfter(message: string, failure: unknown, failed: boolean, cleanup: unknown): never {
+  const error = new PlumberError('INVALID_INPUT', message);
+  Object.defineProperty(error, 'cause', { value: failed ? new AggregateError([failure, cleanup]) : cleanup, enumerable: false });
+  throw error;
+}
+async function sameFile(left: string, right: string): Promise<boolean> {
+  try {
+    const [a, b] = await Promise.all([lstat(left, { bigint: true }), lstat(right, { bigint: true })]);
+    return a.isFile() && b.isFile() && a.dev === b.dev && a.ino === b.ino;
+  } catch { return false; }
+}
 /**
  * link(2) fails with EEXIST instead of replacing, so an existing file is never overwritten, even by a racing writer.
  * A temporary copy that cannot be removed is reported, never ignored: it would leave the key with a second link.
@@ -126,7 +147,12 @@ async function writeExclusive(path: string, value: unknown): Promise<void> {
     await link(temporary, path);
   } catch (error) { failure = error; failed = true; }
   try { await unlink(temporary); }
-  catch { invalid(`${failed ? failureMessage(failure) : ''}The temporary file ${temporary} could not be removed; delete it before retrying. The pending key was kept.`); }
+  catch (cleanup) {
+    // After link(2) the temporary file is a second link of the destination; before it, it may be the only copy.
+    invalidAfter(`${failed ? failureMessage(failure) : ''}${await sameFile(temporary, path)
+      ? `The temporary second link ${temporary} could not be removed; remove it once no setup command runs.`
+      : `The temporary file ${temporary} was kept because it may hold the only copy; do not delete it.`} No setup file was removed.`, failure, failed, cleanup);
+  }
   if (failed) {
     if ((failure as NodeJS.ErrnoException).code === 'EEXIST') invalid('A setup file already exists; nothing was overwritten.');
     throw failure;
@@ -150,13 +176,13 @@ export async function withSetupLock<T>(directory: string, action: () => Promise<
   let result: T | undefined, failure: unknown, failed = false;
   try { result = await action(); } catch (error) { failure = error; failed = true; }
   // Only the lock this command created is removed: the same file holding the same token.
-  let released = false;
+  let released = false, cleanup: unknown = new Error('setup.lock was replaced');
   try {
     const info = await lstat(path);
     const content = JSON.parse(await readFile(path, 'utf8')) as { token?: unknown };
     if (info.isFile() && info.dev === owned.dev && info.ino === owned.ino && content.token === token) { await unlink(path); released = true; }
-  } catch { released = false; }
-  if (!released) invalid(`${failed ? failureMessage(failure) : 'The command finished, but '}setup.lock could not be released safely. Confirm no setup command is running, then remove it.`);
+  } catch (error) { cleanup = error; released = false; }
+  if (!released) invalidAfter(`${failed ? failureMessage(failure) : 'The command finished, but '}setup.lock could not be released safely. Confirm no setup command is running, then remove it.`, failure, failed, cleanup);
   if (failed) throw failure;
   return result as T;
 }
@@ -271,10 +297,17 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
   let directory = '';
   if (!(await attempt('directory', 'DIRECTORY_UNSAFE', () => { directory = setupDirectory(options.directory); }))) return report(checks);
   if (!(await missing(join(directory, workerSetupFiles.lock)))) add('lock', 'fail', 'SETUP_LOCKED');
-  // A crash between link(2) and unlink(2) can leave a temporary second link to a setup file. Only this naming is
-  // reported; once no command runs, removing it and setup.lock by hand is the recovery. Unknown files are never touched.
-  const temporary = /^(?:identity\.pending|credentials|worker)\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
-  if ((await readdir(directory)).some(name => temporary.test(name))) add('temporary-files', 'fail', 'TEMPORARY_FILES_PRESENT');
+  // A crash while writing can leave a named temporary file. After link(2) it is a second link of its destination and can be
+  // removed by hand once no command runs; before link(2) it may be the only copy and must be kept. Unknown files are never touched.
+  const temporary = /^((?:identity\.pending|credentials|worker)\.json)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
+  let secondLinks = false, onlyCopies = false;
+  for (const name of await readdir(directory)) {
+    const match = temporary.exec(name);
+    if (!match) continue;
+    if (await sameFile(join(directory, name), join(directory, match[1]!))) secondLinks = true; else onlyCopies = true;
+  }
+  if (secondLinks) add('temporary-second-links', 'fail', 'TEMPORARY_SECOND_LINK');
+  if (onlyCopies) add('temporary-only-copies', 'fail', 'TEMPORARY_ONLY_COPY');
   const credentialsPath = join(directory, workerSetupFiles.credentials);
   const [hasCredentials, hasPending] = [!(await missing(credentialsPath)), !(await missing(join(directory, workerSetupFiles.pending)))];
   if (hasPending) { add('enrollment', 'fail', hasCredentials ? 'SETUP_INTERRUPTED' : 'SETUP_INCOMPLETE'); if (!hasCredentials) return report(checks); }

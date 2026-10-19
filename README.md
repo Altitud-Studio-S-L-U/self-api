@@ -15,7 +15,10 @@ Linux worker bootstrap is offline and file-based. Its commands:
   - Files are never overwritten. If a run stops between the two files, re-running it with the same enrollment completes it. The pending key is removed only after both files are verified on disk.
 - `keepseam doctor --dir <private-directory>` reports permissions, enrollment, configuration and whether `GH_TOKEN` is present for the existing publication commands. It never prints secret values. `--online` checks network reach to the Cloud liveness endpoint, not authentication.
 
-Recovery after a crash is manual by design. A crash during a file write can leave `setup.lock` and a `<file>.<uuid>.tmp` second link next to a setup file; `doctor` reports them as `SETUP_LOCKED` and `TEMPORARY_FILES_PRESENT`. Once you have confirmed no setup command is running, remove exactly those files and re-run the command. The key is kept, and unknown files are never deleted.
+Recovery after a crash is manual by design: nothing resumes automatically, and unknown files are never deleted. A crash while a file is written can leave `setup.lock` and a named `<file>.<uuid>.tmp`. `doctor` tells the cases apart:
+
+- `TEMPORARY_SECOND_LINK`: the temporary file is the same file (same inode) as an existing destination. Once no setup command runs, remove that temporary file and `setup.lock`.
+- `TEMPORARY_ONLY_COPY`: there is no matching destination, because the crash came before the file was linked. The temporary file may be the only copy of the key or credentials, so keep it. Recovering it is manual: inspect it, then rename it to its destination. Otherwise start again in a new directory.
 
 Release operators use `pnpm release:sign --config /absolute/operator/release.json` after building and reviewing the platform archives. Its `delivery/` directory contains the bounded Cloud import request, flat artifacts, exact PDF, public trust root and hash inventory. Import creates a draft; separate approval publishes it. The PDF explains native certificates, notarization, protected signing runners, trust provisioning and installation. No production release or trust identity is bundled.
 

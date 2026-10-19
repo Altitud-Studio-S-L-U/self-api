@@ -226,6 +226,14 @@ test('the setup lock is released only when it is still the file and token this c
     await completeWorkerSetup({ directory: join(directory, 'absent'), enrollment: {} });
   }), error => /could not be released safely/u.test(error.message) && error.message.length > 'setup.lock could not be released safely.'.length);
   assert.equal(existsSync(lock), true);
+  await rm(lock);
+  // A file-system failure keeps its cause attached, while the message carries only its sanitized code and operation.
+  const absent = join(directory, 'private-name-that-must-not-leak');
+  await assert.rejects(withSetupLock(directory, async () => {
+    await rm(lock); await writeFile(lock, '{"token":"someone-else"}', { mode: 0o600 });
+    await readFile(absent);
+  }), error => error.message.startsWith('The setup step failed (ENOENT, open).') && !error.message.includes('private-name-that-must-not-leak')
+    && error.cause instanceof AggregateError && error.cause.errors[0].code === 'ENOENT' && error.cause.errors.length === 2);
 });
 
 test('doctor names the leftovers of a crash between link and unlink and touches nothing else', async t => {
@@ -235,12 +243,29 @@ test('doctor names the leftovers of a crash between link and unlink and touches 
   const leftover = join(directory, `${workerSetupFiles.credentials}.0f8b2c1e-6d4a-4c3b-9a2e-1b2c3d4e5f60.tmp`), unknown = join(directory, 'notes.txt');
   await link(join(directory, workerSetupFiles.credentials), leftover); await writeFile(unknown, 'operator notes');
   const report = await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} });
-  assert.equal(report.checks.find(check => check.id === 'temporary-files').code, 'TEMPORARY_FILES_PRESENT');
+  assert.equal(report.checks.find(check => check.id === 'temporary-second-links').code, 'TEMPORARY_SECOND_LINK');
+  assert.equal(report.checks.some(check => check.id === 'temporary-only-copies'), false);
   // The second link also makes the credentials themselves unsafe until the leftover is removed by hand.
   assert.equal(report.checks.find(check => check.id === 'credentials').code, 'CREDENTIALS_INVALID');
   assert.equal(existsSync(leftover), true); assert.equal(existsSync(unknown), true);
   await rm(leftover);
   const recovered = await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} });
-  assert.equal(recovered.checks.some(check => check.id === 'temporary-files'), false);
+  assert.equal(recovered.checks.some(check => check.id.startsWith('temporary-')), false);
   assert.equal(recovered.checks.find(check => check.id === 'credentials').status, 'ok');
+});
+
+test('a temporary file left before linking is reported as a possible only copy and is kept', async t => {
+  const directory = join(await workspace(t), 'worker');
+  await initWorkerSetup({ directory });
+  // Simulate a crash after the temporary key was written but before link(2): the destination does not exist yet.
+  const pending = join(directory, workerSetupFiles.pending), orphan = `${pending}.0f8b2c1e-6d4a-4c3b-9a2e-1b2c3d4e5f60.tmp`;
+  await writeFile(orphan, await readFile(pending), { mode: 0o600 }); await rm(pending);
+  const report = await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} });
+  assert.equal(report.checks.find(check => check.id === 'temporary-only-copies').code, 'TEMPORARY_ONLY_COPY');
+  assert.equal(report.checks.some(check => check.id === 'temporary-second-links'), false);
+  assert.equal(existsSync(orphan), true);
+  // A same-named file that is a separate copy of an existing destination is also kept, not treated as a removable link.
+  await writeFile(pending, await readFile(orphan), { mode: 0o600 });
+  const copies = await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} });
+  assert.equal(copies.checks.find(check => check.id === 'temporary-only-copies').code, 'TEMPORARY_ONLY_COPY');
 });
