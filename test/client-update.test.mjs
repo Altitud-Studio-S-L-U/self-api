@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
 import { createServer, request as httpRequest } from 'node:http';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile, readdir } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile, readdir } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { after, before, test } from 'node:test';
-import { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from '../dist/client-update.js';
+import { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, checkWorkerUpdate, stageWorkerUpdate, readWorkerUpdateStatus, ClientUpdateError } from '../dist/client-update.js';
 import { ReleaseFetcher, releaseBaseUrl } from '../dist/client-update-fetcher.js';
 import { runClientUpdateCli } from '../dist/client-update-cli.js';
 import { buildSignedRelease } from '../tooling/sign-release.mjs';
@@ -686,4 +686,359 @@ test('Cloud preserves typed transport errors when TUF wraps snapshot or targets 
     assert.equal(connection.calls.filter(call => call.url.endsWith(suffix)).length, 1);
     assert.equal((await readClientUpdateStatus({ statePath: f.item.statePath })).reason, expected);
   }
+});
+
+// Portable worker selector. Every fixture is a consistent-snapshot repository served only through the simulated Cloud
+// feed with verified DPoP: the worker refuses public repositories, as its archives come only from the private API.
+const workerOptions = f => ({ statePath: f.item.statePath, repository: f.item.repository });
+const archiveCalls = connection => connection.calls.filter(call => call.url.endsWith('.tar.gz')).length;
+function workerFeed({ version = '0.2.0', sequence = 1, metadataVersion = sequence, worker = Buffer.from(`Inert portable worker fixture ${version}`),
+  sdk = Buffer.from(`Inert reviewed SDK ${version}`), edit = value => value, timestampExpires = expires } = {}) {
+  const sdkFile = `keepseam-client-${version}.tgz`, sdkTarget = `packages/keepseam-client/${version}/${sdkFile}`;
+  const workerFile = `keepseam-${version}-linux-x64.tar.gz`, workerTarget = `workers/${version}/${workerFile}`;
+  const guide = `keepseam-client-${version}-technical-guide.pdf`, guideTarget = `documentation/${version}/${guide}`, documentation = Buffer.from('%PDF-1.7 Inert documentation');
+  const entry = (os, arch, fileName, target, bytes) => ({ os, arch, fileName, target, sha256: sha(bytes), sizeBytes: bytes.length,
+    nativeSignature: { kind: 'not-required', verified: false, publisher: null } });
+  const manifest = edit({ schemaVersion: 1, version, sequence, sourceRevision: 'a'.repeat(40), notes: { es: 'Fixture sintética', en: 'Synthetic fixture' },
+    requirements: { es: 'Node 24.21', en: 'Node 24.21' }, publicationEligible: true,
+    artifacts: [entry('any', 'any', sdkFile, sdkTarget, sdk), entry('linux', 'x64', workerFile, workerTarget, worker)],
+    documentation: { fileName: guide, target: guideTarget, sha256: sha(documentation), sizeBytes: documentation.length } });
+  const channel = { schemaVersion: 1, channel: 'stable', version, sequence, artifact: { target: sdkTarget, sha256: sha(sdk), byteLength: sdk.length }, minimumNodeVersion: '24.11.1' };
+  const objects = new Map([['channels/stable.json', Buffer.from(JSON.stringify(channel))], ['release-manifest.json', Buffer.from(JSON.stringify(manifest))],
+    [sdkTarget, sdk], [workerTarget, worker], [guideTarget, documentation]]);
+  const targets = envelope({ _type: 'targets', spec_version: '1.0.31', version: metadataVersion, expires,
+    targets: Object.fromEntries([...objects].map(([path, bytes]) => [path, descriptor(bytes)])) });
+  const snapshot = envelope({ _type: 'snapshot', spec_version: '1.0.31', version: metadataVersion, expires, meta: { 'targets.json': descriptor(targets, metadataVersion) } });
+  const timestamp = envelope({ _type: 'timestamp', spec_version: '1.0.31', version: metadataVersion, expires: timestampExpires,
+    meta: { 'snapshot.json': descriptor(snapshot, metadataVersion) } });
+  const files = new Map([[`${cloudMetadata}timestamp.json`, timestamp], [`${cloudMetadata}${metadataVersion}.snapshot.json`, snapshot],
+    [`${cloudMetadata}${metadataVersion}.targets.json`, targets]]);
+  for (const [path, bytes] of objects) {
+    const split = path.lastIndexOf('/');
+    files.set(`${cloudTargets}${path.slice(0, split + 1)}${sha(bytes)}.${path.slice(split + 1)}`, bytes);
+  }
+  return { files, worker, workerTarget, manifest };
+}
+const archives = async statePath => (await readdir(statePath)).filter(name => name.endsWith('.tar.gz'));
+
+test('worker staging takes the Linux x64 archive of the signed release from the authenticated feed, even at the SDK version', async t => {
+  // The Cloud fixture's SDK runs 0.1.0; the worker has no installation receipt, so the same version is still a candidate.
+  const f = await cloudFixture(t), feed = workerFeed({ version: '0.1.0' }), connection = await cloudTransport(f, feed.files);
+  assert.equal(await readWorkerUpdateStatus({ statePath: f.item.statePath }), null);
+  const checked = await checkWorkerUpdate(workerOptions(f), cloudDependencies(connection));
+  assert.deepEqual([checked.artifact, checked.state, checked.artifactPath, checked.installedVersion, checked.installation],
+    ['worker-linux-x64', 'available', null, null, 'not-authorized']);
+  assert.deepEqual(checked.release, { schemaVersion: 1, channel: 'stable', platform: 'linux-x64', version: '0.1.0', sequence: 1,
+    artifact: { target: feed.workerTarget, sha256: sha(feed.worker), byteLength: feed.worker.length } });
+  assert.equal(archiveCalls(connection), 0);
+  assert.ok(connection.calls.some(call => /\/updates\/targets\/[a-f0-9]{64}\.release-manifest\.json$/u.test(call.url)));
+  const staged = await stageWorkerUpdate(workerOptions(f), cloudDependencies(connection));
+  assert.deepEqual([staged.state, staged.installedVersion, staged.installation], ['downloaded-awaiting-approval', null, 'not-authorized']);
+  assert.equal(basename(staged.artifactPath), `${sha(feed.worker)}.tar.gz`); assert.deepEqual(await readFile(staged.artifactPath), feed.worker);
+  // Status is offline and revalidates the archive; a second check reuses it and still claims no installation.
+  const before = connection.calls.length;
+  assert.deepEqual(await readWorkerUpdateStatus({ statePath: f.item.statePath }), staged); assert.equal(connection.calls.length, before);
+  const again = await checkWorkerUpdate(workerOptions(f), cloudDependencies(connection));
+  assert.deepEqual([again.state, again.installedVersion, again.artifactPath], ['downloaded-awaiting-approval', null, staged.artifactPath]);
+  assert.equal(archiveCalls(connection), 1);
+  assert.deepEqual((await readdir(f.item.statePath)).sort(), [basename(staged.artifactPath), 'worker-updates.sqlite3'].sort());
+  const stateBytes = await readFile(join(f.item.statePath, 'worker-updates.sqlite3'));
+  assert.equal(stateBytes.includes(f.credentials.clientSecret), false); assert.equal(stateBytes.includes(f.credentials.privateJwk.d), false);
+});
+
+test('a public or missing repository is refused for the worker before credentials, state or network', async t => {
+  const item = await fixture(t), connection = transport({ files: new Map() });
+  for (const repository of [item.repository, { ...item.repository, kind: 'public' }, { kind: 'cloud', rootPath: item.repository.rootPath, rootSha256: item.repository.rootSha256 }]) {
+    await assert.rejects(stageWorkerUpdate({ statePath: item.statePath, repository }, dependencies(connection)), reason('verification-failed'));
+  }
+  await assert.rejects(checkWorkerUpdate({ statePath: item.statePath }, dependencies(connection)), reason('verification-failed'));
+  await assert.rejects(checkWorkerUpdate({ ...options(item) }, dependencies(connection)), reason('verification-failed'));
+  assert.equal(connection.calls.length, 0); assert.deepEqual(await readdir(item.statePath), []);
+});
+
+test('the SDK keeps its store and policy without a selector, and neither updater opens the other one\'s state', async t => {
+  const item = await fixture(t), repo = repository();
+  const staged = await stageClientUpdate(options(item), dependencies(transport(repo)));
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(join(item.statePath, 'client-updates.sqlite3'), { readOnly: true });
+  try {
+    assert.equal(db.prepare('PRAGMA application_id').get().application_id, 0x4b535550);
+    assert.equal(db.prepare('SELECT policy FROM update_state WHERE id=1').get().policy,
+      sha(JSON.stringify({ metadataUrl, targetsUrl, rootSha: item.repository.rootSha256, channel: 'stable' })));
+  } finally { db.close(); }
+  const f = await cloudFixture(t), feed = workerFeed(), connection = await cloudTransport(f, feed.files);
+  // The worker refuses the SDK's directory and leaves it untouched.
+  const sdkNames = (await readdir(item.statePath)).sort();
+  await assert.rejects(checkWorkerUpdate({ statePath: item.statePath, repository: f.item.repository }, cloudDependencies(connection)), reason('state-unavailable'));
+  await assert.rejects(readWorkerUpdateStatus({ statePath: item.statePath }), reason('state-unavailable'));
+  assert.deepEqual((await readdir(item.statePath)).sort(), sdkNames); assert.equal(connection.calls.length, 0);
+  assert.deepEqual(await readClientUpdateStatus({ statePath: item.statePath }), staged);
+  // The SDK refuses the worker's directory, its sidecars and its archives alone.
+  await stageWorkerUpdate(workerOptions(f), cloudDependencies(connection));
+  const sdkConnection = transport(repo);
+  await assert.rejects(checkClientUpdate({ ...options(item), statePath: f.item.statePath }, dependencies(sdkConnection)), reason('state-unavailable'));
+  await assert.rejects(readClientUpdateStatus({ statePath: f.item.statePath }), reason('state-unavailable'));
+  assert.equal(sdkConnection.calls.length, 0);
+  for (const [name, refused] of [['worker-updates.sqlite3-journal', 'sdk'], [`${'a'.repeat(64)}.tar.gz`, 'sdk'], ['client-updates.sqlite3-wal', 'worker'], [`${'b'.repeat(64)}.tgz`, 'worker']]) {
+    const statePath = join(item.directory, `mixed-${refused}-${name.length}`); await mkdir(statePath, { mode: 0o700 });
+    await writeFile(join(statePath, name), 'foreign state', { mode: 0o600 });
+    const run = refused === 'sdk' ? checkClientUpdate({ ...options(item), statePath }, dependencies(transport(repo)))
+      : checkWorkerUpdate({ statePath, repository: f.item.repository }, cloudDependencies(connection));
+    await assert.rejects(run, reason('state-unavailable'), name); assert.deepEqual(await readdir(statePath), [name], name);
+  }
+});
+
+test('the release manifest must be closed, eligible and name exactly one canonical Linux x64 worker equal to its TUF target', async t => {
+  const linux = manifest => manifest.artifacts.find(artifact => artifact.os === 'linux');
+  const replace = (manifest, change) => ({ ...manifest, artifacts: manifest.artifacts.map(artifact => artifact.os === 'linux' ? change(artifact) : artifact) });
+  const cases = [
+    ['a second Linux x64 entry', m => ({ ...m, artifacts: [...m.artifacts, { ...linux(m), fileName: 'second.tar.gz', target: `workers/${m.version}/second.tar.gz` }] }), 'verification-failed'],
+    ['no worker in the release', m => ({ ...m, artifacts: m.artifacts.filter(artifact => artifact.os !== 'linux') }), 'feed-unavailable'],
+    ['another CPU only', m => replace(m, a => ({ ...a, arch: 'arm64', fileName: `keepseam-${m.version}-linux-arm64.tar.gz`, target: `workers/${m.version}/keepseam-${m.version}-linux-arm64.tar.gz` })), 'feed-unavailable'],
+    ['an extra manifest field', m => ({ ...m, install: 'private-fixture' }), 'verification-failed'],
+    ['an extra artifact field', m => replace(m, a => ({ ...a, run: 'private-fixture' })), 'verification-failed'],
+    ['another version', m => ({ ...m, version: '0.9.0' }), 'verification-failed'],
+    ['another sequence', m => ({ ...m, sequence: 7 }), 'verification-failed'],
+    ['an escaping path', m => replace(m, a => ({ ...a, target: '../../private-fixture' })), 'verification-failed'],
+    ['a non-canonical name', m => replace(m, a => ({ ...a, fileName: 'worker.tar.gz', target: `workers/${m.version}/worker.tar.gz` })), 'verification-failed'],
+    ['a hash other than the TUF target', m => replace(m, a => ({ ...a, sha256: 'f'.repeat(64) })), 'verification-failed'],
+    ['a size other than the TUF target', m => replace(m, a => ({ ...a, sizeBytes: a.sizeBytes + 1 })), 'verification-failed'],
+    ['a release not eligible for publication', m => ({ ...m, publicationEligible: false }), 'verification-failed'],
+    ['a Linux native signature claim', m => replace(m, a => ({ ...a, nativeSignature: { kind: 'none', verified: false, publisher: null } })), 'verification-failed'],
+    ['a verified Linux signature flag', m => replace(m, a => ({ ...a, nativeSignature: { kind: 'not-required', verified: true, publisher: null } })), 'verification-failed'],
+    ['an SDK entry other than the channel', m => ({ ...m, artifacts: m.artifacts.map(a => a.os === 'any' ? { ...a, sha256: 'e'.repeat(64) } : a) }), 'verification-failed'],
+    ['an archive above 64 MiB', m => replace(m, a => ({ ...a, sizeBytes: 64 * 1024 * 1024 + 1 })), 'verification-failed'],
+  ];
+  for (const [name, edit, expected] of cases) {
+    const f = await cloudFixture(t), connection = await cloudTransport(f, workerFeed({ edit }).files);
+    await assert.rejects(stageWorkerUpdate(workerOptions(f), cloudDependencies(connection)), reason(expected), name);
+    assert.equal(archiveCalls(connection), 0, name); assert.deepEqual(await archives(f.item.statePath), [], name);
+    const status = await readWorkerUpdateStatus({ statePath: f.item.statePath });
+    assert.deepEqual([status.state, status.reason, status.release, status.installedVersion], ['blocked', expected, null, null], name);
+  }
+});
+
+test('only the worker selector accepts archives above the 32 MiB SDK limit, up to 64 MiB', async t => {
+  const f = await cloudFixture(t), worker = Buffer.alloc(33 * 1024 * 1024, 7), feed = workerFeed({ worker });
+  const staged = await stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, feed.files)));
+  assert.equal(staged.release.artifact.byteLength, worker.length); assert.equal((await readFile(staged.artifactPath)).equals(worker), true);
+  assert.throws(() => new ReleaseFetcher(cloudMetadata, cloudTargets, f.item.statePath, new AbortController().signal, {}, undefined, 48 * 1024 * 1024), /download limit/u);
+});
+
+test('the same release sequence with another worker archive is a rollback; a renewal of the same release is not', async t => {
+  const f = await cloudFixture(t);
+  await checkWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, workerFeed().files)));
+  // Newer TUF metadata, same version and sequence, same SDK in the channel, a different portable archive.
+  const swapped = await cloudTransport(f, workerFeed({ metadataVersion: 2, worker: Buffer.from('Another inert portable worker at the same release') }).files);
+  await assert.rejects(checkWorkerUpdate(workerOptions(f), cloudDependencies(swapped)), reason('version-rollback'));
+  assert.equal(archiveCalls(swapped), 0); assert.equal((await readWorkerUpdateStatus({ statePath: f.item.statePath })).release.sequence, 1);
+  // Re-signed freshness for identical artifacts keeps working.
+  const renewed = await stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, workerFeed({ metadataVersion: 3 }).files)));
+  assert.equal(renewed.state, 'downloaded-awaiting-approval'); assert.deepEqual(await readFile(renewed.artifactPath), workerFeed().worker);
+});
+
+test('a worker release observed after authentication stays the watermark when its download fails', async t => {
+  const f = await cloudFixture(t), first = workerFeed({ sequence: 1 }), second = workerFeed({ version: '0.3.0', sequence: 2 });
+  await stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, first.files)));
+  const broken = await cloudTransport(f, second.files, url => url.pathname.endsWith('.tar.gz') ? { statusCode: 200, body: Buffer.from('private-fixture altered') } : undefined);
+  await assert.rejects(stageWorkerUpdate(workerOptions(f), cloudDependencies(broken)), reason('verification-failed'));
+  const blocked = await readWorkerUpdateStatus({ statePath: f.item.statePath });
+  assert.deepEqual([blocked.state, blocked.release.sequence, blocked.artifactPath, blocked.installedVersion], ['blocked', 2, null, null]);
+  // The server signs newer TUF metadata (version 3) that announces sequence 1 again: TUF accepts it, the watermark does not.
+  const replay = await cloudTransport(f, workerFeed({ sequence: 1, metadataVersion: 3 }).files);
+  await assert.rejects(checkWorkerUpdate(workerOptions(f), cloudDependencies(replay)), reason('version-rollback'));
+  assert.ok(replay.calls.some(call => call.url.endsWith('/3.targets.json')), 'the replay passed TUF and reached the release check');
+  const recovered = await stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, workerFeed({ version: '0.3.0', sequence: 2, metadataVersion: 4 }).files)));
+  assert.deepEqual([recovered.state, recovered.release.sequence], ['downloaded-awaiting-approval', 2]);
+});
+
+test('a revocation between the manifest and the archive is refused by the feed and stages nothing', async t => {
+  const f = await cloudFixture(t), feed = workerFeed();
+  let revoked = false;
+  const connection = await cloudTransport(f, feed.files, url => {
+    if (url.pathname.endsWith('.release-manifest.json')) revoked = true;
+    else if (revoked && url.pathname.endsWith('.tar.gz')) return { statusCode: 401, body: Buffer.from('private-fixture'), headers: { 'content-type': 'text/html' } };
+    return undefined;
+  });
+  await assert.rejects(stageWorkerUpdate(workerOptions(f), cloudDependencies(connection)), reason('authorization-rejected'));
+  // Each object carries its own DPoP proof for the same token, so the archive request was authorized separately.
+  assert.equal(connection.calls.filter(call => call.method === 'POST').length, 1); assert.equal(archiveCalls(connection), 1);
+  assert.deepEqual(await archives(f.item.statePath), []);
+  const status = await readWorkerUpdateStatus({ statePath: f.item.statePath });
+  assert.deepEqual([status.state, status.reason, status.release.sequence, status.artifactPath], ['blocked', 'authorization-rejected', 1, null]);
+});
+
+test('a cancelled, tampered or full worker cache never stages or overwrites an archive', async t => {
+  const f = await cloudFixture(t), feed = workerFeed(), controller = new AbortController();
+  controller.abort();
+  await assert.rejects(stageWorkerUpdate({ ...workerOptions(f), signal: controller.signal }, cloudDependencies(await cloudTransport(f, feed.files))), reason('cancelled'));
+  assert.equal((await readWorkerUpdateStatus({ statePath: f.item.statePath })).reason, 'cancelled'); assert.deepEqual(await archives(f.item.statePath), []);
+  const staged = await stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, feed.files)));
+  await writeFile(staged.artifactPath, 'private-fixture altered');
+  await assert.rejects(readWorkerUpdateStatus({ statePath: f.item.statePath }), reason('verification-failed'));
+  await assert.rejects(stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, feed.files))), reason('verification-failed'));
+  assert.equal(await readFile(staged.artifactPath, 'utf8'), 'private-fixture altered');
+  const full = await cloudFixture(t);
+  for (let sequence = 1; sequence <= 3; sequence++) {
+    await stageWorkerUpdate(workerOptions(full), cloudDependencies(await cloudTransport(full, workerFeed({ version: `0.${sequence + 1}.0`, sequence }).files)));
+  }
+  await assert.rejects(stageWorkerUpdate(workerOptions(full), cloudDependencies(await cloudTransport(full, workerFeed({ version: '0.5.0', sequence: 4 }).files))), reason('cache-full'));
+  assert.equal((await archives(full.item.statePath)).length, 3);
+});
+
+test('expired worker freshness metadata is reported and stages nothing', async t => {
+  const f = await cloudFixture(t), connection = await cloudTransport(f, workerFeed({ timestampExpires: '2000-01-01T00:00:00Z' }).files);
+  await assert.rejects(stageWorkerUpdate(workerOptions(f), cloudDependencies(connection)), reason('metadata-expired'));
+  assert.equal(archiveCalls(connection), 0); assert.deepEqual(await archives(f.item.statePath), []);
+});
+
+// A child process stops for good right after the archive is renamed into the cache and before the SQLite COMMIT:
+// renameSync is patched in that process only, so the cut is deterministic and no other process is touched.
+const crashScenario = String.raw`
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
+const require = createRequire(import.meta.url), fs = require('node:fs'), rename = fs.renameSync;
+fs.renameSync = (from, to) => { rename(from, to); if (String(to).endsWith('.tar.gz')) process.exit(86); };
+syncBuiltinESMExports();
+const input = JSON.parse(readFileSync(process.argv[1], 'utf8'));
+const files = new Map(Object.entries(input.files).map(([url, bytes]) => [url, Buffer.from(bytes, 'base64')]));
+const { stageWorkerUpdate } = await import(input.module);
+const request = (url, options, callback) => {
+  const emitter = new EventEmitter();
+  emitter.end = () => queueMicrotask(() => {
+    const token = Buffer.from(JSON.stringify({ access_token: 'c'.repeat(64), token_type: 'DPoP', expires_in: 300, scope: 'worker:updates' }));
+    const body = options.method === 'POST' ? token : files.get(url.href);
+    const response = Readable.from([body ?? Buffer.alloc(0)]);
+    Object.assign(response, { statusCode: body ? 200 : 404, headers: options.method === 'POST' ? { 'content-type': 'application/json' } : {}, rawHeaders: [] });
+    callback(response);
+  });
+  return emitter;
+};
+await stageWorkerUpdate({ statePath: input.statePath, repository: input.repository }, { resolve: async () => [{ address: '8.8.8.8', family: 4 }], request });
+process.exit(0);`;
+
+test('a worker stage cut between the archive rename and its final COMMIT keeps the observed watermark and reuses the archive, never as installed', async t => {
+  const f = await cloudFixture(t), first = workerFeed({ sequence: 1 }), second = workerFeed({ version: '0.3.0', sequence: 2 });
+  const crash = async feed => {
+    const inputPath = join(f.item.directory, `crash-${randomBytes(4).toString('hex')}.json`);
+    await writeFile(inputPath, JSON.stringify({ module: new URL('../dist/client-update.js', import.meta.url).href, statePath: f.item.statePath,
+      repository: f.item.repository, files: Object.fromEntries([...feed.files].map(([url, bytes]) => [url, bytes.toString('base64')])) }), { mode: 0o600 });
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', crashScenario, inputPath], { encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' });
+    assert.equal(run.signal, null, run.stderr); assert.equal(run.status, 86, run.stderr);
+  };
+  // First stage ever: the observation was committed before the transfer, so the cut leaves the archive and an
+  // "available" status for that release, with no uncommitted transaction behind.
+  await crash(first);
+  assert.deepEqual(await archives(f.item.statePath), [`${sha(first.worker)}.tar.gz`]);
+  assert.equal((await readdir(f.item.statePath)).includes('worker-updates.sqlite3-journal'), false);
+  const cut = await readWorkerUpdateStatus({ statePath: f.item.statePath });
+  assert.deepEqual([cut.state, cut.release.sequence, cut.artifactPath, cut.installedVersion], ['available', 1, null, null]);
+  const resumed = await stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, first.files)));
+  assert.deepEqual([resumed.state, resumed.release.sequence, resumed.installedVersion, resumed.installation], ['downloaded-awaiting-approval', 1, null, 'not-authorized']);
+  // A cut while staging sequence 2 keeps sequence 2 as the watermark: newly signed TUF metadata (version 3) that
+  // announces sequence 1 again after the restart is a rollback, not a fresh start.
+  await crash(second);
+  assert.deepEqual(Object.values((({ state, release }) => ({ state, sequence: release.sequence }))(await readWorkerUpdateStatus({ statePath: f.item.statePath }))), ['available', 2]);
+  const replay = await cloudTransport(f, workerFeed({ sequence: 1, metadataVersion: 3 }).files);
+  await assert.rejects(checkWorkerUpdate(workerOptions(f), cloudDependencies(replay)), reason('version-rollback'));
+  assert.ok(replay.calls.some(call => call.url.endsWith('/3.targets.json')), 'the replay passed TUF and reached the release check');
+  // The next stage of sequence 2 reuses the verified archive without downloading it again.
+  const connection = await cloudTransport(f, workerFeed({ version: '0.3.0', sequence: 2, metadataVersion: 4 }).files);
+  const recovered = await stageWorkerUpdate(workerOptions(f), cloudDependencies(connection));
+  assert.deepEqual([recovered.state, recovered.release.sequence, recovered.installedVersion], ['downloaded-awaiting-approval', 2, null]);
+  assert.equal(archiveCalls(connection), 0); assert.deepEqual(await readFile(recovered.artifactPath), second.worker);
+  // Each crashed attempt keeps its scratch directory for inspection; nothing deletes it automatically.
+  assert.equal((await readdir(f.item.statePath)).filter(name => name.startsWith('check-')).length, 2);
+});
+
+// Another updater completes its own transaction exactly while this one has released the store between its two
+// transactions: the child's DatabaseSync.exec is patched so that, just before it takes the store again, the state of a
+// real newer check is written in. Only this fixture process is affected.
+const interleavingScenario = String.raw`
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
+const require = createRequire(import.meta.url), { DatabaseSync } = require('node:sqlite');
+const input = JSON.parse(readFileSync(process.argv[1], 'utf8'));
+const exec = DatabaseSync.prototype.exec;
+let interleaved = false;
+DatabaseSync.prototype.exec = function (sql) {
+  if (sql === 'BEGIN EXCLUSIVE' && !interleaved) {
+    interleaved = true;
+    const newer = new DatabaseSync(input.newerStore, { readOnly: true });
+    const row = newer.prepare('SELECT sequence,version,release_json,status_json FROM update_state WHERE id=1').get();
+    const metadata = newer.prepare('SELECT name,bytes FROM metadata').all(); newer.close();
+    const other = new DatabaseSync(input.store);
+    exec.call(other, 'BEGIN EXCLUSIVE');
+    other.prepare('UPDATE update_state SET sequence=?,version=?,release_json=?,status_json=? WHERE id=1').run(row.sequence, row.version, row.release_json, row.status_json);
+    exec.call(other, 'DELETE FROM metadata');
+    for (const entry of metadata) other.prepare('INSERT INTO metadata VALUES(?,?)').run(entry.name, entry.bytes);
+    exec.call(other, 'COMMIT'); other.close();
+  }
+  return exec.call(this, sql);
+};
+const files = new Map(Object.entries(input.files).map(([url, bytes]) => [url, Buffer.from(bytes, 'base64')]));
+const { stageWorkerUpdate } = await import(input.module);
+const request = (url, options, callback) => {
+  const emitter = new EventEmitter();
+  emitter.end = () => queueMicrotask(() => {
+    const token = Buffer.from(JSON.stringify({ access_token: 'c'.repeat(64), token_type: 'DPoP', expires_in: 300, scope: 'worker:updates' }));
+    const body = options.method === 'POST' ? token : files.get(url.href);
+    const response = Readable.from([body ?? Buffer.alloc(0)]);
+    Object.assign(response, { statusCode: body ? 200 : 404, headers: options.method === 'POST' ? { 'content-type': 'application/json' } : {}, rawHeaders: [] });
+    callback(response);
+  });
+  return emitter;
+};
+try {
+  await stageWorkerUpdate({ statePath: input.statePath, repository: input.repository }, { resolve: async () => [{ address: '8.8.8.8', family: 4 }], request });
+  console.log(JSON.stringify({ interleaved, rejected: false }));
+} catch (error) { console.log(JSON.stringify({ interleaved, rejected: true, reason: error.reason })); }`;
+
+test('a worker stage that finds a newer store after retaking it stops without overwriting that trust or watermark', async t => {
+  const f = await cloudFixture(t), second = workerFeed({ version: '0.3.0', sequence: 2 }), third = workerFeed({ version: '0.4.0', sequence: 3 });
+  await stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, workerFeed().files)));
+  // The newer state is produced by a real check of sequence 3 on a copy of this store, so its policy and trust are genuine.
+  const newerPath = join(f.item.directory, 'newer-state'); await cp(f.item.statePath, newerPath, { recursive: true });
+  assert.equal((await checkWorkerUpdate({ statePath: newerPath, repository: f.item.repository }, cloudDependencies(await cloudTransport(f, third.files)))).release.sequence, 3);
+  const inputPath = join(f.item.directory, 'interleaving.json'), store = join(f.item.statePath, 'worker-updates.sqlite3'), newerStore = join(newerPath, 'worker-updates.sqlite3');
+  await writeFile(inputPath, JSON.stringify({ module: new URL('../dist/client-update.js', import.meta.url).href, statePath: f.item.statePath, repository: f.item.repository,
+    store, newerStore, files: Object.fromEntries([...second.files].map(([url, bytes]) => [url, bytes.toString('base64')])) }), { mode: 0o600 });
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', interleavingScenario, inputPath], { encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' });
+  assert.equal(run.signal, null, run.stderr); assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { interleaved: true, rejected: true, reason: 'state-unavailable' });
+  // The store holds exactly the newer updater's row and trusted metadata; the stale attempt wrote nothing and staged nothing.
+  const { DatabaseSync } = await import('node:sqlite');
+  const contents = path => {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      return { row: db.prepare('SELECT policy,sequence,version,release_json,status_json FROM update_state WHERE id=1').get(),
+        metadata: db.prepare('SELECT name,bytes FROM metadata ORDER BY name').all().map(entry => [entry.name, sha(entry.bytes)]) };
+    } finally { db.close(); }
+  };
+  assert.deepEqual(contents(store), contents(newerStore));
+  assert.equal((await readWorkerUpdateStatus({ statePath: f.item.statePath })).release.sequence, 3);
+  assert.equal((await archives(f.item.statePath)).includes(`${sha(second.worker)}.tar.gz`), false);
+});
+
+test('the client-update command selects the worker only through its explicit artifact field', async t => {
+  const f = await cloudFixture(t), configPath = join(f.item.directory, 'worker-updates.json');
+  let stdout = '', stderr = '';
+  const output = { stdout: value => { stdout += value; }, stderr: value => { stderr += value; } };
+  const write = config => writeFile(configPath, JSON.stringify(config), { mode: 0o600, flag: 'w' });
+  await write({ statePath: f.item.statePath, repository: f.item.repository, artifact: 'worker-linux-x64' });
+  assert.equal(await runClientUpdateCli(['client-update', 'status', '--config', configPath], output), 0);
+  assert.deepEqual(JSON.parse(stdout), { status: null }); assert.equal(stderr, '');
+  const item = await fixture(t);
+  for (const config of [{ statePath: f.item.statePath, repository: f.item.repository, artifact: 'sdk' },
+    { statePath: f.item.statePath, repository: f.item.repository, artifact: 'worker-linux-arm64' },
+    { statePath: item.statePath, repository: item.repository, artifact: 'worker-linux-x64' }]) {
+    stdout = ''; stderr = ''; await write(config);
+    assert.equal(await runClientUpdateCli(['client-update', 'check', '--config', configPath], output), 2);
+    assert.equal(stdout, ''); assert.equal(JSON.parse(stderr).error.reason, 'verification-failed');
+  }
+  assert.deepEqual(await readdir(item.statePath), []);
 });
