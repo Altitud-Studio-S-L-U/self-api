@@ -156,6 +156,17 @@ test('the lease is verified against the credentials the configuration names, or 
   await licensedConfig(directory, { credentialsPath: otherCredentials, trustPath, leasePath });
   result = await checks(directory);
   assert.equal(result['license-credentials'], 'ok'); assert.equal(result['license-trust'], 'ok'); assert.equal(result['license-lease'], 'LEASE_INVALID');
+  // And a lease valid for that other installation verifies when the configuration names its credentials.
+  const theirs = JSON.parse(await readFile(otherCredentials, 'utf8'));
+  const forThem = await new SignJWT({ schemaVersion: 1, workerId: randomUUID(), organizationId: randomUUID(), installationId: theirs.installationId, projectId,
+    jkt: await calculateJwkThumbprint({ kty: 'EC', crv: 'P-256', x: theirs.privateJwk.x, y: theirs.privateJwk.y }), revision: 1, decision: 'allowed', entitlementExpiresAt: now + 7200 })
+    .setProtectedHeader({ alg: 'ES256', kid: 'license-a', typ: 'keepseam-worker-license+jwt' }).setIssuer(origin).setAudience('keepseam-worker-automation')
+    .setIssuedAt(now).setExpirationTime(now + 3600).sign(key.privateKey);
+  await rm(leasePath); await writeFile(leasePath, JSON.stringify(forThem), { mode: 0o600 });
+  result = await checks(directory);
+  assert.equal(result['license-lease'], 'LEASE_SIGNATURE_VALID');
+  const report = JSON.stringify(await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} }));
+  for (const secret of [forThem, theirs.privateJwk.d, own.privateJwk.d, clientSecret]) assert.ok(!report.includes(secret));
 });
 
 test('persisted trust with an off-curve key and interrupted trust writes are reported', async t => {
