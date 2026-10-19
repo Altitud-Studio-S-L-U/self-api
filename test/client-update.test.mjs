@@ -919,7 +919,7 @@ const request = (url, options, callback) => {
 await stageWorkerUpdate({ statePath: input.statePath, repository: input.repository }, { resolve: async () => [{ address: '8.8.8.8', family: 4 }], request });
 process.exit(0);`;
 
-test('a worker stage cut between the archive rename and the COMMIT recovers by revalidating the archive, never as installed', async t => {
+test('a worker stage cut between the archive rename and its final COMMIT keeps the observed watermark and reuses the archive, never as installed', async t => {
   const f = await cloudFixture(t), first = workerFeed({ sequence: 1 }), second = workerFeed({ version: '0.3.0', sequence: 2 });
   const crash = async feed => {
     const inputPath = join(f.item.directory, `crash-${randomBytes(4).toString('hex')}.json`);
@@ -928,17 +928,24 @@ test('a worker stage cut between the archive rename and the COMMIT recovers by r
     const run = spawnSync(process.execPath, ['--input-type=module', '-e', crashScenario, inputPath], { encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' });
     assert.equal(run.signal, null, run.stderr); assert.equal(run.status, 86, run.stderr);
   };
-  // First stage ever: the cut leaves the archive and a hot rollback journal for the uncommitted watermark row.
+  // First stage ever: the observation was committed before the transfer, so the cut leaves the archive and an
+  // "available" status for that release, with no uncommitted transaction behind.
   await crash(first);
   assert.deepEqual(await archives(f.item.statePath), [`${sha(first.worker)}.tar.gz`]);
-  assert.ok((await readdir(f.item.statePath)).includes('worker-updates.sqlite3-journal'));
+  assert.equal((await readdir(f.item.statePath)).includes('worker-updates.sqlite3-journal'), false);
+  const cut = await readWorkerUpdateStatus({ statePath: f.item.statePath });
+  assert.deepEqual([cut.state, cut.release.sequence, cut.artifactPath, cut.installedVersion], ['available', 1, null, null]);
   const resumed = await stageWorkerUpdate(workerOptions(f), cloudDependencies(await cloudTransport(f, first.files)));
   assert.deepEqual([resumed.state, resumed.release.sequence, resumed.installedVersion, resumed.installation], ['downloaded-awaiting-approval', 1, null, 'not-authorized']);
-  assert.equal((await readdir(f.item.statePath)).includes('worker-updates.sqlite3-journal'), false);
-  // A later cut keeps the committed watermark and status; the next stage reuses the verified archive without downloading.
+  // A cut while staging sequence 2 keeps sequence 2 as the watermark: newly signed TUF metadata (version 3) that
+  // announces sequence 1 again after the restart is a rollback, not a fresh start.
   await crash(second);
-  assert.equal((await readWorkerUpdateStatus({ statePath: f.item.statePath })).release.sequence, 1);
-  const connection = await cloudTransport(f, second.files);
+  assert.deepEqual(Object.values((({ state, release }) => ({ state, sequence: release.sequence }))(await readWorkerUpdateStatus({ statePath: f.item.statePath }))), ['available', 2]);
+  const replay = await cloudTransport(f, workerFeed({ sequence: 1, metadataVersion: 3 }).files);
+  await assert.rejects(checkWorkerUpdate(workerOptions(f), cloudDependencies(replay)), reason('version-rollback'));
+  assert.ok(replay.calls.some(call => call.url.endsWith('/3.targets.json')), 'the replay passed TUF and reached the release check');
+  // The next stage of sequence 2 reuses the verified archive without downloading it again.
+  const connection = await cloudTransport(f, workerFeed({ version: '0.3.0', sequence: 2, metadataVersion: 4 }).files);
   const recovered = await stageWorkerUpdate(workerOptions(f), cloudDependencies(connection));
   assert.deepEqual([recovered.state, recovered.release.sequence, recovered.installedVersion], ['downloaded-awaiting-approval', 2, null]);
   assert.equal(archiveCalls(connection), 0); assert.deepEqual(await readFile(recovered.artifactPath), second.worker);

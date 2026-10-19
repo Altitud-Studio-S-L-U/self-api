@@ -430,10 +430,20 @@ async function update(kind: Kind, options: ClientUpdateOptions | WorkerUpdateOpt
       || (sameSequence && row?.release_json !== JSON.stringify(selection))) throw new ClientUpdateError('version-rollback');
     const target = await updater.getTargetInfo(selection.artifact.target);
     if (!target || target.length !== selection.artifact.byteLength || target.hashes.sha256 !== selection.artifact.sha256) invalid();
-    // From here the worker selection is authenticated by TUF, closed, not a rollback and bound to its target descriptor:
-    // it becomes durable with this attempt's status even if the download then fails or is cancelled. The SDK keeps
-    // advancing only on success.
-    if (kind === 'worker') observed = selection as WorkerRelease;
+    // From here the worker selection is authenticated by TUF, closed, not a rollback and bound to its target descriptor.
+    // It is committed with the verified TUF metadata before any archive is read or transferred, so a process cut later
+    // in this attempt cannot forget it; the status says only that it is available. The SDK keeps advancing only on
+    // success.
+    if (kind === 'worker') {
+      observed = selection as WorkerRelease;
+      cached();
+      db.prepare('UPDATE update_state SET sequence=?,version=?,release_json=?,status_json=? WHERE id=1').run(observed.sequence, observed.version,
+        JSON.stringify(observed), JSON.stringify({ schemaVersion: 1, artifact: 'worker-linux-x64', state: 'available', reason: 'none',
+          checkedAt: new Date().toISOString(), release: observed, artifactPath: null, installedVersion: null, installation: 'not-authorized' }));
+      db.exec('COMMIT'); activeTransaction = false;
+      // busy_timeout is 0: if another updater takes the store between the two transactions, this attempt fails closed.
+      db.exec('BEGIN EXCLUSIVE'); activeTransaction = true;
+    }
     // The SDK must run on this Node.js; the portable worker carries its own runtime.
     if (kind === 'sdk' && compareVersion(process.versions.node, candidate.minimumNodeVersion) < 0) invalid();
     let artifactPath: string | null = null;
