@@ -7,7 +7,7 @@ import { completeWorkerSetup, diagnoseWorker, initWorkerSetup, readWorkerPublicI
 export interface WorkerSetupCliOptions {
   readonly stdout?: (text: string) => void;
   readonly stderr?: (text: string) => void;
-  /** The enrollment arrives on stdin only, so it never reaches argv, shell history or a file. */
+  /** The enrollment is read from stdin: no secret is accepted in argv and the command keeps no extra copy of it. Stdin may come from a protected file or a secret manager. */
   readonly stdin?: AsyncIterable<Uint8Array> & { readonly isTTY?: boolean };
   readonly platform?: NodeJS.Platform;
 }

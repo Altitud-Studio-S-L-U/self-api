@@ -9,8 +9,13 @@ Manual local SDK/CLI operations remain available without a Cloud license. Every 
 Linux worker bootstrap is offline and file-based. Its commands:
 
 - `keepseam setup init --dir <private-directory>` creates a 0700 directory and a new ES256 installation key. It prints only the public identity to paste in Keepseam Cloud, and pins the Cloud origin (`https://keepseam.com` unless `--cloud` is given) and the state directory.
-- `keepseam setup complete --dir <private-directory> < enrollment.json` reads the one-time enrollment JSON from a pipe, never a terminal. It accepts it only from the pinned origin and for that key. It writes `credentials.json` and an observation-only `worker.json`, both 0600; that configuration reads no credentials and shares nothing with Cloud. Files are never overwritten. Re-running with the same enrollment resumes an interrupted run, and the pending key is removed only after both files are verified on disk.
+- `keepseam setup complete --dir <private-directory> < enrollment.json` reads the one-time enrollment JSON from stdin, never from argv or a terminal. Stdin may come from a protected file or a secret manager, and the command keeps no extra copy of it.
+  - It accepts the enrollment only from the pinned origin and for that key.
+  - It writes `credentials.json` and an observation-only `worker.json`, both 0600. That configuration reads no credentials and shares nothing with Cloud.
+  - Files are never overwritten. If a run stops between the two files, re-running it with the same enrollment completes it. The pending key is removed only after both files are verified on disk.
 - `keepseam doctor --dir <private-directory>` reports permissions, enrollment, configuration and whether `GH_TOKEN` is present for the existing publication commands. It never prints secret values. `--online` checks network reach to the Cloud liveness endpoint, not authentication.
+
+Recovery after a crash is manual by design. A crash during a file write can leave `setup.lock` and a `<file>.<uuid>.tmp` second link next to a setup file; `doctor` reports them as `SETUP_LOCKED` and `TEMPORARY_FILES_PRESENT`. Once you have confirmed no setup command is running, remove exactly those files and re-run the command. The key is kept, and unknown files are never deleted.
 
 Release operators use `pnpm release:sign --config /absolute/operator/release.json` after building and reviewing the platform archives. Its `delivery/` directory contains the bounded Cloud import request, flat artifacts, exact PDF, public trust root and hash inventory. Import creates a draft; separate approval publishes it. The PDF explains native certificates, notarization, protected signing runners, trust provisioning and installation. No production release or trust identity is bundled.
 

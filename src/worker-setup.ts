@@ -271,6 +271,10 @@ export async function diagnoseWorker(options: WorkerDoctorOptions): Promise<Work
   let directory = '';
   if (!(await attempt('directory', 'DIRECTORY_UNSAFE', () => { directory = setupDirectory(options.directory); }))) return report(checks);
   if (!(await missing(join(directory, workerSetupFiles.lock)))) add('lock', 'fail', 'SETUP_LOCKED');
+  // A crash between link(2) and unlink(2) can leave a temporary second link to a setup file. Only this naming is
+  // reported; once no command runs, removing it and setup.lock by hand is the recovery. Unknown files are never touched.
+  const temporary = /^(?:identity\.pending|credentials|worker)\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
+  if ((await readdir(directory)).some(name => temporary.test(name))) add('temporary-files', 'fail', 'TEMPORARY_FILES_PRESENT');
   const credentialsPath = join(directory, workerSetupFiles.credentials);
   const [hasCredentials, hasPending] = [!(await missing(credentialsPath)), !(await missing(join(directory, workerSetupFiles.pending)))];
   if (hasPending) { add('enrollment', 'fail', hasCredentials ? 'SETUP_INTERRUPTED' : 'SETUP_INCOMPLETE'); if (!hasCredentials) return report(checks); }

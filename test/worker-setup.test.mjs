@@ -227,3 +227,20 @@ test('the setup lock is released only when it is still the file and token this c
   }), error => /could not be released safely/u.test(error.message) && error.message.length > 'setup.lock could not be released safely.'.length);
   assert.equal(existsSync(lock), true);
 });
+
+test('doctor names the leftovers of a crash between link and unlink and touches nothing else', async t => {
+  const directory = join(await workspace(t), 'worker');
+  const identity = await initWorkerSetup({ directory });
+  await completeWorkerSetup({ directory, enrollment: enrollmentFor(identity) });
+  const leftover = join(directory, `${workerSetupFiles.credentials}.0f8b2c1e-6d4a-4c3b-9a2e-1b2c3d4e5f60.tmp`), unknown = join(directory, 'notes.txt');
+  await link(join(directory, workerSetupFiles.credentials), leftover); await writeFile(unknown, 'operator notes');
+  const report = await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} });
+  assert.equal(report.checks.find(check => check.id === 'temporary-files').code, 'TEMPORARY_FILES_PRESENT');
+  // The second link also makes the credentials themselves unsafe until the leftover is removed by hand.
+  assert.equal(report.checks.find(check => check.id === 'credentials').code, 'CREDENTIALS_INVALID');
+  assert.equal(existsSync(leftover), true); assert.equal(existsSync(unknown), true);
+  await rm(leftover);
+  const recovered = await diagnoseWorker({ directory, platform: 'linux', nodeVersion: '24.21.0', environment: {} });
+  assert.equal(recovered.checks.some(check => check.id === 'temporary-files'), false);
+  assert.equal(recovered.checks.find(check => check.id === 'credentials').status, 'ok');
+});
