@@ -45,6 +45,8 @@ test('systemd renders literal arguments and restricted observation-only account'
   const content = render({ config: { ...config, statePath: '/var/lib/keep $state%f' }, configPath: '/etc/keep "quoted" $conf%f.json' });
   assert.match(content, /WorkingDirectory=\/var\/lib\/keep \$state%%f\n/);
   assert.match(content, /ExecStart=.*"\/etc\/keep \\"quoted\\" \$\$conf%%f\.json"/);
+  // The Node runtime is the program path, which systemd never expands, so its "$" stays single; the script is an argument.
+  assert.match(render({ nodePath: '/opt/node $v%v/bin/node', cliPath: '/opt/keep $s/cli.js' }), /^ExecStart="\/opt\/node \$v%%v\/bin\/node" "\/opt\/keep \$\$s\/cli\.js" "worker-service" /m);
   assert.match(content, /User=keepseam\n/); assert.match(content, /Restart=on-failure/);
   assert.match(content, /ProtectSystem=strict/); assert.match(content, /TimeoutStopSec=180/);
   assert.doesNotMatch(content, /\/bin\/(?:sh|bash)|run-approved|sudo|curl/);
