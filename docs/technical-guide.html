@@ -293,13 +293,15 @@ keepseam worker-service stop --config /etc/keepseam/worker.json</pre>
 <p>SQLite de servicio mantiene un lock exclusivo durante el proceso; crash lo libera. Status es snapshot durable, no prueba que PID siga vivo; consultar manager. Stop se liga al runId aleatorio, cancela HTTP y drena operaciones; un marker viejo no detiene el reemplazo. Manager permite 180 s antes de forzar cierre, no es watchdog de un proceso colgado.</p>
 <p>Estado local inválido devuelve <code>INVALID_INPUT</code> sanitizado; stop no genera una orden con ese registro. Ausencia de estado devuelve <code>undefined</code>.</p>
 <h2>systemd system</h2>
-<pre>keepseam worker-service render --config /etc/keepseam/worker.json \
+<pre># Elegir UNA forma de render. Node con el CLI instalado:
+keepseam worker-service render --config /etc/keepseam/worker.json \
   --target systemd --node /usr/bin/node --cli /opt/keepseam/installed-cli.js \
   --user keepseam > /private/keepseam.service
-# Release portable Linux: el ejecutable lleva su runtime, con lib/ al lado
+# O release portable Linux: el ejecutable lleva su runtime, con lib/ al lado
 keepseam worker-service render --config /etc/keepseam/worker.json \
   --target systemd --executable /opt/keepseam/keepseam \
   --user keepseam > /private/keepseam.service
+# Pasos comunes para la unidad renderizada:
 sudo systemd-analyze verify /private/keepseam.service
 sudo install -m 0644 /private/keepseam.service /etc/systemd/system/keepseam.service
 sudo systemctl daemon-reload
