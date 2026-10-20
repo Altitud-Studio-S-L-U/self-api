@@ -85,9 +85,11 @@ test('service scopes reject unsupported managers and user identity switches inst
 test('a packaged Linux release starts its own executable under the same hardened systemd unit, never mixed with Node', () => {
   const packaged = { nodePath: undefined, cliPath: undefined, executablePath: '/opt/keepseam/keep $seam%h/keepseam' };
   const execStart = /^ExecStart=.*$/m;
-  for (const base of [{}, { scope: 'user', user: undefined }]) {
+  for (const base of [{ configPath: '/etc/keep $conf%f/worker.json' }, { scope: 'user', user: undefined }]) {
     const content = render({ ...base, ...packaged });
-    assert.equal(content.match(execStart)[0], 'ExecStart="/opt/keepseam/keep $$seam%%h/keepseam" "worker-service" "run" "--config" "/etc/keepseam/worker.json"');
+    const config = base.configPath ? '"/etc/keep $$conf%%f/worker.json"' : '"/etc/keepseam/worker.json"';
+    // systemd never expands variables in the program path, so its "$" stays single; arguments still double it.
+    assert.equal(content.match(execStart)[0], `ExecStart="/opt/keepseam/keep $seam%%h/keepseam" "worker-service" "run" "--config" ${config}`);
     assert.equal(content.replace(execStart, ''), render(base).replace(execStart, ''), 'Only the started program differs from the Node unit');
   }
   for (const overrides of [{ nodePath: undefined }, { cliPath: undefined }, { ...packaged, executablePath: undefined }]) {
@@ -131,9 +133,16 @@ test('public CLI renders the packaged executable explicitly and rejects mixed, r
     const rendered=invoke(args);assert.equal(rendered.status,0,rendered.stderr);
     assert.match(rendered.stdout,/^ExecStart="\/opt\/keepseam\/keepseam" "worker-service" "run" "--config" /m);
     assert.match(rendered.stdout,/^User=keepseam$/m);
-    for(const extra of [['--node','/usr/bin/node'],['--cli','/opt/keepseam/cli.js'],['--executable','/opt/keepseam/keepseam']]) assert.equal(invoke([...args,...extra]).status,2);
-    assert.equal(invoke(args.slice(0,-2)).status,2,'A render names one invocation form');
-    for(const action of ['run','status','stop']) assert.equal(invoke(['worker-service',action,'--config',localConfig,'--executable','/opt/keepseam/keepseam']).status,2);
+    // Each refusal must be the intended one, not an unrelated failure with the same exit status.
+    const refusal=result=>{assert.equal(result.status,2,result.stdout);return JSON.parse(result.stderr.split('\n').find(line=>line.startsWith('{"error"'))).error;};
+    const mixed={code:'INVALID_INPUT',message:'Choose the packaged executable or Node with the CLI script, not both.'};
+    assert.deepEqual(refusal(invoke([...args,'--node','/usr/bin/node'])),mixed);
+    assert.deepEqual(refusal(invoke([...args,'--cli','/opt/keepseam/cli.js'])),mixed);
+    assert.deepEqual(refusal(invoke([...args,'--executable','/opt/keepseam/keepseam'])),{code:'INVALID_INPUT',message:'Repeated service options are not supported.'});
+    assert.deepEqual(refusal(invoke(args.slice(0,-2))),{code:'INVALID_INPUT',message:'Choose the packaged executable, or both the Node runtime and the CLI script.'});
+    for(const action of ['run','status','stop']) {
+      assert.deepEqual(refusal(invoke(['worker-service',action,'--config',localConfig,'--executable','/opt/keepseam/keepseam'])),{code:'INVALID_INPUT',message:'Runtime service commands accept only --config.'});
+    }
   } finally {await rm(directory,{recursive:true,force:true});}
 });
 

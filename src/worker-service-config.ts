@@ -176,6 +176,10 @@ export function renderWorkerServiceManifest(options: WorkerServiceManifestOption
     const temporaryStorage = scope === 'user'
       ? 'TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=64M /var/tmp:rw,nosuid,nodev,size=64M'
       : 'PrivateTmp=true';
+    // systemd substitutes environment variables in arguments, never in the program path, so the packaged executable's
+    // path keeps a literal "$" (doubling it would name another file). The Node form is rendered as before.
+    const execStart = [...command, 'worker-service', 'run', '--config', configPath]
+      .map((value, index) => systemd(value, index > 0 || options.executablePath === undefined)).join(' ');
     return `[Unit]
 Description=Keepseam local contract observer
 ${scope === 'user' ? 'AssertUser=!root' : 'After=network-online.target\nWants=network-online.target'}
@@ -187,7 +191,7 @@ Type=exec
 ${scope === 'user' ? 'PrivateUsers=true' : `User=${user}`}
 UMask=0077
 WorkingDirectory=${config.statePath.replaceAll('%', '%%')}
-ExecStart=${[...command, 'worker-service', 'run', '--config', configPath].map(value => systemd(value, true)).join(' ')}
+ExecStart=${execStart}
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=180
