@@ -75,6 +75,7 @@ const help = `Usage: keepseam compare <base.json> <revision.json> --engine <path
        keepseam worker-service run|status|stop --config <absolute-json>
        keepseam client-update check|stage|status --config <absolute-json>
        keepseam worker-service render --config <absolute-json> --target systemd|launchd|windows --node <absolute-path> --cli <absolute-path> [--scope system|user] [--user <unix-account>] [--name <service-name>]
+       keepseam worker-service render --config <absolute-json> --target systemd --executable <absolute-path-to-packaged-keepseam> [--scope system|user] [--user <unix-account>] [--name <service-name>]
        keepseam subscriptions --state <directory> [--json]
        keepseam jobs --state <directory> [--json]
        keepseam model-connections status|verify --state <private-directory> --model <connections.json> [--connection <id>] [--allow-remote] [--startup-checks]

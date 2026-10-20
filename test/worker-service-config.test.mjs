@@ -82,6 +82,24 @@ test('service scopes reject unsupported managers and user identity switches inst
   assert.equal(render({scope:'system'}),render({}));
 });
 
+test('a packaged Linux release starts its own executable under the same hardened systemd unit, never mixed with Node', () => {
+  const packaged = { nodePath: undefined, cliPath: undefined, executablePath: '/opt/keepseam/keep $seam%h/keepseam' };
+  const execStart = /^ExecStart=.*$/m;
+  for (const base of [{}, { scope: 'user', user: undefined }]) {
+    const content = render({ ...base, ...packaged });
+    assert.equal(content.match(execStart)[0], 'ExecStart="/opt/keepseam/keep $$seam%%h/keepseam" "worker-service" "run" "--config" "/etc/keepseam/worker.json"');
+    assert.equal(content.replace(execStart, ''), render(base).replace(execStart, ''), 'Only the started program differs from the Node unit');
+  }
+  for (const overrides of [{ nodePath: undefined }, { cliPath: undefined }, { ...packaged, executablePath: undefined }]) {
+    assert.throws(() => render(overrides), { code: 'INVALID_INPUT', message: /packaged executable, or both the Node runtime and the CLI script/ });
+  }
+  for (const overrides of [{ executablePath: '/opt/keepseam/keepseam' }, { ...packaged, nodePath: '/usr/bin/node' }, { ...packaged, cliPath: '/opt/keepseam/cli.js' },
+    { ...packaged, executablePath: 'keepseam' }, { ...packaged, executablePath: '/opt/keepseam/../keepseam' }, { ...packaged, target: 'launchd' },
+    { ...packaged, target: 'windows', config: windows, configPath: 'C:\\Keepseam\\worker.json', executablePath: 'C:\\Keepseam\\keepseam.exe', user: undefined }]) {
+    assert.throws(() => render(overrides), { code: 'INVALID_INPUT' });
+  }
+});
+
 test('public CLI renders user units explicitly and rejects identity options and scope on runtime commands', async () => {
   const parent=resolve('work/test-service-render');await mkdir(parent,{recursive:true});
   const directory=await mkdtemp(join(parent,'scope-'));
@@ -98,6 +116,24 @@ test('public CLI renders user units explicitly and rejects identity options and 
     for(const user of ['root','operator','']) assert.equal(invoke([...args,'--user',user]).status,2);
     assert.equal(invoke([...args,'--scope','system']).status,2);
     for(const action of ['run','status','stop']) assert.equal(invoke(['worker-service',action,'--config',localConfig,'--scope','user']).status,2);
+  } finally {await rm(directory,{recursive:true,force:true});}
+});
+
+test('public CLI renders the packaged executable explicitly and rejects mixed, repeated, missing or runtime invocation options', async () => {
+  const parent=resolve('work/test-service-render');await mkdir(parent,{recursive:true});
+  const directory=await mkdtemp(join(parent,'packaged-'));
+  try {
+    const localConfig=join(directory,'worker.json');
+    await writeFile(localConfig,JSON.stringify({schemaVersion:1,statePath:'/var/lib/keepseam',sources:{}}));
+    const configPath=process.platform==='win32'?localConfig.slice(2).replaceAll('\\','/'):localConfig;
+    const args=['worker-service','render','--config',configPath,'--target','systemd','--user','keepseam','--executable','/opt/keepseam/keepseam'];
+    const invoke=extra=>spawnSync(process.execPath,[resolve('dist/cli.js'),...extra],{encoding:'utf8',windowsHide:true});
+    const rendered=invoke(args);assert.equal(rendered.status,0,rendered.stderr);
+    assert.match(rendered.stdout,/^ExecStart="\/opt\/keepseam\/keepseam" "worker-service" "run" "--config" /m);
+    assert.match(rendered.stdout,/^User=keepseam$/m);
+    for(const extra of [['--node','/usr/bin/node'],['--cli','/opt/keepseam/cli.js'],['--executable','/opt/keepseam/keepseam']]) assert.equal(invoke([...args,...extra]).status,2);
+    assert.equal(invoke(args.slice(0,-2)).status,2,'A render names one invocation form');
+    for(const action of ['run','status','stop']) assert.equal(invoke(['worker-service',action,'--config',localConfig,'--executable','/opt/keepseam/keepseam']).status,2);
   } finally {await rm(directory,{recursive:true,force:true});}
 });
 
