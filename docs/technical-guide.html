@@ -293,14 +293,20 @@ keepseam worker-service stop --config /etc/keepseam/worker.json</pre>
 <p>SQLite de servicio mantiene un lock exclusivo durante el proceso; crash lo libera. Status es snapshot durable, no prueba que PID siga vivo; consultar manager. Stop se liga al runId aleatorio, cancela HTTP y drena operaciones; un marker viejo no detiene el reemplazo. Manager permite 180 s antes de forzar cierre, no es watchdog de un proceso colgado.</p>
 <p>Estado local inválido devuelve <code>INVALID_INPUT</code> sanitizado; stop no genera una orden con ese registro. Ausencia de estado devuelve <code>undefined</code>.</p>
 <h2>systemd system</h2>
-<pre>keepseam worker-service render --config /etc/keepseam/worker.json \
+<pre># Elegir UNA forma de render. Node con el CLI instalado:
+keepseam worker-service render --config /etc/keepseam/worker.json \
   --target systemd --node /usr/bin/node --cli /opt/keepseam/installed-cli.js \
   --user keepseam > /private/keepseam.service
+# O release portable Linux: el ejecutable lleva su runtime, con lib/ al lado
+keepseam worker-service render --config /etc/keepseam/worker.json \
+  --target systemd --executable /opt/keepseam/keepseam \
+  --user keepseam > /private/keepseam.service
+# Pasos comunes para la unidad renderizada:
 sudo systemd-analyze verify /private/keepseam.service
 sudo install -m 0644 /private/keepseam.service /etc/systemd/system/keepseam.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now keepseam.service</pre>
-<p>Resolver CLI instalado por <code>import.meta.resolve('keepseam-client/cli')</code> y usar su ruta real. Manager lanza Node directamente, sin shell/pnpm. System service exige usuario no-root, oculta homes, consumer/config readonly y state writable. Restart on-failure: 30 s, cinco starts/cinco minutos. Diagnóstico: <code>systemctl status</code>/<code>journalctl -u keepseam</code>; corregir causa antes de reset-failed.</p>
+<p>Resolver CLI instalado por <code>import.meta.resolve('keepseam-client/cli')</code> y usar su ruta real. Manager lanza Node directamente, sin shell/pnpm. Con release portable, <code>--executable</code> y la ruta real del <code>keepseam</code> extraído sustituyen a <code>--node</code>+<code>--cli</code>: mezclar formas o dejar una incompleta se rechaza, y solo aplica a systemd (launchd y Windows siguen con Node). Misma unidad endurecida; su arranque real en Linux está pendiente de verificar. System service exige usuario no-root, oculta homes, consumer/config readonly y state writable. Restart on-failure: 30 s, cinco starts/cinco minutos. Diagnóstico: <code>systemctl status</code>/<code>journalctl -u keepseam</code>; corregir causa antes de reset-failed.</p>
 <p>La unidad incluye límites de recursos por servicio. Requisitos de cgroup v2, scope user y comprobación efectiva: pág. 22.</p>
 <p>Logs locales sanitizados ≤ 1 MiB cada archivo actual/anterior, sin code/docs/URLs/keys/raw errors. Retención journal/OS es operación aparte. No usar el estado para coordinar dos hosts.</p>
 <footer><span>Keepseam Client · daemon y systemd</span><span>10 / 24</span></footer>

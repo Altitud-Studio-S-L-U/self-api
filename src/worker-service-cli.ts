@@ -13,7 +13,7 @@ export async function runWorkerServiceCli(args: string[], options: { readonly st
   const stop = (): void => { controller.abort(); };
   try {
     const parsed = parseArgs({ args, strict: true, allowPositionals: true, tokens: true, options: {
-      config: { type: 'string' }, target: { type: 'string' }, node: { type: 'string' }, cli: { type: 'string' }, user: { type: 'string' }, name: { type: 'string' }, scope: { type: 'string' },
+      config: { type: 'string' }, target: { type: 'string' }, node: { type: 'string' }, cli: { type: 'string' }, executable: { type: 'string' }, user: { type: 'string' }, name: { type: 'string' }, scope: { type: 'string' },
     } });
     const seen = new Set<string>();
     for (const token of parsed.tokens) if (token.kind === 'option') {
@@ -28,7 +28,8 @@ export async function runWorkerServiceCli(args: string[], options: { readonly st
     if (action === 'render') {
       const value = await loadLocalJson(parsed.values.config, 64 * 1024);
       stdout(renderWorkerServiceManifest({ config: value, configPath: parsed.values.config, target: parsed.values.target as WorkerServiceTarget,
-        nodePath: parsed.values.node!, cliPath: parsed.values.cli!, ...(parsed.values.user !== undefined ? { user: parsed.values.user } : {}),
+        ...(parsed.values.node !== undefined ? { nodePath: parsed.values.node } : {}), ...(parsed.values.cli !== undefined ? { cliPath: parsed.values.cli } : {}),
+        ...(parsed.values.executable !== undefined ? { executablePath: parsed.values.executable } : {}), ...(parsed.values.user !== undefined ? { user: parsed.values.user } : {}),
         ...(parsed.values.scope !== undefined ? { scope: parsed.values.scope as 'system' | 'user' } : {}),
         ...(parsed.values.name ? { name: parsed.values.name } : {}) }));
       return 0;

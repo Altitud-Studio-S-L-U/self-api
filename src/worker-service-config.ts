@@ -111,8 +111,11 @@ export interface WorkerServiceManifestOptions {
   readonly config: unknown;
   readonly configPath: string;
   readonly target: WorkerServiceTarget;
-  readonly nodePath: string;
-  readonly cliPath: string;
+  /** Either the Node runtime and the installed CLI script, together, or the packaged executable alone. */
+  readonly nodePath?: string;
+  readonly cliPath?: string;
+  /** systemd only: a portable release's keepseam executable, which carries its own runtime beside its lib directory. */
+  readonly executablePath?: string;
   /** systemd only; defaults to system. User services inherit the non-root manager's identity. */
   readonly scope?: 'system' | 'user';
   /** Unix system account; invalid for systemd user scope. Windows uses LocalService without a password. */
@@ -124,6 +127,17 @@ const xml = (value: string): string => value.replaceAll('&', '&amp;').replaceAll
 const systemd = (value: string, environment = false): string => `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', () => environment ? '$$' : '$')}"`;
 const windowsArgument = (value: string): string => `"${value.replace(/(\\*)"/gu, '$1$1\\"').replace(/\\+$/gu, '$&$&')}"`;
 
+/** The program and leading arguments the manager starts: exactly one complete invocation form, never a mix. */
+function serviceCommand(options: WorkerServiceManifestOptions): readonly string[] {
+  if (options.executablePath !== undefined) {
+    if (options.nodePath !== undefined || options.cliPath !== undefined) invalid('Choose the packaged executable or Node with the CLI script, not both.');
+    if (options.target !== 'systemd') invalid('The packaged executable is supported for systemd services only.');
+    return [servicePath(options.executablePath, options.target)];
+  }
+  if (options.nodePath === undefined || options.cliPath === undefined) invalid('Choose the packaged executable, or both the Node runtime and the CLI script.');
+  return [servicePath(options.nodePath, options.target), servicePath(options.cliPath, options.target)];
+}
+
 export function renderWorkerServiceManifest(options: WorkerServiceManifestOptions): string {
   if (!['systemd', 'launchd', 'windows'].includes(options.target)) invalid('Choose systemd, launchd or windows.');
   const scope = options.scope === undefined ? 'system' : options.scope;
@@ -131,18 +145,17 @@ export function renderWorkerServiceManifest(options: WorkerServiceManifestOption
   if (scope === 'user' && options.user !== undefined) invalid('User services inherit their manager identity; omit the user option.');
   const config = normalizeWorkerServiceConfig(options.config, options.target);
   const configPath = servicePath(options.configPath, options.target);
-  const node = servicePath(options.nodePath, options.target);
-  const cli = servicePath(options.cliPath, options.target);
+  const command = serviceCommand(options);
   const name = options.name ?? 'keepseam';
   if (typeof name !== 'string' || !/^[a-z][a-z0-9]{0,31}$/u.test(name)) invalid('Service name must contain 1–32 lowercase letters and digits, starting with a letter.');
   if (options.target === 'windows') {
     if (options.user !== undefined) invalid('Windows manifests use LocalService; custom password accounts are not generated.');
-    const args = (action: string): string => [cli, 'worker-service', action, '--config', configPath].map(windowsArgument).join(' ');
+    const args = (action: string): string => [...command.slice(1), 'worker-service', action, '--config', configPath].map(windowsArgument).join(' ');
     return `<?xml version="1.0" encoding="UTF-8"?>
 <service>
   <id>${name}</id><name>Keepseam ${name}</name>
   <description>Local contract observation. Changes require separate approval.</description>
-  <executable>${xml(node)}</executable>
+  <executable>${xml(command[0]!)}</executable>
   <arguments>${xml(args('run'))}</arguments>
   <workingdirectory>${xml(config.statePath)}</workingdirectory>
   <startmode>Automatic</startmode><delayedAutoStart/>
@@ -163,6 +176,9 @@ export function renderWorkerServiceManifest(options: WorkerServiceManifestOption
     const temporaryStorage = scope === 'user'
       ? 'TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=64M /var/tmp:rw,nosuid,nodev,size=64M'
       : 'PrivateTmp=true';
+    // systemd substitutes environment variables in arguments, never in the program path, so the program path (the
+    // packaged executable or the Node runtime) keeps a literal "$"; doubling it would name another file.
+    const execStart = [...command, 'worker-service', 'run', '--config', configPath].map((value, index) => systemd(value, index > 0)).join(' ');
     return `[Unit]
 Description=Keepseam local contract observer
 ${scope === 'user' ? 'AssertUser=!root' : 'After=network-online.target\nWants=network-online.target'}
@@ -174,7 +190,7 @@ Type=exec
 ${scope === 'user' ? 'PrivateUsers=true' : `User=${user}`}
 UMask=0077
 WorkingDirectory=${config.statePath.replaceAll('%', '%%')}
-ExecStart=${[node, cli, 'worker-service', 'run', '--config', configPath].map(value => systemd(value, true)).join(' ')}
+ExecStart=${execStart}
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=180
@@ -203,7 +219,7 @@ LogRateLimitBurst=30
 WantedBy=${scope === 'user' ? 'default.target' : 'multi-user.target'}
 `;
   }
-  const args = [node, cli, 'worker-service', 'run', '--config', configPath].map(value => `    <string>${xml(value)}</string>`).join('\n');
+  const args = [...command, 'worker-service', 'run', '--config', configPath].map(value => `    <string>${xml(value)}</string>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
