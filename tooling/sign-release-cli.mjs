@@ -4,7 +4,7 @@ import {mkdir,writeFile} from 'node:fs/promises';
 import {isAbsolute,join,dirname,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {buildSignedRelease} from './sign-release.mjs';
-import {writeReleaseDelivery} from './release-delivery.mjs';
+import {releaseNativeReceipts} from './release-export.mjs';
 import {releaseRepositoryFiles} from './release-repository.mjs';
 import {checkServicePath,checkWindowsServiceAcl} from '../dist/worker-service-state.js';
 import {checkWindowsPermissions} from '../dist/windows-permissions.js';
@@ -38,14 +38,13 @@ export function loadReleaseRoleKeys(input,requiredRoles=['targets','snapshot','t
 export async function writeSignedRelease(signed,outputParent,{prefix='signed',nativeReceipts=[]}={}) {
   if(!['signed','refreshed'].includes(prefix))throw new Error('Invalid signed release output kind.');
   const repositoryFiles=releaseRepositoryFiles(signed);
+  const receipts=releaseNativeReceipts(signed,nativeReceipts);
   await mkdir(outputParent,{recursive:true,mode:0o700});
   const directory=join(outputParent,`${prefix}-${signed.manifest.version}-${randomUUID()}`);await mkdir(directory,{mode:0o700});checkWindowsPermissions([directory],true,directory);
-  for(const [name,bytes] of new Map([['metadata/root.json',signed.root],...Array.from(signed.metadata,([name,bytes])=>[`metadata/${name}`,bytes]),...Array.from(signed.targets,([name,bytes])=>[`targets/${name}`,bytes]),...Array.from(repositoryFiles,([name,bytes])=>[`repository/${name}`,bytes]),['import-bundle.json',Buffer.from(JSON.stringify(signed.importBundle))]])) {
+  for(const [name,bytes] of new Map([['metadata/root.json',signed.root],...Array.from(signed.metadata,([name,bytes])=>[`metadata/${name}`,bytes]),...Array.from(signed.targets,([name,bytes])=>[`targets/${name}`,bytes]),...Array.from(repositoryFiles,([name,bytes])=>[`repository/${name}`,bytes]),...receipts,['release-bundle.json',Buffer.from(JSON.stringify(signed.releaseBundle))]])) {
     const target=join(directory,name);await mkdir(dirname(target),{recursive:true,mode:0o700});await writeFile(target,bytes,{flag:'wx',mode:0o600});
   }
-  const deliveryDirectory=join(directory,'delivery');
-  await writeReleaseDelivery(signed,deliveryDirectory,{nativeReceipts});
-  return{directory,deliveryDirectory,repositoryDirectory:join(directory,'repository'),version:signed.manifest.version,sequence:signed.manifest.sequence,publicationEligible:signed.manifest.publicationEligible,
+  return{directory,repositoryDirectory:join(directory,'repository'),version:signed.manifest.version,sequence:signed.manifest.sequence,publicationEligible:signed.manifest.publicationEligible,
     manifestSha256:hash(signed.targets.get('release-manifest.json')),
     metadataVersions:Object.fromEntries([...signed.metadata].map(([name,bytes])=>[name.replace('.json',''),JSON.parse(bytes.toString()).signed.version]))};
 }
@@ -55,7 +54,7 @@ export async function writeSignedRelease(signed,outputParent,{prefix='signed',na
 export async function signReleaseConfiguration(path,outputParent=resolve(import.meta.dirname,'../work/releases')) {
   const config=JSON.parse(boundedFile(path,32768).toString());
   if(!config || Object.keys(config).filter(key=>key!=='metadataVersions').sort().join(',')!=='artifacts,documentationFile,notes,requirements,roleKeys,rootFile,rootSha256,schemaVersion,sequence,sourceRevision,version' || config.schemaVersion!==1)throw new Error('Invalid release signing configuration.');
-  const inputDirectory=process.env.KEEPSEAM_RELEASE_INPUT_DIRECTORY;
+  const inputDirectory=process.env.SELF_MANAGED_API_RELEASE_INPUT_DIRECTORY;
   if(inputDirectory) {
     if(!isAbsolute(inputDirectory))throw new Error('Release input directory requires an absolute path.');
     checkServicePath(inputDirectory,'directory');checkWindowsServiceAcl(inputDirectory,false);
@@ -83,7 +82,7 @@ export async function signReleaseConfiguration(path,outputParent=resolve(import.
   });
   const documentation=boundedFile(config.documentationFile,8*1024*1024);
   if(!documentation.toString('latin1').includes(`client-version=${config.version} |`))throw new Error('Technical PDF does not identify this client version.');
-  if(process.env.KEEPSEAM_RELEASE_SOURCE_REVISION && config.sourceRevision!==process.env.KEEPSEAM_RELEASE_SOURCE_REVISION)throw new Error('Signing configuration differs from the reviewed release source.');
+  if(process.env.SELF_MANAGED_API_RELEASE_SOURCE_REVISION && config.sourceRevision!==process.env.SELF_MANAGED_API_RELEASE_SOURCE_REVISION)throw new Error('Signing configuration differs from the reviewed release source.');
   const signed=buildSignedRelease({...config,rootBytes:boundedFile(config.rootFile,512000),roleKeys,artifacts,documentation});
   return writeSignedRelease(signed,outputParent,{nativeReceipts});
 }

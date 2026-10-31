@@ -58,7 +58,7 @@ function launch(configPath) {
   return { child, exited, stderr: () => stderr };
 }
 
-test('real foreground service prevents concurrent ownership and preserves evidence across three clean restarts', async t => {
+test('standalone foreground service observes without remote authorization and preserves ownership and restart evidence', async t => {
   const item = await fixture(t);
   const config = await loadWorkerServiceConfig(item.configPath);
   let active;
@@ -66,6 +66,7 @@ test('real foreground service prevents concurrent ownership and preserves eviden
   active = launch(item.configPath);
   const first = await waitForStatus(item.statePath, value => value.state === 'running' && value.cycles >= 1, 45000, active);
   assert.equal(first.pid, active.child.pid);
+  for (const field of ['cloud', 'automation', 'licenseReason']) assert.equal(Object.hasOwn(first, field), false);
   const contender = launch(item.configPath);
   assert.equal((await contender.exited)[0], 2);
   assert.match(contender.stderr(), /already owns this state/);

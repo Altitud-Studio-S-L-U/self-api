@@ -257,7 +257,7 @@ test('a runtime rejects overlapping approved operations instead of duplicating t
 });
 
 test('credential rotation cannot reuse a functional receipt or a previously approved route, and no key fingerprint is persisted', async t => {
-  const keyName = 'KEEPSEAM_TEST_MODEL_CONNECTION_KEY', previous = process.env[keyName];
+  const keyName = 'SELF_MANAGED_API_TEST_MODEL_CONNECTION_KEY', previous = process.env[keyName];
   t.after(() => { if (previous === undefined) delete process.env[keyName]; else process.env[keyName] = previous; });
   process.env[keyName] = 'fictional-first-key';
   const stored = new Map(); let generated = 0, probes = 0;

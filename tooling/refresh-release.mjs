@@ -1,5 +1,5 @@
 import { authenticatedReleaseMetadata, canonicalTuf, pinnedReleaseRoot, releaseDescriptor,
-  releaseHash, releaseMetadataVersions, requireImportBundleBounds, requireReleaseValue as requireValue, signedReleaseEnvelope } from './release-tuf.mjs';
+  releaseHash, releaseMetadataVersions, requireReleaseBundleBounds, requireReleaseValue as requireValue, signedReleaseEnvelope } from './release-tuf.mjs';
 
 const hour = 3600000;
 const metadataRoles = ['targets', 'snapshot', 'timestamp'];
@@ -15,7 +15,7 @@ export function inspectReleaseForRefresh({ rootBytes, rootSha256, manifestSha256
   const root = pinnedReleaseRoot(rootBytes, rootSha256, now);
   requireValue((closed(previousBundle, ['manifest', 'metadata']) || closed(previousBundle, ['manifest', 'metadata', 'channel'])) && typeof previousBundle.manifest === 'string'
     && closed(previousBundle.metadata, metadataRoles) && metadataRoles.every(role => typeof previousBundle.metadata[role] === 'string'), 'Invalid previous release bundle.');
-  requireImportBundleBounds(previousBundle);
+  requireReleaseBundleBounds(previousBundle);
   requireValue(releaseHash(previousBundle.manifest) === manifestSha256, 'Pinned release manifest mismatch.');
   const manifest = JSON.parse(previousBundle.manifest);
   requireValue(manifest?.schemaVersion === 1 && /^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$/u.test(manifest.version)
@@ -89,8 +89,8 @@ export function refreshSignedRelease(options) {
   if (required.includes('snapshot')) renew('snapshot', 24 * hour,
     { meta: { 'targets.json': releaseDescriptor(metadata.get('targets.json'), versions.targets) } });
   renew('timestamp', hour, { meta: { 'snapshot.json': releaseDescriptor(metadata.get('snapshot.json'), versions.snapshot) } });
-  const importBundle = { manifest: previousBundle.manifest, ...(previousBundle.channel === undefined ? {} : { channel: previousBundle.channel }),
+  const releaseBundle = { manifest: previousBundle.manifest, ...(previousBundle.channel === undefined ? {} : { channel: previousBundle.channel }),
     metadata: Object.fromEntries(metadataRoles.map(role => [role, metadata.get(`${role}.json`).toString('utf8')])) };
-  requireImportBundleBounds(importBundle, { refresh: true });
-  return { manifest: previous.manifest, root: rootBytes, targets: new Map(targets), metadata, importBundle };
+  requireReleaseBundleBounds(releaseBundle);
+  return { manifest: previous.manifest, root: rootBytes, targets: new Map(targets), metadata, releaseBundle };
 }

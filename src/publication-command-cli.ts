@@ -52,7 +52,7 @@ function renderRequest(value: PublicationRequest, includeSource: boolean): strin
     `Commit date: ${escapeTerminal(value.commit.timestamp)}`,
     `Commit message: ${escapeTerminal(value.commit.message)}`,
     `Draft title: ${escapeTerminal(value.pullRequest.title)}`,
-    'Selected modified source is sent directly to the selected GitHub repository when published. Plumber Cloud receives nothing.',
+    'Selected modified source is sent directly to the selected GitHub repository when published.',
     'The reviewed base and consumer evidence are checked again before publication. Approval permits one attempt and expires after 15 minutes.',
     'Live consumer files remain unchanged. No force push, merge or deployment is authorized.',
   ];

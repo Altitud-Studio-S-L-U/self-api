@@ -12,30 +12,34 @@ const unsigned={kind:'none',verified:false,publisher:null};
 export async function nativeSigningReceipt(executable,{platform=process.platform,env=process.env,execute=run,bundleDirectory,stagingDirectory,additionalExecutables=[]}={}) {
   if(platform==='linux')return{kind:'not-required',verified:false,publisher:null};
   if(platform==='win32') {
-    const certificate=env.KEEPSEAM_WINDOWS_SIGN_CERT_SHA1;
-    if(env.KEEPSEAM_REQUIRE_NATIVE_SIGNING==='1'&&!certificate)throw new Error('Windows publisher signing is required but not configured.');
+    const certificate=env.SELF_MANAGED_API_WINDOWS_SIGN_CERT_SHA1;
+    if(env.SELF_MANAGED_API_REQUIRE_NATIVE_SIGNING==='1'&&!certificate)throw new Error('Windows publisher signing is required but not configured.');
     if(certificate!==undefined) {
-      const tool=env.KEEPSEAM_SIGNTOOL_PATH,timestamp=env.KEEPSEAM_WINDOWS_TIMESTAMP_URL;
+      const tool=env.SELF_MANAGED_API_SIGNTOOL_PATH,timestamp=env.SELF_MANAGED_API_WINDOWS_TIMESTAMP_URL;
       if(!/^[a-fA-F0-9]{40}$/u.test(certificate) || !tool || !isAbsolute(tool) || !timestamp)throw new Error('Incomplete Windows signing configuration.');
       const url=new URL(timestamp);
-      if(url.protocol!=='https:' || url.username || url.password || url.hash || !env.KEEPSEAM_WINDOWS_PUBLISHER)throw new Error('Invalid Windows signing configuration.');
+      if(url.protocol!=='https:' || url.username || url.password || url.hash || !env.SELF_MANAGED_API_WINDOWS_PUBLISHER)throw new Error('Invalid Windows signing configuration.');
       const info=await lstat(tool);if(!info.isFile() || info.isSymbolicLink())throw new Error('Invalid SignTool path.');
       await execute(tool,['sign','/sha1',certificate,'/fd','SHA256','/tr',timestamp,'/td','SHA256',executable],{windowsHide:true,timeout:120000,maxBuffer:8192});
     }
-    const script="$ErrorActionPreference='Stop';$s=Get-AuthenticodeSignature -LiteralPath $env:KEEPSEAM_NATIVE_EXECUTABLE;@{status=[string]$s.Status;publisher=if($s.SignerCertificate){$s.SignerCertificate.Subject}else{$null};thumbprint=if($s.SignerCertificate){$s.SignerCertificate.Thumbprint}else{$null}}|ConvertTo-Json -Compress";
-    const result=await execute(join(env.SystemRoot??'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe'),['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{env:{...env,KEEPSEAM_NATIVE_EXECUTABLE:executable},windowsHide:true,timeout:30000,maxBuffer:8192});
+    const script="$ErrorActionPreference='Stop';$s=Get-AuthenticodeSignature -LiteralPath $env:SELF_MANAGED_API_NATIVE_EXECUTABLE;@{status=[string]$s.Status;publisher=if($s.SignerCertificate){$s.SignerCertificate.Subject}else{$null};thumbprint=if($s.SignerCertificate){$s.SignerCertificate.Thumbprint}else{$null}}|ConvertTo-Json -Compress";
+    const verificationEnvironment={...env,SELF_MANAGED_API_NATIVE_EXECUTABLE:executable};
+    // Windows PowerShell 5 must discover its own built-in Security module;
+    // inheriting PowerShell 7's module path can select an incompatible assembly.
+    for(const key of Object.keys(verificationEnvironment))if(key.toLowerCase()==='psmodulepath')delete verificationEnvironment[key];
+    const result=await execute(join(env.SystemRoot??'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe'),['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{env:verificationEnvironment,windowsHide:true,timeout:30000,maxBuffer:8192});
     const receipt=JSON.parse(result.stdout);
-    const verified=receipt.status==='Valid' && typeof env.KEEPSEAM_WINDOWS_PUBLISHER==='string' && receipt.publisher===env.KEEPSEAM_WINDOWS_PUBLISHER
+    const verified=receipt.status==='Valid' && typeof env.SELF_MANAGED_API_WINDOWS_PUBLISHER==='string' && receipt.publisher===env.SELF_MANAGED_API_WINDOWS_PUBLISHER
       && (!certificate || receipt.thumbprint?.toLowerCase()===certificate.toLowerCase());
     if(certificate && !verified)throw new Error('Windows publisher verification failed.');
     return verified?{kind:'authenticode',verified:true,publisher:receipt.publisher}:unsigned;
   }
   if(platform==='darwin') {
-    const identity=env.KEEPSEAM_APPLE_SIGN_IDENTITY,profile=env.KEEPSEAM_APPLE_NOTARY_PROFILE;
-    if(env.KEEPSEAM_REQUIRE_NATIVE_SIGNING==='1'&&(!identity||!profile))throw new Error('macOS publisher signing and notarization are required but not configured.');
+    const identity=env.SELF_MANAGED_API_APPLE_SIGN_IDENTITY,profile=env.SELF_MANAGED_API_APPLE_NOTARY_PROFILE;
+    if(env.SELF_MANAGED_API_REQUIRE_NATIVE_SIGNING==='1'&&(!identity||!profile))throw new Error('macOS publisher signing and notarization are required but not configured.');
     if(identity!==undefined || profile!==undefined) {
       if(typeof identity!=='string' || !/^[a-fA-F0-9]{40}$/u.test(identity) || typeof profile!=='string' || !/^[A-Za-z0-9_.-]{1,128}$/u.test(profile)
-        || !/^Developer ID Application: [^\r\n]{1,180} \([A-Z0-9]{10}\)$/u.test(env.KEEPSEAM_APPLE_PUBLISHER??'')
+        || !/^Developer ID Application: [^\r\n]{1,180} \([A-Z0-9]{10}\)$/u.test(env.SELF_MANAGED_API_APPLE_PUBLISHER??'')
         || !bundleDirectory || !stagingDirectory || !isAbsolute(bundleDirectory) || !isAbsolute(stagingDirectory))throw new Error('Incomplete macOS signing configuration.');
       const executables=[executable,...additionalExecutables];
       if(executables.length>8 || new Set(executables.map(file=>resolve(file))).size!==executables.length)throw new Error('Invalid macOS signing files.');
@@ -48,7 +52,7 @@ export async function nativeSigningReceipt(executable,{platform=process.platform
         args.push(file);await execute('/usr/bin/codesign',args,{timeout:120000,maxBuffer:8192});
         await execute('/usr/bin/codesign',['--verify','--strict','--verbose=2',file],{timeout:30000,maxBuffer:8192});
         const detail=await execute('/usr/bin/codesign',['--display','--verbose=4',file],{timeout:30000,maxBuffer:8192});
-        if(!(detail.stderr??'').split('\n').includes(`Authority=${env.KEEPSEAM_APPLE_PUBLISHER}`))throw new Error('macOS publisher verification failed.');
+        if(!(detail.stderr??'').split('\n').includes(`Authority=${env.SELF_MANAGED_API_APPLE_PUBLISHER}`))throw new Error('macOS publisher verification failed.');
       }
       const directory=join(stagingDirectory,`notarization-${randomUUID()}`);await mkdir(directory,{mode:0o700});
       const archive=join(directory,'submission.zip'),log=join(directory,'notary-log.json');
@@ -63,12 +67,12 @@ export async function nativeSigningReceipt(executable,{platform=process.platform
       if(result.status!=='Accepted'||(result.issues??[]).some(issue=>issue.severity==='error'))throw new Error('macOS notarization log rejected.');
       // Apple cannot staple standalone executables or ZIPs. Gatekeeper obtains their accepted tickets online.
     }
-    if(!env.KEEPSEAM_APPLE_PUBLISHER)return unsigned;
+    if(!env.SELF_MANAGED_API_APPLE_PUBLISHER)return unsigned;
     await execute('/usr/bin/codesign',['--verify','--strict','--verbose=2',executable],{timeout:30000,maxBuffer:8192});
     const detail=await execute('/usr/bin/codesign',['--display','--verbose=4',executable],{timeout:30000,maxBuffer:8192});
     const publisher=(detail.stderr??'').split('\n').find(line=>line.startsWith('Authority='))?.slice('Authority='.length);
     const assessment=await execute('/usr/sbin/spctl',['--assess','--type','execute','--verbose=4',executable],{timeout:30000,maxBuffer:8192});
-    if(publisher!==env.KEEPSEAM_APPLE_PUBLISHER || !(assessment.stderr??'').includes('source=Notarized Developer ID'))throw new Error('macOS notarized publisher verification failed.');
+    if(publisher!==env.SELF_MANAGED_API_APPLE_PUBLISHER || !(assessment.stderr??'').includes('source=Notarized Developer ID'))throw new Error('macOS notarized publisher verification failed.');
     for(const file of additionalExecutables){
       const assessment=await execute('/usr/sbin/spctl',['--assess','--type','execute','--verbose=4',file],{timeout:30000,maxBuffer:8192});
       if(!(assessment.stderr??'').includes('source=Notarized Developer ID'))throw new Error('macOS notarized engine verification failed.');

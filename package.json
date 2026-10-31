@@ -1,9 +1,9 @@
 {
-  "name": "keepseam-client",
+  "name": "self-managed-api",
   "version": "0.1.0",
   "private": true,
-  "description": "Keepseam SDK and local worker for maintaining API integrations",
-  "license": "UNLICENSED",
+  "description": "Local API and MCP integration maintenance with reviewed migrations and isolated validation",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=24.21.0 <25"
@@ -14,24 +14,20 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./protocol": {
-      "types": "./dist/cloud-protocol.d.ts",
-      "import": "./dist/cloud-protocol.js"
-    },
     "./cli": {
       "types": "./dist/cli.d.ts",
       "import": "./dist/cli.js"
     }
   },
   "bin": {
-    "keepseam": "./dist/cli.js"
+    "self-managed-api": "./dist/cli.js"
   },
   "files": [
     "dist",
     "tooling/prepare-validation-runtime.mjs"
   ],
   "scripts": {
-    "docs:build": "node tooling/build-docs.mjs --playwright-root ../keepseam-cloud",
+    "docs:build": "node tooling/build-docs.mjs",
     "docs:check": "node tooling/build-docs.mjs --check",
     "release:build": "node tooling/build-release.mjs",
     "release:sign": "node tooling/sign-release-cli.mjs",
@@ -47,14 +43,14 @@
     "dev:check": "node tooling/development.mjs check",
     "engine:setup": "node tooling/setup-oasdiff.mjs",
     "runtime:prepare": "node tooling/prepare-validation-runtime.mjs",
-    "build": "tsc -p tsconfig.json",
+    "build": "node tooling/clean-build.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test --test-concurrency=4 test/*.test.mjs",
     "test:package": "node tooling/check-package.mjs",
     "test:isolated": "pnpm build && node --test --test-concurrency=1 integration/*.test.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm test:model-lab && pnpm test:package",
     "test:model-lab": "node --test dev/model-evaluation/classification.test.mjs dev/model-evaluation/semantic-review.test.mjs",
-    "keepseam": "node ./dist/cli.js"
+    "self-managed-api": "node ./dist/cli.js"
   },
   "devDependencies": {
     "@notionhq/client": "5.27.0",
@@ -62,11 +58,19 @@
     "@types/retry": "0.12.5",
     "notion-v4": "npm:@notionhq/client@4.0.2",
     "postject": "1.0.0-alpha.6",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "@playwright/test": "1.63.0"
   },
   "dependencies": {
     "@babel/parser": "8.0.6",
-    "jose": "6.2.12",
     "tuf-js": "5.0.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Altitud-Studio-S-L-U/self-managed-api.git"
+  },
+  "homepage": "https://github.com/Altitud-Studio-S-L-U/self-managed-api#readme",
+  "bugs": {
+    "url": "https://github.com/Altitud-Studio-S-L-U/self-managed-api/issues"
   }
 }

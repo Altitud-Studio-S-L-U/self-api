@@ -5,9 +5,9 @@ import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { normalizeWorkerServiceConfig, renderWorkerServiceManifest } from '../dist/index.js';
 
-const config = { schemaVersion: 1, statePath: '/var/lib/keepseam', openApi: { enginePath: '/opt/keepseam/oasdiff' }, sources: {} };
-const windows = { schemaVersion: 1, statePath: 'C:\\Keepseam state', sources: {} };
-const render = overrides => renderWorkerServiceManifest({ config, configPath: '/etc/keepseam/worker.json', target: 'systemd', nodePath: '/usr/bin/node', cliPath: '/opt/keepseam/cli.js', user: 'keepseam', ...overrides });
+const config = { schemaVersion: 1, statePath: '/var/lib/managedapi', openApi: { enginePath: '/opt/managedapi/oasdiff' }, sources: {} };
+const windows = { schemaVersion: 1, statePath: 'C:\\Self-managed API state', sources: {} };
+const render = overrides => renderWorkerServiceManifest({ config, configPath: '/etc/managedapi/worker.json', target: 'systemd', nodePath: '/usr/bin/node', cliPath: '/opt/managedapi/cli.js', user: 'managedapi', ...overrides });
 
 test('service configuration is explicit, strict and immutable with separate observation intervals', () => {
   const result = normalizeWorkerServiceConfig(config, 'systemd');
@@ -22,14 +22,18 @@ test('service configuration is explicit, strict and immutable with separate obse
     { schemaVersion: 1, statePath: '/state' }]) assert.throws(() => normalizeWorkerServiceConfig(invalid, 'systemd'));
 });
 
-test('cloud sharing remains explicit and contains only file references, never credentials or code', () => {
-  const cloud = { credentialsPath: '/etc/keepseam/cloud.json', statePath: '/var/lib/keepseam-cloud', integrationIds: ['a'.repeat(64)] };
-  const result = normalizeWorkerServiceConfig({ ...config, cloud }, 'systemd');
-  assert.equal(result.cloud.intervalMs, 60000); assert(Object.isFrozen(result.cloud.integrationIds));
-  for (const bad of [{ ...cloud, privateJwk: {} }, { ...cloud, integrationIds: [] }, { ...cloud, integrationIds: ['a'.repeat(64), 'a'.repeat(64)] },
-    { ...cloud, statePath: config.statePath }]) assert.throws(() => normalizeWorkerServiceConfig({ ...config, cloud: bad }, 'systemd'));
-  const ids = []; Object.defineProperty(ids, '0', { get() { assert.fail('must not call an untrusted getter'); } });
-  assert.throws(() => normalizeWorkerServiceConfig({ ...config, cloud: { ...cloud, integrationIds: ids } }, 'systemd'), /accessors/);
+test('standalone service rejects retired remote settings without inspecting them', () => {
+  for (const field of ['cloud', 'license']) {
+    for (const value of [undefined, null, {}]) {
+      assert.throws(() => normalizeWorkerServiceConfig({ ...config, [field]: value }, 'systemd'), /unknown field/);
+    }
+    const input = { ...config };
+    Object.defineProperty(input, field, { get() { assert.fail('must not inspect retired configuration'); } });
+    assert.throws(() => normalizeWorkerServiceConfig(input, 'systemd'), /unknown field or accessor/);
+  }
+  const accessor = { ...config };
+  Object.defineProperty(accessor, 'sources', { get() { assert.fail('must not evaluate configuration accessors'); } });
+  assert.throws(() => normalizeWorkerServiceConfig(accessor, 'systemd'), /accessor/);
 });
 
 test('literal paths reject traversal, interpolation and special device filenames', () => {
@@ -45,10 +49,10 @@ test('systemd renders literal arguments and restricted observation-only account'
   const content = render({ config: { ...config, statePath: '/var/lib/keep $state%f' }, configPath: '/etc/keep "quoted" $conf%f.json' });
   assert.match(content, /WorkingDirectory=\/var\/lib\/keep \$state%%f\n/);
   assert.match(content, /ExecStart=.*"\/etc\/keep \\"quoted\\" \$\$conf%%f\.json"/);
-  assert.match(content, /User=keepseam\n/); assert.match(content, /Restart=on-failure/);
+  assert.match(content, /User=managedapi\n/); assert.match(content, /Restart=on-failure/);
   assert.match(content, /ProtectSystem=strict/); assert.match(content, /TimeoutStopSec=180/);
   assert.doesNotMatch(content, /\/bin\/(?:sh|bash)|run-approved|sudo|curl/);
-  for (const overrides of [{ user: 'root' }, { user: 'keepseam\nUser=root' }, { name: 'x\n' }, { target: undefined }]) assert.throws(() => render(overrides));
+  for (const overrides of [{ user: 'root' }, { user: 'managedapi\nUser=root' }, { name: 'x\n' }, { target: undefined }]) assert.throws(() => render(overrides));
 });
 
 test('systemd user scope inherits a non-root manager identity and keeps home read-only except explicit state', () => {
@@ -91,7 +95,7 @@ test('public CLI renders user units explicitly and rejects identity options and 
     // A root-relative Windows path is readable on the current drive and can be
     // rendered as a Unix path without executing that foreign-platform service.
     const configPath=process.platform==='win32'?localConfig.slice(2).replaceAll('\\','/'):localConfig;
-    const args=['worker-service','render','--config',configPath,'--target','systemd','--scope','user','--node','/usr/bin/node','--cli','/opt/keepseam/cli.js'];
+    const args=['worker-service','render','--config',configPath,'--target','systemd','--scope','user','--node','/usr/bin/node','--cli','/opt/managedapi/cli.js'];
     const invoke=extra=>spawnSync(process.execPath,[resolve('dist/cli.js'),...extra],{encoding:'utf8',windowsHide:true});
     const rendered=invoke(args);assert.equal(rendered.status,0,rendered.stderr);
     assert.match(rendered.stdout,/WantedBy=default\.target/);assert.doesNotMatch(rendered.stdout,/^User=/m);
@@ -105,16 +109,16 @@ test('launchd XML encodes metacharacters and delegates keep-alive without daemon
   const content = render({ target: 'launchd', configPath: '/etc/keep & "seam".json' });
   assert.match(content, /keep &amp; &quot;seam&quot;\.json/);
   assert.match(content, /<key>SuccessfulExit<\/key><false\/>/);
-  assert.match(content, /<key>UserName<\/key><string>keepseam<\/string>/);
+  assert.match(content, /<key>UserName<\/key><string>managedapi<\/string>/);
   assert.match(content, /<key>RunAtLoad<\/key><true\/>/);
   assert.doesNotMatch(content, /worker-service\.log/);
 });
 
 test('Windows manifest uses a passwordless low-privilege SCM account, bounded signal shutdown and wrapper logs', () => {
-  const content = render({ target: 'windows', config: windows, configPath: 'C:\\Keepseam & data\\worker.json',
-    cliPath: 'C:\\Program Files\\Keepseam\\cli.js', nodePath: 'C:\\Program Files\\nodejs\\node.exe', user: undefined });
+  const content = render({ target: 'windows', config: windows, configPath: 'C:\\Self-managed API & data\\worker.json',
+    cliPath: 'C:\\Program Files\\Self-managed API\\cli.js', nodePath: 'C:\\Program Files\\nodejs\\node.exe', user: undefined });
   assert.match(content, /<domain>NT AUTHORITY<\/domain><user>LocalService<\/user>/);
-  assert.match(content, /&quot;C:\\Keepseam &amp; data\\worker\.json&quot;/);
+  assert.match(content, /&quot;C:\\Self-managed API &amp; data\\worker\.json&quot;/);
   assert.match(content, /<arguments>.*&quot;run&quot;/);
   assert.match(content, /<stoptimeout>180 sec<\/stoptimeout>/);
   assert.match(content, /<sizeThreshold>1024<\/sizeThreshold><keepFiles>2<\/keepFiles>/);

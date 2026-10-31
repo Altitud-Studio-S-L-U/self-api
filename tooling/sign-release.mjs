@@ -1,5 +1,5 @@
 import { releaseHash as sha256, releaseDescriptor as descriptor, requireReleaseValue as requireValue,
-  pinnedReleaseRoot, signedReleaseEnvelope, releaseMetadataVersions, requireImportBundleBounds } from './release-tuf.mjs';
+  pinnedReleaseRoot, signedReleaseEnvelope, releaseMetadataVersions, requireReleaseBundleBounds } from './release-tuf.mjs';
 export { canonicalTuf } from './release-tuf.mjs';
 
 /** Produces inert metadata, never publishes it or provisions a trust root. Role
@@ -20,8 +20,8 @@ export function buildSignedRelease({ rootBytes, rootSha256, roleKeys, version, s
     const platform = `${artifact.os}:${artifact.arch}`;
     requireValue(!platforms.has(platform), 'Duplicate release platform.'); platforms.add(platform);
     const isSdk = artifact.os === 'any' && artifact.arch === 'any';
-    requireValue(!isSdk || artifact.fileName === `keepseam-client-${version}.tgz`, 'SDK target name must be canonical.');
-    const target = isSdk ? `packages/keepseam-client/${version}/${artifact.fileName}` : `workers/${version}/${artifact.fileName}`;
+    requireValue(!isSdk || artifact.fileName === `self-managed-api-${version}.tgz`, 'SDK target name must be canonical.');
+    const target = isSdk ? `packages/self-managed-api/${version}/${artifact.fileName}` : `workers/${version}/${artifact.fileName}`;
     requireValue(!targets.has(target), 'Duplicate artifact target.'); targets.set(target, artifact.bytes);
     const nativeSignature = artifact.nativeSignature ?? { kind: isSdk || artifact.os === 'linux' ? 'not-required' : 'none', verified: false, publisher: null };
     requireValue(Object.keys(nativeSignature).sort().join(',') === 'kind,publisher,verified'
@@ -36,7 +36,7 @@ export function buildSignedRelease({ rootBytes, rootSha256, roleKeys, version, s
   const sdk = records.find(record => record.os === 'any' && record.arch === 'any');
   requireValue(sdk && sdk.sizeBytes <= 32*1024*1024, 'The current updater requires its signed SDK target.');
   requireValue(Buffer.isBuffer(documentation) && documentation.length>=5 && documentation.length<=8*1024*1024 && documentation.subarray(0,5).toString()==='%PDF-', 'A release needs its version-bound technical PDF.');
-  const documentFileName=`keepseam-client-${version}-technical-guide.pdf`,documentTarget=`documentation/${version}/${documentFileName}`;
+  const documentFileName=`self-managed-api-${version}-technical-guide.pdf`,documentTarget=`documentation/${version}/${documentFileName}`;
   targets.set(documentTarget,documentation);
   const manifest = { schemaVersion: 1, version, sequence, sourceRevision, notes, requirements,
     publicationEligible: records.every(record => record.eligible), artifacts: records.map(({ eligible, ...record }) => record),
@@ -50,9 +50,9 @@ export function buildSignedRelease({ rootBytes, rootSha256, roleKeys, version, s
     targets: Object.fromEntries([...targets].map(([path, bytes]) => [path, descriptor(bytes)])) });
   const snapshot = envelope('snapshot', { _type: 'snapshot', spec_version: '1.0.31', version: versions.snapshot, expires: expiration(1), meta: { 'targets.json': descriptor(targetsBytes, versions.targets) } });
   const timestamp = envelope('timestamp', { _type: 'timestamp', spec_version: '1.0.31', version: versions.timestamp, expires: expiration(1/24), meta: { 'snapshot.json': descriptor(snapshot, versions.snapshot) } });
-  const importBundle = { manifest: targets.get('release-manifest.json').toString('utf8'), channel: targets.get('channels/stable.json').toString('utf8'), metadata: { targets: targetsBytes.toString('utf8'), snapshot: snapshot.toString('utf8'), timestamp: timestamp.toString('utf8') } };
-  // Match the closed Cloud request contract before producing output. Character
-  // limits alone do not bound UTF-8 bytes or JSON escaping of localized text.
-  requireImportBundleBounds(importBundle);
-  return { manifest, root: rootBytes, metadata: new Map([['targets.json', targetsBytes], ['snapshot.json', snapshot], ['timestamp.json', timestamp]]), targets, importBundle };
+  const releaseBundle = { manifest: targets.get('release-manifest.json').toString('utf8'), channel: targets.get('channels/stable.json').toString('utf8'), metadata: { targets: targetsBytes.toString('utf8'), snapshot: snapshot.toString('utf8'), timestamp: timestamp.toString('utf8') } };
+  // Bound UTF-8 bytes, including localized text and JSON escaping, independently
+  // of any hosting provider used to publish the static repository.
+  requireReleaseBundleBounds(releaseBundle);
+  return { manifest, root: rootBytes, metadata: new Map([['targets.json', targetsBytes], ['snapshot.json', snapshot], ['timestamp.json', timestamp]]), targets, releaseBundle };
 }

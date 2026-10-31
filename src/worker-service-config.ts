@@ -10,8 +10,6 @@ export interface WorkerServiceConfig {
   readonly openApi?: { readonly enginePath: string; readonly intervalMs: number };
   readonly sources?: { readonly intervalMs: number };
   readonly models?: { readonly configPath: string };
-  readonly license?: { readonly credentialsPath: string; readonly trustPath: string; readonly leasePath?: string };
-  readonly cloud?: { readonly credentialsPath: string; readonly statePath: string; readonly integrationIds: readonly string[]; readonly intervalMs: number };
 }
 
 function invalid(message: string): never { throw new PlumberError('INVALID_INPUT', message); }
@@ -56,7 +54,7 @@ function interval(value: unknown, fallback: number): number {
 
 export function normalizeWorkerServiceConfig(value: unknown, target: WorkerServiceTarget = process.platform === 'win32' ? 'windows' : 'systemd'): WorkerServiceConfig {
   if (!['systemd', 'launchd', 'windows'].includes(target)) invalid('Choose systemd, launchd or windows.');
-  const config = record(value, ['schemaVersion', 'statePath', 'allowHttp', 'openApi', 'sources', 'cloud', 'license', 'models']);
+  const config = record(value, ['schemaVersion', 'statePath', 'allowHttp', 'openApi', 'sources', 'models']);
   if (config['schemaVersion'] !== 1 || (config['allowHttp'] !== undefined && typeof config['allowHttp'] !== 'boolean')) {
     invalid('Service configuration requires schemaVersion 1 and an explicit boolean HTTP policy.');
   }
@@ -72,30 +70,6 @@ export function normalizeWorkerServiceConfig(value: unknown, target: WorkerServi
     sources = Object.freeze({ intervalMs: interval(input['intervalMs'], 900_000) });
   }
   if (!openApi && !sources) invalid('Enable at least one registered observation profile: openApi or sources.');
-  let cloud: WorkerServiceConfig['cloud'];
-  if (config['cloud'] !== undefined) {
-    if (!openApi) invalid('Cloud projection currently requires registered OpenAPI subscriptions.');
-    const input = record(config['cloud'], ['credentialsPath', 'statePath', 'integrationIds', 'intervalMs']);
-    const ids = input['integrationIds'];
-    if (!Array.isArray(ids) || isProxy(ids) || Object.getPrototypeOf(ids) !== Array.prototype || ids.length < 1 || ids.length > 100) {
-      invalid('Cloud sharing requires an ordinary bounded list of subscription IDs.');
-    }
-    const descriptors = Object.getOwnPropertyDescriptors(ids);
-    if (Reflect.ownKeys(descriptors).length !== ids.length + 1 || Array.from({ length: ids.length }, (_, index) => descriptors[String(index)])
-      .some(descriptor => !descriptor || !Object.hasOwn(descriptor, 'value'))) invalid('Cloud subscription lists cannot contain holes or accessors.');
-    if (new Set(ids).size !== ids.length
-      || ids.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/u.test(id))) invalid('Cloud sharing requires 1–100 unique local subscription IDs.');
-    const cloudPath = servicePath(input['statePath'], target);
-    if (cloudPath.toLowerCase() === statePath.toLowerCase()) invalid('Cloud transport state requires its own directory.');
-    cloud = Object.freeze({ credentialsPath: servicePath(input['credentialsPath'], target), statePath: cloudPath,
-      integrationIds: Object.freeze([...ids] as string[]), intervalMs: interval(input['intervalMs'], 60_000) });
-  }
-  let license: WorkerServiceConfig['license'];
-  if (config['license'] !== undefined) {
-    const input = record(config['license'], ['credentialsPath', 'trustPath', 'leasePath']);
-    license = Object.freeze({ credentialsPath: servicePath(input['credentialsPath'], target), trustPath: servicePath(input['trustPath'], target),
-      ...(input['leasePath'] !== undefined ? { leasePath: servicePath(input['leasePath'], target) } : {}) });
-  }
   let models: WorkerServiceConfig['models'];
   if (config['models'] !== undefined) {
     const input = record(config['models'], ['configPath']);
@@ -103,8 +77,7 @@ export function normalizeWorkerServiceConfig(value: unknown, target: WorkerServi
   }
   return Object.freeze({ schemaVersion: 1, statePath, allowHttp: config['allowHttp'] === true,
     ...(models ? { models } : {}),
-    ...(license ? { license } : {}),
-    ...(openApi ? { openApi } : {}), ...(sources ? { sources } : {}), ...(cloud ? { cloud } : {}) });
+    ...(openApi ? { openApi } : {}), ...(sources ? { sources } : {}) });
 }
 
 export interface WorkerServiceManifestOptions {
@@ -133,14 +106,14 @@ export function renderWorkerServiceManifest(options: WorkerServiceManifestOption
   const configPath = servicePath(options.configPath, options.target);
   const node = servicePath(options.nodePath, options.target);
   const cli = servicePath(options.cliPath, options.target);
-  const name = options.name ?? 'keepseam';
+  const name = options.name ?? 'managedapi';
   if (typeof name !== 'string' || !/^[a-z][a-z0-9]{0,31}$/u.test(name)) invalid('Service name must contain 1–32 lowercase letters and digits, starting with a letter.');
   if (options.target === 'windows') {
     if (options.user !== undefined) invalid('Windows manifests use LocalService; custom password accounts are not generated.');
     const args = (action: string): string => [cli, 'worker-service', action, '--config', configPath].map(windowsArgument).join(' ');
     return `<?xml version="1.0" encoding="UTF-8"?>
 <service>
-  <id>${name}</id><name>Keepseam ${name}</name>
+  <id>${name}</id><name>Self-managed API ${name}</name>
   <description>Local contract observation. Changes require separate approval.</description>
   <executable>${xml(node)}</executable>
   <arguments>${xml(args('run'))}</arguments>
@@ -157,14 +130,14 @@ export function renderWorkerServiceManifest(options: WorkerServiceManifestOption
   const user = options.user;
   if (scope === 'system' && (typeof user !== 'string' || !/^[a-z_][a-z0-9_-]{0,31}$/u.test(user) || user === 'root')) invalid('Choose a dedicated non-root Unix account.');
   if (options.target === 'systemd') {
-    const writePaths = [config.statePath, ...(config.cloud ? [config.cloud.statePath] : [])].map(value => systemd(value)).join(' ');
+    const writePaths = systemd(config.statePath);
     // Explicit tmpfs mounts make namespaces mandatory. PrivateTmp alone can be
     // silently ignored by systemd when a host denies mount namespace setup.
     const temporaryStorage = scope === 'user'
       ? 'TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=64M /var/tmp:rw,nosuid,nodev,size=64M'
       : 'PrivateTmp=true';
     return `[Unit]
-Description=Keepseam local contract observer
+Description=Self-managed API local contract observer
 ${scope === 'user' ? 'AssertUser=!root' : 'After=network-online.target\nWants=network-online.target'}
 StartLimitIntervalSec=300
 StartLimitBurst=5
@@ -207,7 +180,7 @@ WantedBy=${scope === 'user' ? 'default.target' : 'multi-user.target'}
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.keepseam.${name}</string>
+  <key>Label</key><string>com.selfmanagedapi.${name}</string>
   <key>ProgramArguments</key><array>
 ${args}
   </array>

@@ -1,4 +1,4 @@
-name: keepseam-client-local
+name: self-managed-api-local
 
 services:
   payments-provider:

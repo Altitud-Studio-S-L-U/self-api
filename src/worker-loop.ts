@@ -22,7 +22,7 @@ export interface WorkerLoopOptions extends HttpObservationOptions {
 }
 
 export interface WorkerLoopDependencies {
-  /** Trusted local adapters. They are not policy or commands supplied by a Cloud job. */
+  /** Trusted local adapters; downloaded source data cannot supply executable policy. */
   readonly observe?: typeof observeOnce;
   readonly runApproved?: typeof runApprovedJobsOnce;
   readonly delay?: (milliseconds: number, signal: AbortSignal | undefined) => Promise<void>;

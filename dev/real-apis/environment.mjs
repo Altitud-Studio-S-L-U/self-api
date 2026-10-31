@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { captureHttpSource, prepareHttpSource, registerHttpSourceSubscription, registerLocalSubscription, scanConsumer } from 'keepseam-client';
+import { captureHttpSource, prepareHttpSource, registerHttpSourceSubscription, registerLocalSubscription, scanConsumer } from 'self-managed-api';
 import { providers, providerManifest } from './catalog.mjs';
 
 export const repositoryRoot = resolve(import.meta.dirname, '../..');
@@ -18,7 +18,7 @@ export function notionContract(version) {
   const modern = version === '2025-09-03';
   if (!modern && version !== '2022-06-28') throw new Error('Unknown exercise version');
   const parameter = modern ? 'data_source_id' : 'database_id';
-  return { openapi: '3.0.3', info: { title: 'Keepseam exercise projection: Notion query (partial, authored locally)', version,
+  return { openapi: '3.0.3', info: { title: 'SelfManagedApi exercise projection: Notion query (partial, authored locally)', version,
     description: 'Exercise subset derived from the public migration guide. Not an official or complete Notion OpenAPI specification; no retirement claim.' },
   paths: { [`/v1/${modern ? 'data_sources' : 'databases'}/{${parameter}}/query`]: { post: {
     operationId: modern ? 'queryDataSource' : 'queryDatabase',
@@ -37,7 +37,7 @@ export async function seed(root = defaultRoot) {
   root = resolve(root);
   await mkdir(root, { recursive: true });
   if ((await lstat(root)).isSymbolicLink() || (await realpath(root)).toLowerCase() !== root.toLowerCase()) throw new Error('Lab root must be a canonical directory');
-  const marker = { kind: 'keepseam-real-api-lab', schemaVersion: 1, root, platform: process.platform };
+  const marker = { kind: 'self-managed-api-real-api-lab', schemaVersion: 1, root, platform: process.platform };
   try { if (json(JSON.parse(await readFile(join(root, 'environment.json'), 'utf8'))) !== json(marker)) throw new Error('Lab belongs to a different path or host'); }
   catch (error) {
     if (error.code !== 'ENOENT') throw error;

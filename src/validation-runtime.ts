@@ -24,7 +24,7 @@ export const MAVEN_ARTIFACT = Object.freeze({ version: '3.9.16',
 });
 export const MAVEN_COMPONENTS = Object.freeze({ junit: '6.1.3', compiler: '3.16.0', surefire: '3.6.0', resources: '3.5.0' });
 export const MAVEN_FIXTURE_POM = `<project xmlns="http://maven.apache.org/POM/4.0.0">
-  <modelVersion>4.0.0</modelVersion><groupId>io.keepseam.validation</groupId><artifactId>consumer</artifactId><version>1.0</version>
+  <modelVersion>4.0.0</modelVersion><groupId>io.self-managed-api.validation</groupId><artifactId>consumer</artifactId><version>1.0</version>
   <properties><maven.compiler.release>25</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
   <dependencies><dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>${MAVEN_COMPONENTS.junit}</version><scope>test</scope></dependency></dependencies>
   <build><plugins>
@@ -36,7 +36,7 @@ export const MAVEN_FIXTURE_POM = `<project xmlns="http://maven.apache.org/POM/4.
 export const MAVEN_REPORT_CHECK = `import java.nio.file.*;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.XMLConstants;
-public final class KeepseamReports {
+public final class SelfManagedApiReports {
   public static void main(String[] args) throws Exception {
     var factory = DocumentBuilderFactory.newInstance();
     factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -61,7 +61,7 @@ public final class KeepseamReports {
       }
       if (executed == 0) throw new IllegalStateException("Every selected JUnit class must execute a test");
     }
-    System.out.println("KEEPSEAM_JUNIT_EXECUTED");
+    System.out.println("SELF_MANAGED_API_JUNIT_EXECUTED");
   }
 }\n`;
 export const FRAMEWORK_BASE_IMAGES = Object.freeze({

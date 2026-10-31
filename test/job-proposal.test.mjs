@@ -119,7 +119,7 @@ test('coverage gaps are exposed as an unanswered decision rather than a complete
   });
   const request = await prepareJobProposal(f.input);
   assert(request.discovery.inspectionIssueCount > 0);
-  assert(request.modelRequest.context.requiredDecisions.some(decision => decision.id === 'keepseam-coverage'));
+  assert(request.modelRequest.context.requiredDecisions.some(decision => decision.id === 'self-managed-api-coverage'));
   assert.equal(request.discovery.coverage, 'bounded-native-fetch-syntax');
 });
 

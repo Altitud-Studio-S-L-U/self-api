@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { registerLocalSubscription, observeOnce, listMaintenanceJobs } from 'keepseam-client';
+import { registerLocalSubscription, observeOnce, listMaintenanceJobs } from 'self-managed-api';
 import { digest, versions } from './capture.mjs';
 import { parseEntries } from './consumer/github-contents.mjs';
 
 const json = value => JSON.stringify(value, null, 2) + '\n';
-export const repository = 'Altitud-Studio-S-L-U/keepseam-client';
+export const repository = process.env.SELF_MANAGED_API_PILOT_REPOSITORY ?? 'OWNER/REPOSITORY';
 export const baseBranch = 'feat/live-base';
-export const enginePath = process.env.KEEPSEAM_ENGINE ?? join(resolve(import.meta.dirname, '../..'), 'work/tools/oasdiff', process.platform === 'win32' ? 'oasdiff.exe' : 'oasdiff');
+export const enginePath = process.env.SELF_MANAGED_API_ENGINE ?? join(resolve(import.meta.dirname, '../..'), 'work/tools/oasdiff', process.platform === 'win32' ? 'oasdiff.exe' : 'oasdiff');
 export const pathsFor = root => ({ root: resolve(root), consumer: join(resolve(root), 'consumer'), state: join(resolve(root), 'state'), contracts: join(resolve(root), 'contracts') });
 
 export function contract(version) {
@@ -55,11 +55,11 @@ export async function seedPilot(root, captureRoot) {
     '// Replay of a version-confirmed public GitHub response; no live network in Docker.\nexport const capturedResponse = ' + JSON.stringify(bodies[1])
       + ';\nexport const expectedEntries = ' + JSON.stringify(expectedEntries) + ';\n', { flag: 'wx', mode: 0o600 });
   await writeFile(join(paths.consumer, 'package.json'), json({ private: true, type: 'module', scripts: { test: 'node --test github-contents.test.mjs' } }), { flag: 'wx', mode: 0o600 });
-  await writeFile(join(paths.consumer, 'README.md'), '# Keepseam live API pilot\n\nPrivate disposable consumer for the documented GitHub 2026-03-10 submodule type migration. The baseline accepts the 2022 response and fails on the captured 2026 response. Tests replay actual public data and preserve the internal listing. This branch is not product source and must not be merged into main.\n', { flag: 'wx', mode: 0o600 });
+  await writeFile(join(paths.consumer, 'README.md'), '# SelfManagedApi live API pilot\n\nPrivate disposable consumer for the documented GitHub 2026-03-10 submodule type migration. The baseline accepts the 2022 response and fails on the captured 2026 response. Tests replay actual public data and preserve the internal listing. This branch is not product source and must not be merged into main.\n', { flag: 'wx', mode: 0o600 });
   for (const [name, version] of [['base.json', versions[0]], ['current.json', versions[1]]]) {
     await writeFile(join(paths.contracts, name), json(contract(version)), { flag: 'wx', mode: 0o600 });
   }
-  await writeFile(join(paths.root, 'pilot.json'), json({ kind: 'keepseam-live-github-pilot', schemaVersion: 1, root: paths.root,
+  await writeFile(join(paths.root, 'pilot.json'), json({ kind: 'self-managed-api-live-github-pilot', schemaVersion: 1, root: paths.root,
     platform: process.platform, captureSummary: JSON.parse(await readFile(join(captureRoot, 'summary.json'), 'utf8')) }), { flag: 'wx', mode: 0o600 });
   await writeFile(join(paths.root, 'provider-evidence.txt'),
     'Reviewed public provider evidence: https://docs.github.com/en/rest/about-the-rest-api/breaking-changes#version-2026-03-10\n'
@@ -74,7 +74,7 @@ export async function seedPilot(root, captureRoot) {
 export async function openPilot(root) {
   const paths = pathsFor(root);
   const marker = JSON.parse(await readFile(join(paths.root, 'pilot.json'), 'utf8'));
-  assert.equal(marker.kind, 'keepseam-live-github-pilot'); assert.equal(marker.root, paths.root);
+  assert.equal(marker.kind, 'self-managed-api-live-github-pilot'); assert.equal(marker.root, paths.root);
   assert.equal(marker.platform, process.platform, 'Do not move worker state across hosts');
   assert.equal(await realpath(paths.root), paths.root);
   return paths;

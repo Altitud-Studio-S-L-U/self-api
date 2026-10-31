@@ -43,7 +43,7 @@ for (const language of ['python', 'java']) {
     assert.deepEqual(request.modelRequest.context.files.map(item => [item.path, item.role]), [[file, 'source'], [selectedTest, 'test']]);
     assert.equal(request.modelRequest.context.files[0].sha256, hash(before));
     assert(request.discovery.inspectionIssueCount >= 2);
-    assert(request.modelRequest.context.requiredDecisions.some(decision => decision.id === 'keepseam-coverage'));
+    assert(request.modelRequest.context.requiredDecisions.some(decision => decision.id === 'self-managed-api-coverage'));
     assert.equal(request.consumerExecuted, false);
     const recipe = { schemaVersion: 1, summary: 'Operator-authored synthetic fixture recipe; not an inference-quality claim.', decisions: [],
       files: [{ path: file, sha256: hash(before), edits: [{ before, after }] }] };

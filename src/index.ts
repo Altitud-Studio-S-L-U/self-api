@@ -48,12 +48,6 @@ export { normalizeWorkerServiceConfig, renderWorkerServiceManifest } from './wor
 export type { WorkerServiceConfig, WorkerServiceTarget, WorkerServiceManifestOptions } from './worker-service-config.js';
 export { runWorkerService, loadWorkerServiceConfig, readWorkerServiceStatus, requestWorkerServiceStop } from './worker-service.js';
 export type { WorkerServiceStatus, WorkerServiceDependencies } from './worker-service.js';
-export { generateCloudWorkerIdentity, createCloudTransport, createCloudControlTransport, CloudConnectionError } from './cloud-connection.js';
-export { normalizeWorkerLicenseTrust, verifyWorkerLicense, WorkerLicenseStore, WORKER_CONTROL_INTERVAL_MS, WORKER_OFFLINE_LIMIT_SECONDS } from './worker-license.js';
-export type { WorkerLicenseTrust, WorkerLicenseClaims, WorkerControlRequest, WorkerControlResponse, WorkerControlTransport } from './worker-license.js';
-export { syncWorkerToCloud } from './cloud-sync.js';
-export type { CloudSyncOptions,CloudSyncResult } from './cloud-sync.js';
-export type { CloudWorkerIdentity, CloudCredentials, CloudStatusReceipt, CloudTransport } from './cloud-connection.js';
 export { preparePublicationRequest, validatePublicationRequest, approvePublicationRequest, publishPublication, reconcilePublication } from './publication-runner.js';
 export type { GitPublicationSnapshot, PublicationCommitIdentity, PublishedPullRequest, GitPublicationAdapterIdentity, GitPublicationAdapter, PublicationRequest, PublicationApproval, PublicationResult } from './publication-runner.js';
 export { createGitHubPublicationAdapter } from './github-publication.js';
@@ -67,7 +61,7 @@ export type { HttpSourcePolicy, HttpSourceSnapshot, HttpSourceCredentials, Captu
 export { analyzeMcpImpact } from './mcp-impact.js';
 export type { McpClientBinding, McpImpactOptions, McpConsumerCall, McpImpactReport } from './mcp-impact.js';
 export { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from './client-update.js';
-export type { ClientUpdateOptions, ClientUpdateRepository, PublicClientUpdateRepository, CloudClientUpdateRepository, ClientRelease, ClientUpdateStatus, ClientUpdateReason, ClientUpdateDependencies } from './client-update.js';
+export type { ClientUpdateOptions, ClientUpdateRepository, PublicClientUpdateRepository, ClientRelease, ClientUpdateStatus, ClientUpdateReason, ClientUpdateDependencies } from './client-update.js';
 export { validateRuntime } from './validation-runtime.js';
 export { prepareValidationRuntime } from './validation-runtime-prepare.js';
 export type { ValidationRuntime, ValidationFramework } from './validation-runtime.js';

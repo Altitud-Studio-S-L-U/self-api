@@ -10,7 +10,7 @@ export const identity = { id: 'controlled-model', location: 'local', destination
 
 export async function fixture(t, beforeObserve = async () => {}) {
   // WSL DrvFS does not provide the private POSIX state permissions required by the real worker.
-  const parent = process.env.KEEPSEAM_TEST_WORK ? resolve(process.env.KEEPSEAM_TEST_WORK) : join(root, 'work/test-job-proposal');
+  const parent = process.env.SELF_MANAGED_API_TEST_WORK ? resolve(process.env.SELF_MANAGED_API_TEST_WORK) : join(root, 'work/test-job-proposal');
   await mkdir(parent, { recursive: true });
   const realParent = await realpath(parent);
   const directory = await mkdtemp(join(realParent, 'case-'));
@@ -49,10 +49,10 @@ export async function controlledModel(t, recipe, onRequest = () => {}) {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const payload = JSON.parse(Buffer.concat(chunks));
-      if (payload.response_format?.json_schema?.name === 'keepseam_connection') {
+      if (payload.response_format?.json_schema?.name === 'self_managed_api_connection') {
         checks.push(payload);
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"keepseam":"ok"}' } }] }));
+        response.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"self-managed-api":"ok"}' } }] }));
         return;
       }
       calls.push(payload);

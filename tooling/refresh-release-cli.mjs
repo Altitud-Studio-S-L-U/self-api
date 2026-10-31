@@ -13,7 +13,7 @@ export async function refreshReleaseConfiguration(path, outputParent = resolve(i
     || typeof config.releaseDirectory !== 'string' || !isAbsolute(config.releaseDirectory)) throw new Error('Invalid release refresh configuration.');
   checkServicePath(config.releaseDirectory, 'directory'); checkWindowsServiceAcl(config.releaseDirectory, false);
   const rootBytes = boundedFile(join(config.releaseDirectory, 'metadata/root.json'), 512000);
-  const previousBundle = JSON.parse(boundedFile(join(config.releaseDirectory, 'import-bundle.json'), 30000).toString('utf8'));
+  const previousBundle = JSON.parse(boundedFile(join(config.releaseDirectory, 'release-bundle.json'), 128 * 1024).toString('utf8'));
   const inspected = inspectReleaseForRefresh({ ...config, rootBytes, previousBundle, now });
   for (const [role, bytes] of Object.entries(inspected.bytes)) {
     if (!boundedFile(join(config.releaseDirectory, `metadata/${role}.json`), 16384).equals(bytes)) throw new Error('Signed directory differs from its previous bundle.');
@@ -22,7 +22,7 @@ export async function refreshReleaseConfiguration(path, outputParent = resolve(i
     boundedFile(join(config.releaseDirectory, 'targets', target), inspected.descriptors[target].length)]));
   const nativeReceipts = [];
   for (const artifact of inspected.manifest.artifacts) {
-    const receiptPath = join(config.releaseDirectory, 'delivery/native-receipts', `${artifact.fileName}.signing.json`);
+    const receiptPath = join(config.releaseDirectory, 'native-receipts', `${artifact.fileName}.signing.json`);
     try { nativeReceipts.push(JSON.parse(boundedFile(receiptPath, 8192).toString('utf8'))); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }

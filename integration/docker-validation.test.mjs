@@ -62,7 +62,7 @@ async function makeCase(t) {
 
 async function assertRemoved(result) {
   assert.equal(result.cleanup, 'removed', `${result.status}: ${result.reason ?? result.stderr}`);
-  assert.match(result.containerName, /^keepseam-validation-[a-f0-9-]+$/u);
+  assert.match(result.containerName, /^self-managed-api-validation-[a-f0-9-]+$/u);
   await assert.rejects(execute('docker', ['container', 'inspect', result.containerName], dockerOptions), error => {
     assert.equal(error.code, 1);
     assert.match(error.stderr, /No such (?:object|container)/iu);

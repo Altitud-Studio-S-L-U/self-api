@@ -9,9 +9,9 @@ import { buildSignedRelease, canonicalTuf } from '../tooling/sign-release.mjs';
 import {signReleaseConfiguration,writeSignedRelease} from '../tooling/sign-release-cli.mjs';
 import {refreshReleaseConfiguration} from '../tooling/refresh-release-cli.mjs';
 import {refreshSignedRelease} from '../tooling/refresh-release.mjs';
-import {requireImportBundleBounds} from '../tooling/release-tuf.mjs';
+import {requireReleaseBundleBounds} from '../tooling/release-tuf.mjs';
 import {checkWindowsPermissions} from '../dist/windows-permissions.js';
-import {writeReleaseDelivery} from '../tooling/release-delivery.mjs';
+import {releaseNativeReceipts} from '../tooling/release-export.mjs';
 import {releaseRepositoryFiles} from '../tooling/release-repository.mjs';
 
 function fixture(consistentSnapshot = false) {
@@ -24,7 +24,7 @@ function fixture(consistentSnapshot = false) {
   return {rootBytes,rootSha256:createHash('sha256').update(rootBytes).digest('hex'),
     roleKeys:Object.fromEntries(['targets','snapshot','timestamp'].map(role=>[role,[{keyid,key:privateKey}]])),
     version:'0.2.0',sequence:1,sourceRevision:'a'.repeat(40),notes:{es:'Fixture sintética',en:'Synthetic fixture'},requirements:{es:'Node 24.21',en:'Node 24.21'},
-    artifacts:[{os:'any',arch:'any',fileName:'keepseam-client-0.2.0.tgz',bytes:Buffer.from('Synthetic inert SDK fixture')}],documentation:Buffer.from('%PDF-1.7 Synthetic inert document fixture client-version=0.2.0 |'),keyid};
+    artifacts:[{os:'any',arch:'any',fileName:'self-managed-api-0.2.0.tgz',bytes:Buffer.from('Synthetic inert SDK fixture')}],documentation:Buffer.from('%PDF-1.7 Synthetic inert document fixture client-version=0.2.0 |'),keyid};
 }
 test('signing accepts a new consistent-snapshot root without changing its pinned bytes', () => {
   const input = fixture(true), release = buildSignedRelease(input);
@@ -33,35 +33,34 @@ test('signing accepts a new consistent-snapshot root without changing its pinned
   assert.equal(createHash('sha256').update(release.root).digest('hex'), input.rootSha256);
 });
 
-test('Cloud channel bundle keeps exact signed bytes across refresh and accepts a historical bundle without that projection', () => {
+test('Public release bundle keeps exact signed bytes across refresh and accepts a historical bundle without that projection', () => {
   const input=fixture(true),release=buildSignedRelease(input),channel=release.targets.get('channels/stable.json').toString('utf8');
-  assert.equal(release.importBundle.channel,channel);
-  const options={rootBytes:release.root,rootSha256:input.rootSha256,manifestSha256:createHash('sha256').update(release.importBundle.manifest).digest('hex'),
-    roleKeys:input.roleKeys,targets:release.targets,previousBundle:release.importBundle,now:Date.now()+1000};
-  assert.equal(refreshSignedRelease(options).importBundle.channel,channel);
-  assert.throws(()=>refreshSignedRelease({...options,previousBundle:{...release.importBundle,channel:channel+' '}}),/exact channel/u);
-  assert.throws(()=>requireImportBundleBounds({...release.importBundle,channel:'x'.repeat(4097)}),/bounded Cloud import/u);
-  const {channel:_channel,...legacy}=release.importBundle;
-  assert.equal(refreshSignedRelease({...options,previousBundle:legacy}).importBundle.channel,undefined);
+  assert.equal(release.releaseBundle.channel,channel);
+  const options={rootBytes:release.root,rootSha256:input.rootSha256,manifestSha256:createHash('sha256').update(release.releaseBundle.manifest).digest('hex'),
+    roleKeys:input.roleKeys,targets:release.targets,previousBundle:release.releaseBundle,now:Date.now()+1000};
+  assert.equal(refreshSignedRelease(options).releaseBundle.channel,channel);
+  assert.throws(()=>refreshSignedRelease({...options,previousBundle:{...release.releaseBundle,channel:channel+' '}}),/exact channel/u);
+  assert.throws(()=>requireReleaseBundleBounds({...release.releaseBundle,channel:'x'.repeat(4097)}),/bounded release bundle/u);
+  const {channel:_channel,...legacy}=release.releaseBundle;
+  assert.equal(refreshSignedRelease({...options,previousBundle:legacy}).releaseBundle.channel,undefined);
 });
-test('refresh reserves the Cloud revision field within the existing thirty kilobyte body limit', () => {
-  const bundle = { manifest: 'm'.repeat(16384), metadata: { targets: '', snapshot: '{}', timestamp: '{}' } };
-  const input = { requestId: '00000000-0000-4000-8000-000000000000', bundle };
-  bundle.metadata.targets = 't'.repeat(30000 - Buffer.byteLength(JSON.stringify(input)));
-  assert.equal(Buffer.byteLength(JSON.stringify(input)), 30000);
-  assert.doesNotThrow(() => requireImportBundleBounds(bundle));
-  assert.throws(() => requireImportBundleBounds(bundle, { refresh: true }), /bounded Cloud import contract/u);
-  const refreshInput = { ...input, expectedRevision: 2147483646 };
-  bundle.metadata.targets = bundle.metadata.targets.slice(Buffer.byteLength(JSON.stringify(refreshInput)) - 30000);
-  assert.equal(Buffer.byteLength(JSON.stringify(refreshInput)), 30000);
-  assert.doesNotThrow(() => requireImportBundleBounds(bundle, { refresh: true }));
+test('public release bundle bounds UTF-8 fields and escaped total bytes without a hosting request envelope', () => {
+  const input=fixture(),release=buildSignedRelease(input),bundle=release.releaseBundle;
+  assert.doesNotThrow(()=>requireReleaseBundleBounds(bundle));
+  for(const [field,limit] of [['manifest',16384],['channel',4096]]) {
+    assert.throws(()=>requireReleaseBundleBounds({...bundle,[field]:'x'.repeat(limit+1)}),/bounded release bundle/u);
+  }
+  for(const [field,limit] of [['targets',16384],['snapshot',8192],['timestamp',8192]]) {
+    assert.throws(()=>requireReleaseBundleBounds({...bundle,metadata:{...bundle.metadata,[field]:'x'.repeat(limit+1)}}),/bounded release bundle/u);
+  }
+  assert.throws(()=>requireReleaseBundleBounds({...bundle,manifest:'\u0000'.repeat(16384),metadata:{...bundle.metadata,targets:'\u0000'.repeat(16384)}}),/bounded release bundle/u);
 });
 class FixtureFetcher extends BaseFetcher {
   constructor(files){super();this.files=files;}
   async fetch(url){const bytes=this.files.get(url);assert(bytes,`Unexpected URL ${url}`);return new ReadableStream({start(controller){controller.enqueue(new Uint8Array(bytes));controller.close();}});}
 }
 test('release builder produces metadata accepted by the real TUF verifier with exact manifest and SDK hashes',async t=>{
-  const signed=buildSignedRelease(fixture()),directory=await mkdtemp(join(tmpdir(),'keepseam-sign-release-test-'));
+  const signed=buildSignedRelease(fixture()),directory=await mkdtemp(join(tmpdir(),'self-managed-api-sign-release-test-'));
   t.after(()=>rm(directory,{recursive:true}));await mkdir(join(directory,'metadata'));await writeFile(join(directory,'metadata/root.json'),signed.root);
   const base='https://release.example.test/',files=new Map([...signed.metadata].map(([path,bytes])=>[`${base}metadata/${path}`,bytes]));
   const verifier=new Updater({metadataDir:join(directory,'metadata'),metadataBaseUrl:`${base}metadata/`,fetcher:new FixtureFetcher(files),config:{maxRootRotations:0,maxDelegations:0}});
@@ -70,7 +69,7 @@ test('release builder produces metadata accepted by the real TUF verifier with e
   assert.equal(signed.manifest.publicationEligible,true);assert.equal(JSON.parse(signed.targets.get('channels/stable.json')).minimumNodeVersion,'24.21.0');
 });
 test('unsigned Windows executable remains a signed-metadata draft and never gains publisher verification',()=>{
-  const input=fixture();input.artifacts.push({os:'windows',arch:'x64',fileName:'keepseam-0.2.0-win32-x64.tar.gz',bytes:Buffer.from('Synthetic unsigned executable archive')});
+  const input=fixture();input.artifacts.push({os:'windows',arch:'x64',fileName:'self-managed-api-0.2.0-win32-x64.tar.gz',bytes:Buffer.from('Synthetic unsigned executable archive')});
   const release=buildSignedRelease(input);assert.equal(release.manifest.publicationEligible,false);
   assert.deepEqual(release.manifest.artifacts[1].nativeSignature,{kind:'none',verified:false,publisher:null});
 });
@@ -81,16 +80,16 @@ test('signing requires pinned root, role keys matching its identity and sufficie
   const other=generateKeyPairSync('ed25519');assert.throws(()=>buildSignedRelease({...input,roleKeys:{...input.roleKeys,targets:[{keyid:input.keyid,key:other.privateKey}]}}),/match/u);
   assert.throws(()=>buildSignedRelease({...input,roleKeys:{...input.roleKeys,targets:[...input.roleKeys.targets,...input.roleKeys.targets]}}),/duplicated/u);
 });
-test('release construction rejects metadata that cannot fit the bounded Cloud import contract',()=>{
+test('release construction rejects metadata that cannot fit the bounded release bundle',()=>{
   const input=fixture();
-  assert.throws(()=>buildSignedRelease({...input,notes:{es:'字'.repeat(4000),en:'字'.repeat(4000)},requirements:{es:'字'.repeat(2000),en:'字'.repeat(2000)}}),/bounded Cloud import/u);
+  assert.throws(()=>buildSignedRelease({...input,notes:{es:'字'.repeat(4000),en:'字'.repeat(4000)},requirements:{es:'字'.repeat(2000),en:'字'.repeat(2000)}}),/bounded release bundle/u);
   for(const nativeSignature of [{kind:'not-required',verified:false,publisher:'a'.repeat(257)},
     {kind:'not-required',verified:false,publisher:null,privateContext:'never-export'}]) {
     assert.throws(()=>buildSignedRelease({...input,artifacts:[{...input.artifacts[0],nativeSignature}]}),/native signing receipt/u);
   }
 });
-test('operator signing command produces a real TUF feed and inert import bundle without publishing or exposing keys',async t=>{
-  const input=fixture(),directory=await realpath(await mkdtemp(join(tmpdir(),'keepseam-release-sign-config-')));checkWindowsPermissions([directory],true,directory);t.after(()=>rm(directory,{recursive:true}));
+test('operator signing command produces a real TUF feed and inert public repository without publishing or exposing keys',async t=>{
+  const input=fixture(),directory=await realpath(await mkdtemp(join(tmpdir(),'self-managed-api-release-sign-config-')));checkWindowsPermissions([directory],true,directory);t.after(()=>rm(directory,{recursive:true}));
   const rootFile=join(directory,'root.json'),keyFile=join(directory,'role.pem'),artifactFile=join(directory,input.artifacts[0].fileName),documentationFile=join(directory,'technical-guide.pdf');
   await writeFile(rootFile,input.rootBytes,{mode:0o600});await writeFile(keyFile,input.roleKeys.targets[0].key.export({format:'pem',type:'pkcs8'}),{mode:0o600});await writeFile(artifactFile,input.artifacts[0].bytes,{mode:0o600});await writeFile(documentationFile,input.documentation,{mode:0o600});
   const config={schemaVersion:1,rootFile,rootSha256:input.rootSha256,roleKeys:Object.fromEntries(['targets','snapshot','timestamp'].map(role=>[role,[{keyid:input.keyid,file:keyFile}]])),version:input.version,sequence:input.sequence,sourceRevision:input.sourceRevision,notes:input.notes,requirements:input.requirements,documentationFile,artifacts:[{os:'any',arch:'any',fileName:input.artifacts[0].fileName,file:artifactFile}]};
@@ -98,47 +97,50 @@ test('operator signing command produces a real TUF feed and inert import bundle 
   await writeFile(documentationFile,Buffer.from('%PDF-1.7 Synthetic wrong edition client-version=0.2.00 |'),{mode:0o600});
   await assert.rejects(signReleaseConfiguration(path,join(directory,'wrong-document')),/client version/u);
   await writeFile(documentationFile,input.documentation,{mode:0o600});
-  const result=await signReleaseConfiguration(path,join(directory,'outputs')),bundle=JSON.parse(await readFile(join(result.directory,'import-bundle.json'),'utf8'));
+  const result=await signReleaseConfiguration(path,join(directory,'outputs')),bundle=JSON.parse(await readFile(join(result.directory,'release-bundle.json'),'utf8'));
   assert.equal(result.publicationEligible,true);assert.equal(JSON.parse(bundle.manifest).documentation.sha256,createHash('sha256').update(input.documentation).digest('hex'));
   assert.doesNotMatch(JSON.stringify(bundle),/PRIVATE KEY/u);
-  const delivery=JSON.parse(await readFile(join(result.deliveryDirectory,'delivery.json'),'utf8'));
-  const request=JSON.parse(await readFile(join(result.deliveryDirectory,'import-bundle.json'),'utf8'));
-  assert.equal(request.requestId,delivery.importRequestId);assert.deepEqual(request.bundle,bundle);assert.equal(delivery.published,false);
-  assert.deepEqual(await readFile(join(result.deliveryDirectory,'cloud-artifacts',input.artifacts[0].fileName)),input.artifacts[0].bytes);
-  assert.deepEqual(await readFile(join(result.deliveryDirectory,'trust/root.json')),input.rootBytes);
-  for(const file of delivery.files){const bytes=await readFile(join(result.deliveryDirectory,file.path));assert.equal(bytes.length,file.sizeBytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),file.sha256);}
+  assert.equal('deliveryDirectory' in result,false);
+  assert.deepEqual(await readFile(join(result.directory,'targets',JSON.parse(bundle.manifest).artifacts[0].target)),input.artifacts[0].bytes);
+  assert.deepEqual(await readFile(join(result.directory,'metadata/root.json')),input.rootBytes);
+  assert.doesNotMatch(await readFile(join(result.directory,'release-bundle.json'),'utf8'),/PRIVATE KEY/u);
   const updater=new Updater({metadataDir:join(result.directory,'metadata'),metadataBaseUrl:'https://synthetic-feed.invalid/metadata/',fetcher:new FixtureFetcher(new Map(['targets','snapshot','timestamp'].map(role=>[`https://synthetic-feed.invalid/metadata/${role}.json`,Buffer.from(bundle.metadata[role])]))),config:{maxRootRotations:0,maxDelegations:0}});
   await updater.refresh();assert.equal((await updater.getTargetInfo('channels/stable.json')).hashes.sha256,createHash('sha256').update(await readFile(join(result.directory,'targets/channels/stable.json'))).digest('hex'));
   const inputs=join(directory,'reviewed-inputs');await mkdir(inputs,{mode:0o700});
   await writeFile(join(inputs,input.artifacts[0].fileName),input.artifacts[0].bytes,{mode:0o600});await writeFile(join(inputs,'technical-guide.pdf'),input.documentation,{mode:0o600});
-  const previousInput=process.env.KEEPSEAM_RELEASE_INPUT_DIRECTORY,previousRevision=process.env.KEEPSEAM_RELEASE_SOURCE_REVISION;
+  const previousInput=process.env.SELF_MANAGED_API_RELEASE_INPUT_DIRECTORY,previousRevision=process.env.SELF_MANAGED_API_RELEASE_SOURCE_REVISION;
   try {
-    process.env.KEEPSEAM_RELEASE_INPUT_DIRECTORY=inputs;process.env.KEEPSEAM_RELEASE_SOURCE_REVISION='b'.repeat(40);
+    process.env.SELF_MANAGED_API_RELEASE_INPUT_DIRECTORY=inputs;process.env.SELF_MANAGED_API_RELEASE_SOURCE_REVISION='b'.repeat(40);
     await assert.rejects(signReleaseConfiguration(path,join(directory,'wrong-source')),/reviewed release source/u);
-    process.env.KEEPSEAM_RELEASE_SOURCE_REVISION=input.sourceRevision;
+    process.env.SELF_MANAGED_API_RELEASE_SOURCE_REVISION=input.sourceRevision;
     const relocated=await signReleaseConfiguration(path,join(directory,'relocated'));
-    assert.deepEqual(await readFile(join(relocated.deliveryDirectory,'cloud-artifacts',input.artifacts[0].fileName)),input.artifacts[0].bytes);
+    assert.deepEqual(await readFile(join(relocated.directory,'targets',input.artifacts[0].os==='any'?`packages/self-managed-api/${input.version}/${input.artifacts[0].fileName}`:input.artifacts[0].fileName)),input.artifacts[0].bytes);
   } finally {
-    if(previousInput===undefined)delete process.env.KEEPSEAM_RELEASE_INPUT_DIRECTORY;else process.env.KEEPSEAM_RELEASE_INPUT_DIRECTORY=previousInput;
-    if(previousRevision===undefined)delete process.env.KEEPSEAM_RELEASE_SOURCE_REVISION;else process.env.KEEPSEAM_RELEASE_SOURCE_REVISION=previousRevision;
+    if(previousInput===undefined)delete process.env.SELF_MANAGED_API_RELEASE_INPUT_DIRECTORY;else process.env.SELF_MANAGED_API_RELEASE_INPUT_DIRECTORY=previousInput;
+    if(previousRevision===undefined)delete process.env.SELF_MANAGED_API_RELEASE_SOURCE_REVISION;else process.env.SELF_MANAGED_API_RELEASE_SOURCE_REVISION=previousRevision;
   }
 });
-test('delivery refuses altered artifact bytes or native receipts before creating output',async t=>{
-  const directory=await realpath(await mkdtemp(join(tmpdir(),'keepseam-release-delivery-test-')));t.after(()=>rm(directory,{recursive:true}));
+test('public export refuses altered bytes and native receipts before creating output',async t=>{
+  const directory=await realpath(await mkdtemp(join(tmpdir(),'self-managed-api-release-export-test-')));t.after(()=>rm(directory,{recursive:true}));
   const signed=buildSignedRelease(fixture()),sdk=signed.manifest.artifacts[0];signed.targets.set(sdk.target,Buffer.from('Changed unreviewed bytes'));
-  await assert.rejects(writeReleaseDelivery(signed,join(directory,'changed')),/bytes differ/u);
+  await assert.rejects(writeSignedRelease(signed,join(directory,'changed')),/signed descriptor/u);
   const original=buildSignedRelease(fixture());
-  await assert.rejects(writeReleaseDelivery(original,join(directory,'receipt'),{nativeReceipts:[{schemaVersion:1,fileName:sdk.fileName,archiveSha256:'f'.repeat(64),executableSha256:'b'.repeat(64),nativeSignature:sdk.nativeSignature}]}),/does not bind/u);
+  const receipt={schemaVersion:1,fileName:sdk.fileName,archiveSha256:sdk.sha256,executableSha256:'b'.repeat(64),nativeSignature:sdk.nativeSignature};
+  assert.throws(()=>releaseNativeReceipts(original,[{...receipt,archiveSha256:'f'.repeat(64)}]),/does not bind/u);
+  assert.throws(()=>releaseNativeReceipts(original,[receipt,receipt]),/Duplicate/u);
+  const result=await writeSignedRelease(original,directory,{nativeReceipts:[{...receipt,privateContext:'must-not-export'}]});
+  const exported=JSON.parse(await readFile(join(result.directory,'native-receipts',sdk.fileName+'.signing.json'),'utf8'));
+  assert.deepEqual(exported,receipt);
 });
 
 const metadataVersions = release => Object.fromEntries([...release.metadata].map(([name, bytes]) => [name.replace('.json', ''), JSON.parse(bytes.toString()).signed.version]));
 function refreshed(input, previous, now = Date.now()) {
   return refreshSignedRelease({ rootBytes: previous.root, rootSha256: input.rootSha256,
-    manifestSha256: createHash('sha256').update(previous.importBundle.manifest).digest('hex'),
-    previousBundle: previous.importBundle, targets: previous.targets, roleKeys: input.roleKeys, now });
+    manifestSha256: createHash('sha256').update(previous.releaseBundle.manifest).digest('hex'),
+    previousBundle: previous.releaseBundle, targets: previous.targets, roleKeys: input.roleKeys, now });
 }
 async function verifierCache(t, initial) {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), 'keepseam-refresh-tuf-test-')));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'self-managed-api-refresh-tuf-test-')));
   t.after(() => rm(directory, { recursive: true }));
   await writeFile(join(directory, 'root.json'), initial.root);
   return { directory, verifier: release => new Updater({ metadataDir: directory, metadataBaseUrl: 'https://release.example.test/metadata/',
@@ -153,11 +155,11 @@ test('expired cached timestamp recovers with a legitimate refresh without changi
   await assert.rejects(cache.verifier(previous).refresh(), /expired/u);
   const next = refreshed(input, previous);
   assert.deepEqual(metadataVersions(next), { targets: 1, snapshot: 1, timestamp: 2 });
-  assert.deepEqual(next.root, previous.root); assert.equal(next.importBundle.manifest, previous.importBundle.manifest);
+  assert.deepEqual(next.root, previous.root); assert.equal(next.releaseBundle.manifest, previous.releaseBundle.manifest);
   assert.deepEqual(next.targets, previous.targets);
   for (const role of ['targets.json', 'snapshot.json']) assert.deepEqual(next.metadata.get(role), previous.metadata.get(role));
   const verifier = cache.verifier(next); await verifier.refresh();
-  assert.equal((await verifier.getTargetInfo('release-manifest.json')).hashes.sha256, createHash('sha256').update(previous.importBundle.manifest).digest('hex'));
+  assert.equal((await verifier.getTargetInfo('release-manifest.json')).hashes.sha256, createHash('sha256').update(previous.releaseBundle.manifest).digest('hex'));
   const expires = Date.parse(JSON.parse(next.metadata.get('timestamp.json')).signed.expires);
   assert(expires > Date.now() && expires <= Date.now() + 3600000);
 });
@@ -166,7 +168,7 @@ for (const consistent of [false, true]) test(`expired parent metadata renews its
   for (const days of [2, 8]) {
     const input = fixture(consistent), previous = buildSignedRelease({ ...input, now: Date.now() - days * 86400000 }), next = refreshed(input, previous);
     assert.deepEqual(metadataVersions(next), { targets: days === 2 ? 1 : 2, snapshot: 2, timestamp: 2 });
-    assert.deepEqual(next.targets, previous.targets); assert.equal(next.importBundle.manifest, previous.importBundle.manifest);
+    assert.deepEqual(next.targets, previous.targets); assert.equal(next.releaseBundle.manifest, previous.releaseBundle.manifest);
     assert.deepEqual(JSON.parse(next.metadata.get('targets.json')).signed.targets, JSON.parse(previous.metadata.get('targets.json')).signed.targets);
     const cache = await verifierCache(t, previous); await cache.verifier(next).refresh();
   }
@@ -186,32 +188,32 @@ test('refresh never outlives its pinned root or overflows a metadata version', (
 test('refresh refuses changed manifest, artifact, root, unauthenticated metadata and expired root', () => {
   const input = fixture(), previous = buildSignedRelease(input);
   const options = { rootBytes: previous.root, rootSha256: input.rootSha256,
-    manifestSha256: createHash('sha256').update(previous.importBundle.manifest).digest('hex'),
-    previousBundle: previous.importBundle, targets: previous.targets, roleKeys: input.roleKeys };
-  assert.throws(() => refreshSignedRelease({ ...options, previousBundle: { ...previous.importBundle,
+    manifestSha256: createHash('sha256').update(previous.releaseBundle.manifest).digest('hex'),
+    previousBundle: previous.releaseBundle, targets: previous.targets, roleKeys: input.roleKeys };
+  assert.throws(() => refreshSignedRelease({ ...options, previousBundle: { ...previous.releaseBundle,
     manifest: JSON.stringify({ ...previous.manifest, sourceRevision: 'b'.repeat(40) }) } }), /manifest mismatch/u);
   const changedTargets = new Map(previous.targets); changedTargets.set(previous.manifest.artifacts[0].target, Buffer.from('unreviewed bytes'));
   assert.throws(() => refreshSignedRelease({ ...options, targets: changedTargets }), /target bytes changed/u);
   assert.throws(() => refreshSignedRelease({ ...options, rootBytes: fixture().rootBytes }), /root mismatch/u);
-  const timestamp = JSON.parse(previous.importBundle.metadata.timestamp); timestamp.signed.version++;
-  assert.throws(() => refreshSignedRelease({ ...options, previousBundle: { ...previous.importBundle,
-    metadata: { ...previous.importBundle.metadata, timestamp: JSON.stringify(timestamp) } } }), /metadata signature/u);
+  const timestamp = JSON.parse(previous.releaseBundle.metadata.timestamp); timestamp.signed.version++;
+  assert.throws(() => refreshSignedRelease({ ...options, previousBundle: { ...previous.releaseBundle,
+    metadata: { ...previous.releaseBundle.metadata, timestamp: JSON.stringify(timestamp) } } }), /metadata signature/u);
   assert.throws(() => refreshSignedRelease({ ...options, now: Date.parse('2099-01-01T00:00:01Z') }), /expired pinned TUF root/u);
 });
 
 test('operator rejects deeply nested root and targets before recursive canonicalization', () => {
   const input = fixture(), previous = buildSignedRelease(input);
   const options = { rootBytes: previous.root, rootSha256: input.rootSha256,
-    manifestSha256: createHash('sha256').update(previous.importBundle.manifest).digest('hex'),
-    previousBundle: previous.importBundle, targets: previous.targets, roleKeys: input.roleKeys };
+    manifestSha256: createHash('sha256').update(previous.releaseBundle.manifest).digest('hex'),
+    previousBundle: previous.releaseBundle, targets: previous.targets, roleKeys: input.roleKeys };
   let nested = null; for (let index = 0; index < 1000; index++) nested = [nested];
   const root = JSON.parse(previous.root); root.signed.extra = nested;
   const rootBytes = Buffer.from(JSON.stringify(root));
   const boundedError = error => !(error instanceof RangeError) && /bounded TUF structure/u.test(error.message);
   assert.throws(() => refreshSignedRelease({ ...options, rootBytes, rootSha256: createHash('sha256').update(rootBytes).digest('hex') }), boundedError);
-  const targets = JSON.parse(previous.importBundle.metadata.targets); targets.signed.extra = nested;
-  assert.throws(() => refreshSignedRelease({ ...options, previousBundle: { ...previous.importBundle,
-    metadata: { ...previous.importBundle.metadata, targets: JSON.stringify(targets) } } }), boundedError);
+  const targets = JSON.parse(previous.releaseBundle.metadata.targets); targets.signed.extra = nested;
+  assert.throws(() => refreshSignedRelease({ ...options, previousBundle: { ...previous.releaseBundle,
+    metadata: { ...previous.releaseBundle.metadata, targets: JSON.stringify(targets) } } }), boundedError);
   assert.throws(() => canonicalTuf(Array(4097).fill(null)), boundedError);
 });
 
@@ -220,7 +222,7 @@ for (const consistent of [false, true]) test(`release after repeated refresh use
   for (let index = 0; index < 3; index++) previous = refreshed(input, previous);
   assert.deepEqual(metadataVersions(previous), { targets: 3, snapshot: 3, timestamp: 6 });
   const nextInput = { ...input, version: '0.3.0', sequence: 2,
-    artifacts: [{ ...input.artifacts[0], fileName: 'keepseam-client-0.3.0.tgz', bytes: Buffer.from('New reviewed SDK fixture') }] };
+    artifacts: [{ ...input.artifacts[0], fileName: 'self-managed-api-0.3.0.tgz', bytes: Buffer.from('New reviewed SDK fixture') }] };
   for (const versions of [undefined, { targets: 4, snapshot: 2, timestamp: 7 }, { targets: 2, snapshot: 4, timestamp: 7 }]) {
     const cache = await verifierCache(t, previous); await cache.verifier(previous).refresh();
     const rollback = buildSignedRelease({ ...nextInput, ...(versions ? { metadataVersions: versions } : {}) });
@@ -235,8 +237,8 @@ for (const consistent of [false, true]) test(`release after repeated refresh use
     { targets: 1, snapshot: 1, timestamp: 1, root: 1 }]) assert.throws(() => buildSignedRelease({ ...input, metadataVersions: invalid }), /metadata versions/u);
 });
 
-test('operator refresh writes a separate delivery, preserves original files and refuses altered inputs before output', async t => {
-  const input = fixture(), directory = await realpath(await mkdtemp(join(tmpdir(), 'keepseam-release-refresh-config-')));
+test('operator refresh writes a separate repository, preserves original files and refuses altered inputs before output', async t => {
+  const input = fixture(), directory = await realpath(await mkdtemp(join(tmpdir(), 'self-managed-api-release-refresh-config-')));
   checkWindowsPermissions([directory], true, directory); t.after(() => rm(directory, { recursive: true }));
   const previous = buildSignedRelease({ ...input, now: Date.now() - 2 * 3600000 });
   const original = await writeSignedRelease(previous, directory), keyFile = join(directory, 'role.pem');
@@ -252,12 +254,12 @@ test('operator refresh writes a separate delivery, preserves original files and 
   assert.notEqual(result.directory, original.directory); assert.equal(result.manifestSha256, original.manifestSha256);
   assert.deepEqual(result.metadataVersions, { targets: 1, snapshot: 1, timestamp: 2 });
   assert.deepEqual(await readFile(join(original.directory, 'metadata/timestamp.json')), previous.metadata.get('timestamp.json'));
-  const delivery = JSON.parse(await readFile(join(result.deliveryDirectory, 'delivery.json'), 'utf8'));
-  assert.equal(delivery.rootSha256, input.rootSha256); assert.equal(delivery.manifestSha256, original.manifestSha256);
-  assert.equal(delivery.sourceRevision, input.sourceRevision); assert.equal(delivery.published, false);
-  for (const target of previous.manifest.artifacts) assert.deepEqual(await readFile(join(result.deliveryDirectory, 'cloud-artifacts', target.fileName)), previous.targets.get(target.target));
-  assert.deepEqual(await readFile(join(result.deliveryDirectory, 'trust/root.json')), previous.root);
-  assert.doesNotMatch(await readFile(join(result.deliveryDirectory, 'import-bundle.json'), 'utf8'), /PRIVATE KEY/u);
+  const bundle = JSON.parse(await readFile(join(result.directory,'release-bundle.json'),'utf8'));
+  assert.equal(createHash('sha256').update(bundle.manifest).digest('hex'),original.manifestSha256);
+  assert.equal(JSON.parse(bundle.manifest).sourceRevision,input.sourceRevision);
+  for(const target of previous.manifest.artifacts)assert.deepEqual(await readFile(join(result.directory,'targets',target.target)),previous.targets.get(target.target));
+  assert.deepEqual(await readFile(join(result.directory,'metadata/root.json')),previous.root);
+  assert.doesNotMatch(JSON.stringify(bundle),/PRIVATE KEY/u);
   const onlyTimestamp = { ...config, releaseDirectory: result.directory, roleKeys: { timestamp: config.roleKeys.timestamp } };
   await writeFile(configPath, JSON.stringify(onlyTimestamp), { mode: 0o600 });
   assert.deepEqual((await refreshReleaseConfiguration(configPath, directory)).metadataVersions, { targets: 1, snapshot: 1, timestamp: 3 });
@@ -267,7 +269,7 @@ test('operator refresh writes a separate delivery, preserves original files and 
   await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
   await writeFile(join(original.directory, 'targets', previous.manifest.artifacts[0].target), Buffer.from('altered'));
   await assert.rejects(refreshReleaseConfiguration(configPath, join(directory, 'rejected')), /target bytes changed/u);
-  await assert.rejects(readFile(join(directory, 'rejected/delivery.json')), error => error.code === 'ENOENT');
+  await assert.rejects(readFile(join(directory, 'rejected/release-bundle.json')), error => error.code === 'ENOENT');
 });
 
 async function exportDirectory(t) {

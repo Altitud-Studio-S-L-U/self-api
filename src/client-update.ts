@@ -5,9 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { request as httpsRequest } from 'node:https';
 import { isProxy } from 'node:util/types';
 import { Updater } from 'tuf-js';
-import { ExpiredMetadataError, RuntimeError } from 'tuf-js/dist/error.js';
 import { ReleaseFetcher, releaseBaseUrl, UPDATE_ARTIFACT_LIMIT, UPDATE_METADATA_LIMIT } from './client-update-fetcher.js';
-import { CloudUpdateAuthorization } from './client-update-auth.js';
 import { CLIENT_UPDATE_REASONS, ClientUpdateError, type ClientUpdateReason } from './client-update-errors.js';
 import type { PublicAddress } from './public-network.js';
 import { checkServicePath, checkWindowsServiceAcl } from './worker-service-state.js';
@@ -23,14 +21,7 @@ export interface PublicClientUpdateRepository {
   readonly rootPath: string;
   readonly rootSha256: string;
 }
-export interface CloudClientUpdateRepository {
-  readonly kind: 'cloud';
-  readonly baseUrl: string;
-  readonly credentialsPath: string;
-  readonly rootPath: string;
-  readonly rootSha256: string;
-}
-export type ClientUpdateRepository = PublicClientUpdateRepository | CloudClientUpdateRepository;
+export type ClientUpdateRepository = PublicClientUpdateRepository;
 export interface ClientUpdateOptions {
   readonly statePath: string;
   readonly currentVersion: string;
@@ -89,7 +80,7 @@ function release(input: unknown): ClientRelease {
     || (value.sequence as number) < 1) invalid();
   const selectedVersion = version(value.version), minimum = version(value.minimumNodeVersion);
   const artifact = record(value.artifact, ['target', 'sha256', 'byteLength']);
-  if (artifact.target !== `packages/keepseam-client/${selectedVersion}/keepseam-client-${selectedVersion}.tgz`
+  if (artifact.target !== `packages/self-managed-api/${selectedVersion}/self-managed-api-${selectedVersion}.tgz`
     || !Number.isSafeInteger(artifact.byteLength) || (artifact.byteLength as number) < 1 || (artifact.byteLength as number) > UPDATE_ARTIFACT_LIMIT) invalid();
   return Object.freeze({ schemaVersion: 1, channel: 'stable', version: selectedVersion, sequence: value.sequence as number,
     artifact: Object.freeze({ target: artifact.target as string, sha256: sha(artifact.sha256), byteLength: artifact.byteLength as number }), minimumNodeVersion: minimum });
@@ -177,11 +168,8 @@ export function stageClientUpdate(options: ClientUpdateOptions, dependencies: Cl
 
 async function update(options: ClientUpdateOptions, dependencies: ClientUpdateDependencies, download: boolean): Promise<ClientUpdateStatus> {
   const input = record(options, ['statePath', 'currentVersion', 'repository'], ['signal']);
-  const repository = record(input.repository, ['rootPath', 'rootSha256'], ['kind', 'metadataUrl', 'targetsUrl', 'baseUrl', 'credentialsPath']);
-  const cloud = repository.kind === 'cloud';
-  const selected = cloud ? record(repository, ['kind', 'baseUrl', 'credentialsPath', 'rootPath', 'rootSha256'])
-    : record(repository, ['metadataUrl', 'targetsUrl', 'rootPath', 'rootSha256'], ['kind']);
-  if (!cloud && selected.kind !== undefined && selected.kind !== 'public') invalid();
+  const repository = record(input.repository, ['metadataUrl', 'targetsUrl', 'rootPath', 'rootSha256'], ['kind']);
+  if (repository.kind !== undefined && repository.kind !== 'public') invalid();
   const currentVersion = version(input.currentVersion);
   const signal = input.signal as AbortSignal | undefined;
   if (signal !== undefined && (isProxy(signal) || !(signal instanceof AbortSignal))) invalid();
@@ -193,35 +181,21 @@ async function update(options: ClientUpdateOptions, dependencies: ClientUpdateDe
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 120_000);
   let db: DatabaseSync | undefined, scratch: string | undefined, directory: string | undefined, activeTransaction = false, failed = false;
   let previous: ClientUpdateStatus | null = null;
-  let fetcher: ReleaseFetcher | undefined;
   let cached: (() => void) | undefined;
   try {
-    let baseUrl: string | undefined;
-    if (cloud) {
-      if (typeof selected.baseUrl !== 'string' || new URL(selected.baseUrl).origin !== selected.baseUrl) invalid();
-      baseUrl = releaseBaseUrl(`${selected.baseUrl}/`).slice(0, -1);
-    }
-    const metadataUrl = releaseBaseUrl(cloud ? `${baseUrl}/api/worker/v1/updates/metadata/` : selected.metadataUrl);
-    const targetsUrl = releaseBaseUrl(cloud ? `${baseUrl}/api/worker/v1/updates/targets/` : selected.targetsUrl);
+    const metadataUrl = releaseBaseUrl(repository.metadataUrl);
+    const targetsUrl = releaseBaseUrl(repository.targetsUrl);
     if (metadataUrl === targetsUrl || metadataUrl.startsWith(targetsUrl) || targetsUrl.startsWith(metadataUrl)) invalid();
-    const rootSha = sha(selected.rootSha256);
-    const rootPath = servicePath(selected.rootPath, process.platform === 'win32' ? 'windows' : 'systemd');
+    const rootSha = sha(repository.rootSha256);
+    const rootPath = servicePath(repository.rootPath, process.platform === 'win32' ? 'windows' : 'systemd');
     checkServicePath(rootPath, 'config'); checkWindowsServiceAcl(rootPath, false);
     const rootInfo = lstatSync(rootPath);
     if (rootInfo.size < 1 || rootInfo.size > 512_000) invalid();
     const root = readFileSync(rootPath);
     if (root.length > 512_000 || digest(root) !== rootSha) invalid();
-    if (cloud) {
-      const bootstrap: unknown = JSON.parse(root.toString('utf8'));
-      if (!bootstrap || typeof bootstrap !== 'object' || !('signed' in bootstrap) || !bootstrap.signed
-        || typeof bootstrap.signed !== 'object' || !('consistent_snapshot' in bootstrap.signed)
-        || bootstrap.signed.consistent_snapshot !== true) invalid();
-    }
-    const authorization = baseUrl ? await CloudUpdateAuthorization.load(baseUrl, selected.credentialsPath) : undefined;
     directory = privateDirectory(input.statePath as string);
     db = await database(directory); activeTransaction = true;
-    const policy = digest(JSON.stringify({ metadataUrl, targetsUrl, rootSha, channel: 'stable',
-      ...(authorization ? { installationId: authorization.installationId, projectId: authorization.projectId } : {}) }));
+    const policy = digest(JSON.stringify({ metadataUrl, targetsUrl, rootSha, channel: 'stable' }));
     const row = db.prepare('SELECT * FROM update_state WHERE id=1').get();
     if (row && row.policy !== policy) invalid();
     if (!row) db.prepare('INSERT INTO update_state VALUES(1,?,0,?,NULL,NULL)').run(policy, currentVersion);
@@ -255,28 +229,13 @@ async function update(options: ClientUpdateOptions, dependencies: ClientUpdateDe
         db!.prepare('INSERT INTO metadata VALUES(?,?) ON CONFLICT(name) DO UPDATE SET bytes=excluded.bytes').run(name, bytes);
       }
     };
-    fetcher = new ReleaseFetcher(metadataUrl, targetsUrl, scratch, controller.signal, dependencies, authorization);
+    const fetcher = new ReleaseFetcher(metadataUrl, targetsUrl, scratch, controller.signal, dependencies);
     const updater = new Updater({ metadataDir: metadataDirectory, metadataBaseUrl: metadataUrl, targetBaseUrl: targetsUrl,
       fetcher, forceCache: false,
       config: { maxRootRotations: 16, maxDelegations: 0, rootMaxLength: 512_000, timestampMaxLength: 16_384,
         snapshotMaxLength: UPDATE_METADATA_LIMIT, targetsMaxLength: UPDATE_METADATA_LIMIT, fetchRetry: false } });
     if (controller.signal.aborted) throw new Error('Cancelled.');
-    try { await updater.refresh(); }
-    catch (error) {
-      if (cloud && error instanceof ExpiredMetadataError) {
-        // tuf-js 5.0.1 exposes one class for all expired roles. Match only its
-        // fixed top-level messages; never forward metadata or provider text.
-        if (error.message === 'Final root.json is expired') throw new ClientUpdateError('trust-expired');
-        if (error.message === 'targets.json is expired') throw new ClientUpdateError('targets-expired');
-        if (error.message === 'Final timestamp.json is expired' || error.message === 'snapshot.json is expired') throw new ClientUpdateError('metadata-expired');
-      }
-      if (cloud && error instanceof RuntimeError) {
-        if (error.message === 'Unable to load targets error Error: targets.json is expired') throw new ClientUpdateError('targets-expired');
-        if (error.message === 'Unable to load snapshot metadata error Error: Final timestamp.json is expired'
-          || error.message === 'Unable to load snapshot metadata error Error: snapshot.json is expired') throw new ClientUpdateError('metadata-expired');
-      }
-      throw error;
-    }
+    await updater.refresh();
     const channel = await updater.getTargetInfo('channels/stable.json');
     if (!channel || channel.length > 16_384 || !channel.hashes.sha256) invalid();
     const channelPath = join(scratch, 'channel.json');
@@ -324,9 +283,8 @@ async function update(options: ClientUpdateOptions, dependencies: ClientUpdateDe
     return value;
   } catch (error) {
     failed = true;
-    const failure = fetcher?.failure ?? error;
     const reason: Exclude<ClientUpdateReason, 'none'> = timedOut ? 'deadline-exceeded' : controller.signal.aborted ? 'cancelled'
-      : failure instanceof ClientUpdateError ? failure.reason : 'verification-failed';
+      : error instanceof ClientUpdateError ? error.reason : 'verification-failed';
     if (db && activeTransaction) {
       try {
         cached?.();

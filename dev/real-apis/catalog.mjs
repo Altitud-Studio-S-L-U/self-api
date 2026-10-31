@@ -1,4 +1,4 @@
-import { normalizeIntegrationManifest } from 'keepseam-client';
+import { normalizeIntegrationManifest } from 'self-managed-api';
 
 // Public documentation is real. Operations in this lab always use a simulated transport.
 export const providers = Object.freeze([
@@ -24,7 +24,7 @@ export const providers = Object.freeze([
     version: '2022-06-28', selector: 'request-header', selectorName: 'Notion-Version',
     documentation: 'https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03',
     change: 'The selected exercise migrates database queries to data source queries and requires an explicitly selected data_source_id.' },
-  { id: 'shopify', name: 'Shopify', origin: 'https://keepseam-demo.myshopify.com', path: '/admin/api/2024-01/graphql.json', method: 'POST',
+  { id: 'shopify', name: 'Shopify', origin: 'https://self-managed-api-demo.myshopify.com', path: '/admin/api/2024-01/graphql.json', method: 'POST',
     version: '2024-01', selector: 'endpoint', documentation: 'https://shopify.dev/docs/api/usage/versioning',
     change: 'Check the effective response version and GraphQL selection set; matching only the HTTP path cannot prove compatibility.' },
   { id: 'twilio', name: 'Twilio', origin: 'https://api.twilio.com', path: '/2010-04-01/Accounts/ACDEMO/Messages.json', method: 'GET',

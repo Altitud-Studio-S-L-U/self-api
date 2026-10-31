@@ -11,8 +11,8 @@ import { profile } from './profile.mjs';
 
 // Explicit laboratory only: fixed fictional inputs, existing ChatGPT CLI login,
 // one generation per case, no BYOK credentials or installed-worker capability.
-const executable = process.env.KEEPSEAM_CODEX_EXECUTABLE;
-const model = process.env.KEEPSEAM_CODEX_MODEL;
+const executable = process.env.SELF_MANAGED_API_CODEX_EXECUTABLE;
+const model = process.env.SELF_MANAGED_API_CODEX_MODEL;
 assert(executable && isAbsolute(executable), 'Set the absolute installed Codex CLI executable.');
 assert(model && /^[a-zA-Z0-9._-]{1,100}$/u.test(model), 'Select a model verified as available to this CLI account.');
 const polyglot = process.argv.length === 3 && process.argv[2] === '--polyglot';
@@ -32,11 +32,11 @@ async function install(args, cwd) {
     child.once('error', reject); child.once('close', code => code === 0 ? done() : reject(new Error('Offline laboratory SDK installation failed.')));
   });
 }
-await install(['pack', '--out', join(directory, 'keepseam-client.tgz')], root);
-await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'keepseam-codex-laboratory', private: true, type: 'module',
-  dependencies: { 'keepseam-client': 'file:../keepseam-client.tgz' } }));
+await install(['pack', '--out', join(directory, 'self-managed-api.tgz')], root);
+await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'self-managed-api-codex-laboratory', private: true, type: 'module',
+  dependencies: { 'self-managed-api': 'file:../self-managed-api.tgz' } }));
 await install(['install', '--offline', '--ignore-scripts', '--ignore-workspace', '--node-linker=hoisted'], runtime);
-const { prepareModelProposal, approveModelProposal, proposeMigrationWithModel } = await import(pathToFileURL(join(runtime, 'node_modules/keepseam-client/dist/index.js')).href);
+const { prepareModelProposal, approveModelProposal, proposeMigrationWithModel } = await import(pathToFileURL(join(runtime, 'node_modules/self-managed-api/dist/index.js')).href);
 const empty = join(directory, 'empty'); await mkdir(empty);
 const sha = text => createHash('sha256').update(text).digest('hex');
 const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });

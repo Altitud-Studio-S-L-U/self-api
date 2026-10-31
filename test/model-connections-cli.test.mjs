@@ -9,7 +9,7 @@ import { checkWindowsPermissions } from '../dist/windows-permissions.js';
 import { controlledModel } from './helpers/job-proposal.mjs';
 
 async function fixture(t) {
-  const parent = resolve(process.env.KEEPSEAM_TEST_WORK ?? join(tmpdir(), 'keepseam-model-connections-tests')); await mkdir(parent, { recursive: true });
+  const parent = resolve(process.env.SELF_MANAGED_API_TEST_WORK ?? join(tmpdir(), 'self-managed-api-model-connections-tests')); await mkdir(parent, { recursive: true });
   const directory = await mkdtemp(join(await realpath(parent), 'case-'));
   checkWindowsPermissions([directory], true, directory);
   t.after(async () => {
@@ -65,7 +65,7 @@ test('local state serializes processes and protects connection revisions without
 test('remote checks require explicit disclosure consent and reject raw keys or configuration drift before inference', async t => {
   const f = await fixture(t);
   const remote = { ...f.configuration, connections: [{ id: 'fixture', revision: 1, credentialRevision: 1, provider: 'openai',
-    model: 'configured-customer-model', policyId: 'customer-policy', maximumOutputTokens: 1024, apiKeyEnv: 'KEEPSEAM_TEST_MISSING_API_KEY' }] };
+    model: 'configured-customer-model', policyId: 'customer-policy', maximumOutputTokens: 1024, apiKeyEnv: 'SELF_MANAGED_API_TEST_MISSING_API_KEY' }] };
   await writeFile(f.modelPath, JSON.stringify(remote));
   const denied = await invoke(['model-connections', 'verify', ...f.args], { confirm: async () => { assert.fail('Missing remote consent must not ask for a provider call.'); } });
   assert.equal(denied.code, 2); assert.match(denied.stderr, /--allow-remote/u); assert.equal(f.model.checks.length, 0);
@@ -98,7 +98,7 @@ test('only a transient local probe failure recommends preparing the local servic
     assert.equal(request.destinations[0].maximumOutputTokens, 128);
   }
   await writeFile(f.modelPath, JSON.stringify({ ...f.configuration, connections: [{ ...f.configuration.connections[0],
-    revision: 2, provider: 'openai', endpoint: undefined, apiKeyEnv: 'KEEPSEAM_TEST_MISSING_API_KEY' }] }));
+    revision: 2, provider: 'openai', endpoint: undefined, apiKeyEnv: 'SELF_MANAGED_API_TEST_MISSING_API_KEY' }] }));
   const remote = await invoke(['model-connections', 'verify', ...f.args, '--allow-remote'], {
     confirm: async () => true, dependencies: { probe: async () => { throw new ModelConnectionError('transient'); } },
   });

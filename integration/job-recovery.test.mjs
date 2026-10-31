@@ -69,7 +69,7 @@ async function inspectContainer(identity) {
 
 function assertOwnedContainer(container, journal, intent, created) {
   assert.match(journal.owner, uuid);
-  assert.equal(journal.containerName, `keepseam-validation-${journal.owner}`);
+  assert.equal(journal.containerName, `self-managed-api-validation-${journal.owner}`);
   assert.equal(journal.intentId, intent.id);
   assert.equal(journal.receiptId, intent.receiptId);
   assert.equal(journal.requestId, intent.requestId);

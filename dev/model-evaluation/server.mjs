@@ -29,14 +29,14 @@ async function docker(args) {
 async function cleanup(record) {
   if (record.proxy) {
     const proxy = JSON.parse(await docker(['inspect', record.proxy]))[0];
-    assert.equal(proxy.Config.Labels['io.keepseam.model-server'], record.id);
+    assert.equal(proxy.Config.Labels['io.self-managed-api.model-server'], record.id);
     await docker(['rm', '-f', record.proxy]);
   }
   const container = JSON.parse(await docker(['inspect', record.container]))[0];
-  assert.equal(container.Config.Labels['io.keepseam.model-server'], record.id);
+  assert.equal(container.Config.Labels['io.self-managed-api.model-server'], record.id);
   await docker(['rm', '-f', record.container]);
   const network = JSON.parse(await docker(['network', 'inspect', record.network]))[0];
-  assert.equal(network.Labels['io.keepseam.model-server'], record.id); assert.equal(network.Internal, true);
+  assert.equal(network.Labels['io.self-managed-api.model-server'], record.id); assert.equal(network.Internal, true);
   await docker(['network', 'rm', record.network]);
 }
 if (command === 'stop') {
@@ -44,7 +44,7 @@ if (command === 'stop') {
   assert.equal(dirname(directory), parent); assert.match(directory.slice(parent.length + 1), /^server-[0-9a-f-]{36}$/u);
   assert.equal(await realpath(directory), directory);
   const record = JSON.parse(await readFile(join(directory, 'server.json'), 'utf8'));
-  assert.equal(record.kind, 'keepseam-local-model-server');
+  assert.equal(record.kind, 'self-managed-api-local-model-server');
   await cleanup(record);
   console.log(JSON.stringify({ directory, status: 'stopped' }));
 } else {
@@ -58,14 +58,14 @@ if (command === 'stop') {
   const id = randomUUID(), directory = join(parent, `server-${id}`);
   await mkdir(parent, { recursive: true }); assert.equal(await realpath(parent), parent, 'Model server root must be canonical.');
   await mkdir(directory); assert.equal(await realpath(directory), directory);
-  const record = { kind: 'keepseam-local-model-server', id, container: `keepseam-model-server-${id}`,
-    network: `keepseam-model-private-${id}`, endpoint: `http://127.0.0.1:${port}/v1/chat/completions`, profile,
+  const record = { kind: 'self-managed-api-local-model-server', id, container: `self-managed-api-model-server-${id}`,
+    network: `self-managed-api-model-private-${id}`, endpoint: `http://127.0.0.1:${port}/v1/chat/completions`, profile,
     cpuLimit, memoryLimitBytes: memoryGiB * 1024 ** 3, contextTokens: 16384, outputsAreUnapproved: true };
-  await docker(['network', 'create', '--internal', '--label', `io.keepseam.model-server=${id}`, record.network]);
+  await docker(['network', 'create', '--internal', '--label', `io.self-managed-api.model-server=${id}`, record.network]);
   let started = false;
   try {
     await docker(['run', '-d', '--pull=never', '--platform=linux/amd64', '--name', record.container,
-      '--label', `io.keepseam.model-server=${id}`, '--network', record.network,
+      '--label', `io.self-managed-api.model-server=${id}`, '--network', record.network,
       '--read-only', '--user=65534:65534', '--cap-drop=ALL', '--security-opt=no-new-privileges=true',
       '--pids-limit=128', '--tmpfs=/tmp:rw,nosuid,nodev,size=64m,mode=1777', '--no-healthcheck',
       `--cpus=${cpuLimit}`, `--memory=${memoryGiB}g`, `--memory-swap=${memoryGiB}g`, '--env=XDG_CACHE_HOME=/tmp',
@@ -79,12 +79,12 @@ if (command === 'stop') {
     assert.equal(Object.keys(config.HostConfig.PortBindings ?? {}).length, 0);
     const address = config.NetworkSettings.Networks[record.network].IPAddress;
     assert.match(address, /^172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/u);
-    const proxy = `keepseam-model-relay-${id}`;
+    const proxy = `self-managed-api-model-relay-${id}`;
     await docker(['run', '-d', '--pull=never', '--platform=linux/amd64', '--name', proxy,
-      '--label', `io.keepseam.model-server=${id}`, '--network=bridge', '--publish', `127.0.0.1:${port}:8080`,
+      '--label', `io.self-managed-api.model-server=${id}`, '--network=bridge', '--publish', `127.0.0.1:${port}:8080`,
       '--read-only', '--user=65534:65534', '--cap-drop=ALL', '--security-opt=no-new-privileges=true',
       '--pids-limit=32', '--cpus=1', '--memory=128m', '--memory-swap=128m',
-      '--env', `KEEPSEAM_MODEL_UPSTREAM=http://${address}:8080`,
+      '--env', `SELF_MANAGED_API_MODEL_UPSTREAM=http://${address}:8080`,
       '--mount', `type=bind,source=${join(import.meta.dirname, 'proxy.mjs')},target=/relay.mjs,readonly`, profile.nodeImage, 'node', '/relay.mjs']);
     record.proxy = proxy;
     await docker(['network', 'connect', record.network, proxy]);

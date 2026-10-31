@@ -1,6 +1,0 @@
-self-hosted-runner:
-  labels:
-    - keepseam-release-linux
-    - keepseam-release-windows
-    - keepseam-release-macos
-    - keepseam-release-signing

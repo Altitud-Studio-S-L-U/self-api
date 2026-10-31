@@ -5,16 +5,16 @@ import { releaseHash, requireReleaseValue as requireValue } from './release-tuf.
  * outside this tree so a consistent repository cannot expose mutable aliases. */
 export function releaseRepositoryFiles(release, { now = Date.now() } = {}) {
   const { root, metadata, descriptors } = inspectReleaseForRefresh({ rootBytes: release.root,
-    rootSha256: releaseHash(release.root), manifestSha256: releaseHash(release.importBundle.manifest),
-    previousBundle: release.importBundle, now });
-  requireValue(JSON.stringify(release.manifest) === release.importBundle.manifest
+    rootSha256: releaseHash(release.root), manifestSha256: releaseHash(release.releaseBundle.manifest),
+    previousBundle: release.releaseBundle, now });
+  requireValue(JSON.stringify(release.manifest) === release.releaseBundle.manifest
     && release.metadata instanceof Map && release.metadata.size === 3
     && release.targets instanceof Map && release.targets.size === Object.keys(descriptors).length,
   'Repository differs from its signed release.');
   const files = new Map([[`metadata/${root.version}.root.json`, release.root]]);
   for (const role of ['targets', 'snapshot', 'timestamp']) {
     const bytes = release.metadata.get(`${role}.json`);
-    requireValue(Buffer.isBuffer(bytes) && bytes.equals(Buffer.from(release.importBundle.metadata[role])), 'Repository metadata differs from its signed bundle.');
+    requireValue(Buffer.isBuffer(bytes) && bytes.equals(Buffer.from(release.releaseBundle.metadata[role])), 'Repository metadata differs from its signed bundle.');
     const name = root.consistent_snapshot && role !== 'timestamp' ? `${metadata[role].version}.${role}.json` : `${role}.json`;
     files.set(`metadata/${name}`, bytes);
   }

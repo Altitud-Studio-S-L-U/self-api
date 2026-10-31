@@ -18,7 +18,7 @@ export interface ApiChange {
   readonly path?: string;
 }
 
-/** Local evidence only; this is not the future Cloud transmission contract. */
+/** Local evidence recorded with the exact contract bytes used for inspection. */
 export interface ComparisonReport {
   readonly schemaVersion: 1;
   readonly engine: { readonly name: 'oasdiff'; readonly version: string };

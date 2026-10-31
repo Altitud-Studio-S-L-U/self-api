@@ -18,7 +18,7 @@ async function fixture(t) {
   const statePath = join(directory, 'state'); await mkdir(statePath, { mode: 0o700 });
   const config = { schemaVersion: 1, statePath, sources: { intervalMs: 1000 }, allowHttp: false };
   const status = { schemaVersion: 1, runId: randomUUID(), pid: 123, state: 'running', updatedAt: '2026-10-13T12:00:00.000Z',
-    cycles: 0, observation: 'healthy', cloud: 'synced', automation: 'active', licenseReason: 'allowed' };
+    cycles: 0, observation: 'healthy' };
   return { config, status, write: value => writeFile(join(statePath, serviceFiles.status), JSON.stringify(value), { mode: 0o600 }) };
 }
 

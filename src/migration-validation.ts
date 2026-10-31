@@ -115,7 +115,7 @@ async function prepare(options: MigrationValidationOptions): Promise<{
   };
 }
 
-/** Inspection only. Returned previews are private local artifacts, never Cloud messages. */
+/** Inspection only. Returned previews stay in private local artifacts. */
 export async function prepareMigrationValidation(options: MigrationValidationOptions): Promise<MigrationValidationRequest> {
   return (await prepare(options)).request;
 }

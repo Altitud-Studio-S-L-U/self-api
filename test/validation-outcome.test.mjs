@@ -24,7 +24,7 @@ after(async () => {
 function phase(status) {
   return { status, exitCode: status === 'passed' ? 0 : status === 'failed' ? 1 : null,
     cleanup: status === 'cleanup-failed' ? 'failed' : status === 'blocked' ? 'not-created' : 'removed',
-    ...(status !== 'blocked' ? { containerName: `keepseam-validation-${randomUUID()}` } : {}),
+    ...(status !== 'blocked' ? { containerName: `self-managed-api-validation-${randomUUID()}` } : {}),
     stdout: secret, stderr: `${secret} stderr`, reason: secret };
 }
 
@@ -119,7 +119,7 @@ test('rejects fabricated completion, inconsistent cleanup, malformed statuses an
     data => { data.baseline.cleanup = 'pending'; },
     data => { data.baseline.containerName = secret; },
     data => { data.baseline.containerName = `plumber-validation-${randomUUID()}`; },
-    data => { data.baseline.containerName = `keepseam-validation-foreign-${randomUUID()}`; },
+    data => { data.baseline.containerName = `self-managed-api-validation-foreign-${randomUUID()}`; },
     data => { data.baseline.stdout = secret; },
     data => { data.secret = secret; },
     data => { data.consumerModified = true; },

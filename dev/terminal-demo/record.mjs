@@ -5,7 +5,7 @@ import { cp, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promi
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { registerLocalSubscription, observeOnce, prepareJobValidation, approveJobValidation, queueJobValidation,
-  runApprovedJobsOnce, prepareJobPublicationCandidate, preparePublicationRequest, approvePublicationRequest, publishPublication } from 'keepseam-client';
+  runApprovedJobsOnce, prepareJobPublicationCandidate, preparePublicationRequest, approvePublicationRequest, publishPublication } from 'self-managed-api';
 
 assert.equal(process.platform, 'linux', 'Record with the supported Linux Docker host.');
 const repositoryRoot = resolve(import.meta.dirname, '../..');
@@ -20,7 +20,7 @@ await mkdir(statePath, { mode: 0o700 });
 const git = args => run('/usr/bin/git', args, { cwd: consumerRoot, timeout: 10_000, maxBuffer: 256_000 });
 await git(['init', '-b', 'feat/demo-base']);
 await git(['add', '--', 'payments.mjs', 'payments-v1.test.mjs', 'payments-v2.test.mjs']);
-await git(['-c','user.name=Keepseam demo','-c','user.email=demo@example.invalid','commit','-m','Add fictional payments consumer']);
+await git(['-c','user.name=SelfManagedApi demo','-c','user.email=demo@example.invalid','commit','-m','Add fictional payments consumer']);
 const enginePath = join(repositoryRoot, 'work/tools/oasdiff/oasdiff');
 const subscription = await registerLocalSubscription({ statePath, enginePath, consumerRoot,
   sourcePath: join(fixtureRoot, 'payments-v2.json'), baselinePath: join(fixtureRoot, 'payments-v1.json'), providerBaseUrl: 'http://127.0.0.1:43127' });
@@ -44,7 +44,7 @@ const result = JSON.parse(await readFile(join(statePath, 'attempts', approval.id
 const tests = Number(result.candidate.stdout.match(/# tests (\d+)/u)[1]);
 assert.equal(tests, 25); assert.match(result.candidate.stdout, /# fail 0/u);
 const candidate = await prepareJobPublicationCandidate({ statePath, enginePath, intentId: queued.intent.id, gitPath: '/usr/bin/git',
-  repository: 'keepseam-demo/payments-api', baseBranch: 'feat/demo-base' });
+  repository: 'self-managed-api-demo/payments-api', baseBranch: 'feat/demo-base' });
 const snapshot = { repositoryId: '1', owner: candidate.destination.owner, name: candidate.destination.name, private: true,
   baseBranch: candidate.destination.baseBranch, headSha: candidate.git.headSha, treeSha: candidate.git.treeSha };
 const branches = new Map(), prs = [], writes = [];
@@ -57,10 +57,10 @@ const adapter = { id: 'terminal-demo', host: 'github.com', mode: 'simulation',
   createCommit: async input => { writes.push('commit'); return { commitSha: createHash('sha1').update(JSON.stringify(input)).digest('hex'), treeSha: createHash('sha1').update(JSON.stringify(input.files)).digest('hex') }; },
   createBranch: async input => { assert(!branches.has(input.branch)); writes.push('branch'); branches.set(input.branch, input.commitSha); },
   createDraftPullRequest: async input => { writes.push('draft-pr'); const pr = { repositoryId: '1', headRepositoryId: '1', number: 1,
-    url: 'https://github.com/keepseam-demo/payments-api/pull/1', state: 'open', draft: true, headSha: input.commitSha,
+    url: 'https://github.com/self-managed-api-demo/payments-api/pull/1', state: 'open', draft: true, headSha: input.commitSha,
     headBranch: input.headBranch, baseBranch: input.baseBranch, title: input.title, body: input.body }; prs.push(pr); return pr; },
 };
-const publicationRequest = await preparePublicationRequest({ candidate, adapter, author: { name: 'Keepseam demo', email: 'demo@example.invalid' } });
+const publicationRequest = await preparePublicationRequest({ candidate, adapter, author: { name: 'SelfManagedApi demo', email: 'demo@example.invalid' } });
 const publicationApproval = await approvePublicationRequest({ request: publicationRequest, expectedRequestId: publicationRequest.id, statePath, consumerRoot, origin: 'explicit-sdk-caller' });
 const publication = await publishPublication({ request: publicationRequest, receiptId: publicationApproval.id, statePath, consumerRoot, adapter });
 assert.equal(publication.status, 'published'); assert.equal(publication.mode, 'simulation'); assert.equal(publication.pullRequest.draft, true);
