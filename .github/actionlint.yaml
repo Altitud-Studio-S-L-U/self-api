@@ -1,6 +1,0 @@
-self-hosted-runner:
-  labels:
-    - self-managed-api-release-linux
-    - self-managed-api-release-windows
-    - self-managed-api-release-macos
-    - self-managed-api-release-signing

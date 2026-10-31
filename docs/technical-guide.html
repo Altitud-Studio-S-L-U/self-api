@@ -227,7 +227,7 @@ pnpm release:refresh --config /absolute/operator/refresh.json</pre>
 <p>La salida privada conserva metadata/, targets/, release-bundle.json y recibos nativos públicos. Solo repository/ es el árbol de transporte público. Con consistent_snapshot true contiene raíz numerada, targets/snapshot versionados y targets prefijados por hash; no publicar alias mutables. Guardar el directorio de operador completo fuera del árbol servido.</p>
 <h2>Renovar sin reconstruir</h2><p>release:refresh recibe schemaVersion, releaseDirectory, rootSha256, manifestSha256 y roleKeys. Autentica metadatos históricos incluso expirados, comprueba todos los targets y exige una raíz aún vigente. Conserva código, manifiesto, canal y raíz byte a byte. Renueva timestamp una hora; snapshot un día y targets siete días cuando sea necesario, sin superar la raíz.</p>
 <p>Una nueva versión del producto debe usar versiones de metadatos superiores a todas las renovaciones anteriores. Publicar primero targets/snapshot y finalmente timestamp. El comando solo crea una nueva generación local; no publica el feed ni instala paquetes.</p>
-<h2>CI</h2><p>La release exige tag coincidente con package.json, ancestro del main revisado y SDK acceptance aprobado. Produce un borrador GitHub. sign_repository es opt-in y requiere runners/keys/identidades preprovisionados; exporta el repositorio público sin publicarlo automáticamente. No necesita un repositorio hermano o secreto de sincronización documental.</p>
+<h2>Publicación manual</h2><p>Ejecutar los comandos desde un checkout revisado con dependencias fijadas. El operador revisa los archivos y publica manualmente la versión y, si lo utiliza, el repositorio TUF. La firma requiere claves e identidades propias; conservar separadas la configuración privada y los archivos públicos.</p>
 <footer><span>Self-managed API - Guía técnica</span><span>11 / 12</span></footer>
 </section>
 
@@ -240,12 +240,12 @@ pnpm check
 pnpm exec playwright install chromium
 pnpm docs:build
 pnpm docs:check</pre>
-<p>CI mantiene comprobaciones por sistema operativo, validación Linux, supervisión nativa y scope user. Preparar las imágenes fijadas antes de ejecutar validaciones: el runtime usa --pull=never. No reducir tests, cobertura o aislamiento para aprobar un cambio.</p>
+<p>Ejecutar las comprobaciones localmente. La validación necesita Linux x64; las comprobaciones de supervisión nativa corresponden a cada sistema operativo y mantienen scope user. Preparar las imágenes fijadas antes de ejecutar validaciones: el runtime usa --pull=never. No reducir tests, cobertura o aislamiento para aprobar un cambio.</p>
 <h2>Laboratorios opcionales</h2><p>dev:local prepara una API de pagos ficticia, un consumidor y contratos editables bajo work/. Su Compose sirve únicamente el laboratorio local, no es un requisito del SDK. dev:apis observa documentación pública de proveedores y reproduce transportes simulados. Un proveedor observado no acredita migraciones completas para todas sus operaciones.</p>
 <p>dev:polyglot comprueba recetas Python/Java seleccionadas. Los laboratorios de modelos requieren pesos/runtime propios y consentimiento explícito; sus resultados no prueban calidad general de migraciones. Los datos sintéticos y la publicación simulada deben seguir identificados como tales.</p>
 <h2>Dependencias y datos</h2><p>oasdiff y sus licencias pertenecen al motor externo. Babel parser sostiene inspección sintáctica; tuf-js sostiene el updater público. Node, imágenes y dependencias de pruebas conservan sus propias licencias y requisitos. La licencia MIT del proyecto no sustituye sus atribuciones.</p>
 <p>Mantener .env, estado, claves, pesos, propuestas, recibos y logs completos fuera de Git. work/ es la ubicación ignorada para intermediarios del proyecto; no publicar esos archivos como documentación o artefactos de release. Revisar historial y contenido preparado antes de hacer pública una versión.</p>
-<p>Fuente técnica: docs/technical-guide.html. El PDF identifica versión del paquete y SHA-256 de la fuente. Un cambio de contrato exige actualizar ambos, renderizar y revisar todas las páginas. Los resultados de validación de una tarea pertenecen a la conversación o CI, no a esta guía.</p>
+<p>Fuente técnica: docs/technical-guide.html. El PDF identifica versión del paquete y SHA-256 de la fuente. Un cambio de contrato exige actualizar ambos, renderizar y revisar todas las páginas. Los resultados de validación de una tarea pertenecen a la conversación, no a esta guía.</p>
 <footer><span>Self-managed API - Guía técnica</span><span>12 / 12</span></footer>
 </section>
 </body>
