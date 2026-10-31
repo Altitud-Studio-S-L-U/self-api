@@ -36,29 +36,33 @@ function run(args, cwd, timeout = 60_000) {
 
 try {
   await mkdir(consumer);
-  const packed = run([pnpmPath, 'pack', '--out', join(directory, 'keepseam-client.tgz'), '--json'], root);
+  const packed = run([pnpmPath, 'pack', '--out', join(directory, 'self-managed-api.tgz'), '--json'], root);
   // pnpm places the JSON manifest after any stdout from our prepack build.
   const packageContents = JSON.parse(packed.stdout.slice(packed.stdout.lastIndexOf('\n{') + 1));
   assert.ok(Array.isArray(packageContents.files) && packageContents.files.length > 0);
   for (const { path } of packageContents.files) {
-    assert.ok(['package.json', 'README.md', 'dist/oasdiff-release.json', 'tooling/prepare-validation-runtime.mjs'].includes(path) ||
+    assert.ok(['package.json', 'README.md', 'LICENSE', 'dist/oasdiff-release.json', 'tooling/prepare-validation-runtime.mjs'].includes(path) ||
       /^dist\/(?:[a-z0-9-]+\/)*[a-z0-9-]+\.(?:js|d\.ts)$/u.test(path),
     `Unexpected packaged file: ${path}`);
   }
   assert.ok(packageContents.files.some(file => file.path === 'tooling/prepare-validation-runtime.mjs'));
+  assert.ok(packageContents.files.some(file => file.path === 'LICENSE'));
+  assert.ok(!packageContents.files.some(file => /(?:cloud-(?:connection|sync|protocol)|worker-license|client-update-auth)\./u.test(file.path)),
+    'Retired service transports and licensing must not appear in the installed package.');
   await writeFile(join(consumer, 'package.json'), JSON.stringify({
-    name: 'keepseam-package-consumer-fixture',
+    name: 'self-managed-api-package-consumer-fixture',
     private: true,
     type: 'module',
     packageManager: manifest.packageManager,
-    dependencies: { 'keepseam-client': 'file:../keepseam-client.tgz' },
+    dependencies: { 'self-managed-api': 'file:../self-managed-api.tgz' },
     devDependencies: {
       typescript: manifest.devDependencies.typescript,
       '@types/node': manifest.devDependencies['@types/node'],
     },
   }));
-  // The consumer installs the tarball and existing toolchain from the cache; no lifecycle scripts run.
-  run([pnpmPath, 'install', '--offline', '--ignore-scripts', '--ignore-workspace'], consumer);
+  // Reuse reviewed transitive versions; only this temporary consumer's importer changes to the tarball.
+  await copyFile(join(root, 'pnpm-lock.yaml'), join(consumer, 'pnpm-lock.yaml'));
+  run([pnpmPath, 'install', '--offline', '--ignore-scripts', '--ignore-workspace', '--no-frozen-lockfile'], consumer);
   await copyFile(join(root, 'fixtures', 'orders-v1.json'), join(consumer, 'base.json'));
   await copyFile(join(root, 'fixtures', 'orders-v2.json'), join(consumer, 'revision.json'));
   await writeFile(join(consumer, 'use-sdk.mjs'), `
@@ -66,20 +70,21 @@ import assert from 'node:assert/strict';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compareOpenApi, compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest } from 'keepseam-client';
-import { runCli } from 'keepseam-client/cli';
-import { prepareValidationRuntime, validateRuntime } from 'keepseam-client';
-import { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from 'keepseam-client';
-import { negotiateCloudProtocol, encodeCloudStatusEvent } from 'keepseam-client/protocol';
+import { compareOpenApi, compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest } from 'self-managed-api';
+import { runCli } from 'self-managed-api/cli';
+import { prepareValidationRuntime, validateRuntime } from 'self-managed-api';
+import { checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError } from 'self-managed-api';
 
-for (const api of [compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, encodeCloudStatusEvent, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest, runCli]) assert.equal(typeof api, 'function');
-assert.deepEqual(negotiateCloudProtocol([1]), { status: 'compatible', version: 1 });
+const sdk = await import('self-managed-api');
+for (const name of ['generateCloudWorkerIdentity', 'createCloudTransport', 'createCloudControlTransport', 'WorkerLicenseStore', 'syncWorkerToCloud']) assert.equal(Object.hasOwn(sdk, name), false);
+await assert.rejects(import('self-managed-api/protocol'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
+for (const api of [compareMcpCatalogs, compareJsonSchemas, prepareModelProposal, runWorkerLoop, normalizeIntegrationManifest, preparePublicationRequest, createGitHubPublicationAdapter, observeSourcesOnce, loadNpmDependencyInventory, prepareHttpSource, captureHttpSource, analyzeMcpImpact, registerHttpSubscription, registerHttpSourceSubscription, runWorkerService, normalizeWorkerServiceConfig, renderWorkerServiceManifest, runCli]) assert.equal(typeof api, 'function');
 for (const api of [checkClientUpdate, stageClientUpdate, readClientUpdateStatus, ClientUpdateError]) assert.equal(typeof api, 'function');
 assert.equal(typeof prepareValidationRuntime, 'function');
 assert.equal(typeof validateRuntime, 'function');
 
 const installed = await realpath(join(import.meta.dirname, 'node_modules'));
-const entry = await realpath(fileURLToPath(import.meta.resolve('keepseam-client')));
+const entry = await realpath(fileURLToPath(import.meta.resolve('self-managed-api')));
 const location = relative(installed, entry);
 assert.ok(location && !isAbsolute(location) && location !== '..' && !location.startsWith('..' + sep),
   'The SDK must resolve from the installed consumer package.');
@@ -91,23 +96,20 @@ const report = await compareOpenApi({
 assert.equal(report.status, 'breaking-changes');
 assert.ok(report.changes.some(change => change.id.includes('required') && change.text.includes('region')));
 assert.ok(report.changes.some(change => change.id.includes('property') && change.text.includes('total')));
-for (const path of ['keepseam-client/dist/index.js', 'keepseam-client/dist/compare.js', 'keepseam-client/package.json']) {
+for (const path of ['self-managed-api/dist/index.js', 'self-managed-api/dist/compare.js', 'self-managed-api/package.json']) {
   await assert.rejects(import(path), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
 `);
   await writeFile(join(consumer, 'use-types.ts'), `
-import { compareOpenApi, type CompareOptions, type ComparisonReport, type GitPublicationAdapter, type ModelProposalAdapter, type SourceSubscriptionOptions, type HttpSourcePolicy, type McpImpactOptions } from 'keepseam-client';
-import { validateCloudStatusEvent, type CloudStatusEvent } from 'keepseam-client/protocol';
-import { stageClientUpdate, type ClientUpdateOptions, type ClientUpdateStatus } from 'keepseam-client';
-import { type ModelProposalOutcome, type JobProposalOutcome, type MigrationRecipe } from 'keepseam-client';
+import { compareOpenApi, type CompareOptions, type ComparisonReport, type GitPublicationAdapter, type ModelProposalAdapter, type SourceSubscriptionOptions, type HttpSourcePolicy, type McpImpactOptions } from 'self-managed-api';
+import { stageClientUpdate, type ClientUpdateOptions, type ClientUpdateStatus } from 'self-managed-api';
+import { type ModelProposalOutcome, type JobProposalOutcome, type MigrationRecipe } from 'self-managed-api';
 
 const compare: (options: CompareOptions) => Promise<ComparisonReport> = compareOpenApi;
 const options: CompareOptions = { basePath: 'base.json', revisionPath: 'revision.json', enginePath: 'oasdiff' };
 void compare;
 void options;
-const validateEvent: (input: unknown) => CloudStatusEvent = validateCloudStatusEvent;
 type CustomerAdapters = { git: GitPublicationAdapter; model: ModelProposalAdapter; source: SourceSubscriptionOptions; http: HttpSourcePolicy; mcp: McpImpactOptions };
-void validateEvent;
 const stageUpdate: (options: ClientUpdateOptions) => Promise<ClientUpdateStatus> = stageClientUpdate;
 void stageUpdate;
 function reviewedRecipe(outcome: ModelProposalOutcome | JobProposalOutcome): MigrationRecipe | null {
@@ -143,14 +145,14 @@ void reviewedRecipe;
   ], consumer);
   assert.equal(runtime.stdout, '', 'Importing and using the SDK must not print to stdout.');
   assert.equal(runtime.stderr, '', 'Importing and using the SDK must not emit warnings.');
-  const cli = run([pnpmPath, 'exec', 'keepseam', '--help'], consumer);
+  const cli = run([pnpmPath, 'exec', 'self-managed-api', '--help'], consumer);
   assert.equal(cli.stderr, '');
-  assert.match(cli.stdout, /keepseam compare <base\.json> <revision\.json>/u);
-  assert.match(cli.stdout, /keepseam client-update check\|stage\|status --config <absolute-json>/u);
-  const preparationHelp = run([pnpmPath, 'exec', 'keepseam', 'runtime', '--help'], consumer);
+  assert.match(cli.stdout, /self-managed-api compare <base\.json> <revision\.json>/u);
+  assert.match(cli.stdout, /self-managed-api client-update check\|stage\|status --config <absolute-json>/u);
+  const preparationHelp = run([pnpmPath, 'exec', 'self-managed-api', 'runtime', '--help'], consumer);
   assert.match(preparationHelp.stdout, /runtime prepare pytest\|maven-junit/u);
   assert.equal(preparationHelp.stderr, '');
-  const installedTool = join(consumer, 'node_modules/keepseam-client/tooling/prepare-validation-runtime.mjs');
+  const installedTool = join(consumer, 'node_modules/self-managed-api/tooling/prepare-validation-runtime.mjs');
   const invalidPreparation = spawnSync(process.execPath, [installedTool], { cwd: consumer, env: environment, encoding: 'utf8', timeout: 10_000, shell: false });
   assert.equal(invalidPreparation.status, 1);
   assert.match(invalidPreparation.stderr, /Usage: node tooling\/prepare-validation-runtime/u);

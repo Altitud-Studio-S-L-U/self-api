@@ -87,7 +87,7 @@ async function cleanupOwnedContainers(context) {
     if (!container) continue;
     // Failure cleanup removes only a container whose receipt, request, journal and source mount belong to this fixture.
     assert.match(journal.owner, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u);
-    assert.equal(journal.containerName, `keepseam-validation-${journal.owner}`);
+    assert.equal(journal.containerName, `self-managed-api-validation-${journal.owner}`);
     assert.equal(container.Name, `/${journal.containerName}`);
     assert.match(container.Id, /^[a-f0-9]{64}$/u);
     if (created) assert.equal(container.Id, created.containerId);

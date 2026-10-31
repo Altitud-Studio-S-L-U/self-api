@@ -40,51 +40,51 @@ interface CliOptions {
   readonly stderr?: (text: string) => void;
 }
 
-const help = `Usage: keepseam compare <base.json> <revision.json> --engine <path> [--json]
-       keepseam runtime prepare pytest|maven-junit --output <new-manifest.json>
-       keepseam mcp-compare <base.json> <revision.json> [--json]
-       keepseam mcp-impact <base.json> <revision.json> --consumer <directory> [--bindings <local-json>] [--json]
-       keepseam mcp-snapshot <catalog.json> [--json]
-       keepseam integration-check <manifest.json> [--json]
-       keepseam schema-compare <base.json> <revision.json> --direction input|output [--json]
-       keepseam example-compare <base.json> <revision.json> [--json]
-       keepseam source-subscribe <source-file> --kind mcp|json-schema|json-example|documentation --baseline <file> --state <directory> [--consumer <directory>] [--direction input|output] [--normalize-line-endings] [--json]
-       keepseam source-http-subscribe <policy.json> --kind mcp|json-schema|json-example|documentation --baseline <file> --state <directory> [--consumer <directory>] [--direction input|output] [--normalize-line-endings] [--json]
-       keepseam source-observe --once --state <directory> [--subscription <id>] [--http] [--json]
-       keepseam source-subscriptions --state <directory> [--json]
-       keepseam source-history --state <directory> [--subscription <id>] [--json]
-       keepseam deps-scan <package-lock.json> [--json]
-       keepseam deps-audit <package-lock.json> --advisories <local-file> [--json]
-       keepseam scan <consumer-directory> [--json]
-       keepseam impact <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> [--json]
-       keepseam plan <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> --recipe <recipe.json> [--json]
-       keepseam validation-plan <base.json> <revision.json> <plan-options> --test <relative-test-file> [--json]
-       keepseam approve <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory>
-       keepseam validate <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory> --approval <receipt-id> [--json]
-       keepseam subscribe <source.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
-       keepseam http-subscribe <policy.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
-       keepseam worker --once --state <directory> --engine <path> [--subscription <id>] [--http] [--json]
-       keepseam worker-loop --state <directory> --engine <path> [--cycles <1-1000>] [--interval-ms <1000-3600000>] [--run-approved] [--http] [--json]
-       keepseam worker-service run|status|stop --config <absolute-json>
-       keepseam client-update check|stage|status --config <absolute-json>
-       keepseam worker-service render --config <absolute-json> --target systemd|launchd|windows --node <absolute-path> --cli <absolute-path> [--scope system|user] [--user <unix-account>] [--name <service-name>]
-       keepseam subscriptions --state <directory> [--json]
-       keepseam jobs --state <directory> [--json]
-       keepseam model-connections status|verify --state <private-directory> --model <connections.json> [--connection <id>] [--allow-remote] [--startup-checks]
-       keepseam job-proposal-plan <job-id> --state <directory> --engine <path> --model <local-config.json> --test <file> [--source <file>] [--evidence <local-file>] [--timeout-ms <1000-120000>]
-       keepseam job-propose <job-id> --state <directory> --engine <path> --model <local-config.json> --test <file> [--source <file>] [--evidence <local-file>] [--timeout-ms <1000-120000>] [--allow-remote] [--output <name.json>]
-       keepseam job-review --state <directory> --engine <path> --proposal <local-json> --answers <local-json> [--runtime <manifest.json>] [--output <name.json>] [--json]
-       keepseam job-plan <job-id> --state <directory> --engine <path> --recipe <path> --test <file> [--json]
-       keepseam job-approve <job-id> --state <directory> --engine <path> --recipe <path> --test <file>
-       keepseam job-queue <job-id> --state <directory> --engine <path> --recipe <path> --test <file> --approval <receipt-id> [--json]
-       keepseam run-approved --once --state <directory> --engine <path> [--intent <id>] [--limit <1-10>] [--json]
-       keepseam recover-approved --state <directory> [--limit <1-10>] [--json]
-       keepseam executions --state <directory> [--json]
-       keepseam publication-plan <intent-id> --state <directory> --git <absolute-executable> --engine <path> --repository OWNER/REPO --base <branch> [--json]
-       keepseam publication-review --candidate <local-json> --author-name <name> --author-email <email> --github [--json]
-       keepseam publication-approve --request <local-json> --state <directory> --consumer <directory>
-       keepseam publication-publish --request <local-json> --state <directory> --consumer <directory> --approval <receipt-id> --github [--json]
-       keepseam publication-reconcile --request <local-json> --state <directory> --consumer <directory> --approval <receipt-id> --github [--json]
+const help = `Usage: self-managed-api compare <base.json> <revision.json> --engine <path> [--json]
+       self-managed-api runtime prepare pytest|maven-junit --output <new-manifest.json>
+       self-managed-api mcp-compare <base.json> <revision.json> [--json]
+       self-managed-api mcp-impact <base.json> <revision.json> --consumer <directory> [--bindings <local-json>] [--json]
+       self-managed-api mcp-snapshot <catalog.json> [--json]
+       self-managed-api integration-check <manifest.json> [--json]
+       self-managed-api schema-compare <base.json> <revision.json> --direction input|output [--json]
+       self-managed-api example-compare <base.json> <revision.json> [--json]
+       self-managed-api source-subscribe <source-file> --kind mcp|json-schema|json-example|documentation --baseline <file> --state <directory> [--consumer <directory>] [--direction input|output] [--normalize-line-endings] [--json]
+       self-managed-api source-http-subscribe <policy.json> --kind mcp|json-schema|json-example|documentation --baseline <file> --state <directory> [--consumer <directory>] [--direction input|output] [--normalize-line-endings] [--json]
+       self-managed-api source-observe --once --state <directory> [--subscription <id>] [--http] [--json]
+       self-managed-api source-subscriptions --state <directory> [--json]
+       self-managed-api source-history --state <directory> [--subscription <id>] [--json]
+       self-managed-api deps-scan <package-lock.json> [--json]
+       self-managed-api deps-audit <package-lock.json> --advisories <local-file> [--json]
+       self-managed-api scan <consumer-directory> [--json]
+       self-managed-api impact <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> [--json]
+       self-managed-api plan <base.json> <revision.json> --consumer <directory> --provider-base-url <url> --engine <path> --recipe <recipe.json> [--json]
+       self-managed-api validation-plan <base.json> <revision.json> <plan-options> --test <relative-test-file> [--json]
+       self-managed-api approve <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory>
+       self-managed-api validate <base.json> <revision.json> <plan-options> --test <relative-test-file> --state <outside-directory> --approval <receipt-id> [--json]
+       self-managed-api subscribe <source.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
+       self-managed-api http-subscribe <policy.json> --baseline <base.json> --consumer <directory> --provider-base-url <url> --engine <path> --state <outside-directory> [--label <text>] [--json]
+       self-managed-api worker --once --state <directory> --engine <path> [--subscription <id>] [--http] [--json]
+       self-managed-api worker-loop --state <directory> --engine <path> [--cycles <1-1000>] [--interval-ms <1000-3600000>] [--run-approved] [--http] [--json]
+       self-managed-api worker-service run|status|stop --config <absolute-json>
+       self-managed-api client-update check|stage|status --config <absolute-json>
+       self-managed-api worker-service render --config <absolute-json> --target systemd|launchd|windows --node <absolute-path> --cli <absolute-path> [--scope system|user] [--user <unix-account>] [--name <service-name>]
+       self-managed-api subscriptions --state <directory> [--json]
+       self-managed-api jobs --state <directory> [--json]
+       self-managed-api model-connections status|verify --state <private-directory> --model <connections.json> [--connection <id>] [--allow-remote] [--startup-checks]
+       self-managed-api job-proposal-plan <job-id> --state <directory> --engine <path> --model <local-config.json> --test <file> [--source <file>] [--evidence <local-file>] [--timeout-ms <1000-120000>]
+       self-managed-api job-propose <job-id> --state <directory> --engine <path> --model <local-config.json> --test <file> [--source <file>] [--evidence <local-file>] [--timeout-ms <1000-120000>] [--allow-remote] [--output <name.json>]
+       self-managed-api job-review --state <directory> --engine <path> --proposal <local-json> --answers <local-json> [--runtime <manifest.json>] [--output <name.json>] [--json]
+       self-managed-api job-plan <job-id> --state <directory> --engine <path> --recipe <path> --test <file> [--json]
+       self-managed-api job-approve <job-id> --state <directory> --engine <path> --recipe <path> --test <file>
+       self-managed-api job-queue <job-id> --state <directory> --engine <path> --recipe <path> --test <file> --approval <receipt-id> [--json]
+       self-managed-api run-approved --once --state <directory> --engine <path> [--intent <id>] [--limit <1-10>] [--json]
+       self-managed-api recover-approved --state <directory> [--limit <1-10>] [--json]
+       self-managed-api executions --state <directory> [--json]
+       self-managed-api publication-plan <intent-id> --state <directory> --git <absolute-executable> --engine <path> --repository OWNER/REPO --base <branch> [--json]
+       self-managed-api publication-review --candidate <local-json> --author-name <name> --author-email <email> --github [--json]
+       self-managed-api publication-approve --request <local-json> --state <directory> --consumer <directory>
+       self-managed-api publication-publish --request <local-json> --state <directory> --consumer <directory> --approval <receipt-id> --github [--json]
+       self-managed-api publication-reconcile --request <local-json> --state <directory> --consumer <directory> --approval <receipt-id> --github [--json]
 
 Compare local OpenAPI JSON contracts using an explicitly selected oasdiff executable.
 
@@ -192,7 +192,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   if (args[0] === 'runtime') {
     const stdout = options.stdout ?? ((text: string) => { process.stdout.write(text); });
     const stderr = options.stderr ?? ((text: string) => { process.stderr.write(text); });
-    const usage = 'Usage: keepseam runtime prepare pytest|maven-junit --output <new-manifest.json>\nPreparation downloads verified official dependencies; validation executes offline. Linux x64 and local Docker required.\n';
+    const usage = 'Usage: self-managed-api runtime prepare pytest|maven-junit --output <new-manifest.json>\nPreparation downloads verified official dependencies; validation executes offline. Linux x64 and local Docker required.\n';
     if (args.length === 2 && args[1] === '--help') { stdout(usage); return 0; }
     const [, command, kind, flag, output] = args;
     if (args.length !== 5 || command !== 'prepare' || (kind !== 'pytest' && kind !== 'maven-junit') || flag !== '--output' || !output?.trim()) {

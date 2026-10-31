@@ -32,9 +32,9 @@ export async function runDevelopment(args, options = {}) {
     return 0;
   }
   if (command === 'status') {
-    stdout('Keepseam development commands\n\n'
+    stdout('SelfManagedApi development commands\n\n'
       + 'Build: pnpm build\nValidation: pnpm dev:check\nLocal laboratory: pnpm dev:local --help\n'
-      + 'CLI: pnpm keepseam --help\nTechnical documentation: docs/technical-guide.pdf\n');
+      + 'CLI: pnpm self-managed-api --help\nTechnical documentation: docs/technical-guide.pdf\n');
     return 0;
   }
   try {

@@ -43,7 +43,7 @@ for (const kind of ['pytest', 'maven-junit']) {
         : `import org.junit.jupiter.api.Test; import static org.junit.jupiter.api.Assertions.assertTrue; class ContractTest { @Test void contract() { assertTrue(${success}, "framework assertion sentinel"); } }\n`;
       const result = await validate(t, kind, source);
       assert.equal(result.status, success ? 'passed' : 'failed', `${result.stdout}\n${result.stderr}`);
-      if (success) assert.match(result.stdout, kind === 'pytest' ? /1 passed/u : /KEEPSEAM_JUNIT_EXECUTED/u);
+      if (success) assert.match(result.stdout, kind === 'pytest' ? /1 passed/u : /SELF_MANAGED_API_JUNIT_EXECUTED/u);
       else assert.match(result.stdout + result.stderr, /framework assertion sentinel/u);
     });
   }

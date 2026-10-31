@@ -1,6 +1,6 @@
 # Live API validation pilot
 
-This opt-in development workflow exercises a documented change against the real GitHub API, then uses the public Keepseam SDK to observe, propose, validate and publish an explicitly approved draft. It is separate from the simulated operations in the ten-provider documentation laboratory. Nothing runs automatically in ordinary SDK imports or CI.
+This opt-in development workflow exercises a documented change against the real GitHub API, then uses the public SelfManagedApi SDK to observe, propose, validate and publish an explicitly approved draft. It is separate from the simulated operations in the ten-provider documentation laboratory. Nothing runs automatically in ordinary SDK imports or CI.
 
 GitHub's [2026-03-10 breaking changes](https://docs.github.com/en/rest/about-the-rest-api/breaking-changes#version-2026-03-10) change directory-listing submodules from `type: "file"` to `type: "submodule"`. The pilot reads the public `git/git` repository, whose root includes `sha1collisiondetection`. Both API versions remain selectable; this is a deliberate version upgrade, not a claim that the older version was retired.
 
@@ -11,7 +11,7 @@ GitHub's [2026-03-10 breaking changes](https://docs.github.com/en/rest/about-the
 - The OpenAPI document is a **locally authored partial projection** of official documentation and observed responses. The SDK does not automatically turn prose into a trustworthy schema. The scanner maps the native call; indirect parser tracing can remain unresolved.
 - The recipe is explicitly authored and reviewed. It accepts the new type and selects the new API version while preserving the internal `{path, directory, downloadable}` model. A submodule stays non-downloadable. No model is used or implied.
 - Docker replays actual captured public responses, with three unchanged Node tests and no network. Baseline failure and candidate success prove this selected migration, not every behavior of GitHub. A separate fresh live request checks the candidate parser after validation.
-- The GitHub publication adapter creates the draft directly. Its credential never enters consumer execution or Keepseam Cloud. The fixture branch must not be merged into product `main`.
+- The GitHub publication adapter creates the draft directly. Its credential never enters consumer execution. The fixture branch must not be merged into product `main`.
 
 ## Prepare and inspect
 
@@ -24,11 +24,11 @@ node dev/live-validation/cli.mjs observe /private/pilot-unique
 node dev/live-validation/cli.mjs plan /private/pilot-unique
 ```
 
-`seed` requires a new canonical directory and copies only reviewed pilot templates plus data-literal replay input. It does not initialize or push Git. `observe` uses the real SDK/worker store and creates one review job. `plan` shows exact edits, selected tests, image, execution policy and request ID without authorizing execution. `KEEPSEAM_ENGINE` can select an already trusted absolute engine path.
+`seed` requires a new canonical directory and copies only reviewed pilot templates plus data-literal replay input. It does not initialize or push Git. `observe` uses the real SDK/worker store and creates one review job. `plan` shows exact edits, selected tests, image, execution policy and request ID without authorizing execution. `SELF_MANAGED_API_ENGINE` can select an already trusted absolute engine path.
 
 ## Validate and prepare publication
 
-Initialize and commit the generated consumer as a disposable `feat/live-base` branch for the existing private `Altitud-Studio-S-L-U/keepseam-client` repository. Review its five files before pushing. Do not use the main product checkout as the pilot consumer.
+Initialize and commit the generated consumer as a disposable `feat/live-base` branch in a separate repository that you control. Set the destination in `environment.mjs` before reviewing or publishing. Review its five files before pushing. Do not use the main project checkout as the pilot consumer.
 
 ```sh
 node dev/live-validation/cli.mjs validate /private/pilot-unique REVIEWED_REQUEST_ID
@@ -36,7 +36,7 @@ node dev/live-validation/cli.mjs candidate /private/pilot-unique COMPLETED_INTEN
 node dev/live-validation/cli.mjs verify-live /private/pilot-unique REVIEWED_CANDIDATE_ID
 ```
 
-`validate` explicitly authorizes only the exact displayed request, runs the SDK's queue and isolated validator, and requires `improved`. It leaves the consumer unchanged. `candidate` additionally verifies committed Git blobs and retained validation evidence. `KEEPSEAM_GIT` can select a compatible absolute Git executable. No provider data or test is edited to force a pass.
+`validate` explicitly authorizes only the exact displayed request, runs the SDK's queue and isolated validator, and requires `improved`. It leaves the consumer unchanged. `candidate` additionally verifies committed Git blobs and retained validation evidence. `SELF_MANAGED_API_GIT` can select a compatible absolute Git executable. No provider data or test is edited to force a pass.
 
 Push the reviewed baseline only to its fixture branch after authorization. For the SDK's API publication, inject `GH_TOKEN` into the process through the operator's secret manager. Use a repository-scoped credential with metadata read, contents write and pull-request write. Do not put tokens in command arguments, files, terminal output or the consumer.
 
@@ -46,16 +46,5 @@ node dev/live-validation/cli.mjs publish /private/pilot-unique REVIEWED_PUBLICAT
 ```
 
 `review` performs read-only destination/base checks. `publish` is a distinct explicit approval and write: the SDK creates immutable objects, a new `feat/api-…` branch and a draft PR against `feat/live-base`. It does not merge, deploy or overwrite branches. If a write is uncertain, preserve the request and receipt, and use `reconcile` with the same request ID; never repeat `publish` blindly. Record and review the returned PR URL through the normal project workflow.
-
-## Connect the actual local worker to Cloud
-
-```sh
-node dev/live-validation/cli.mjs identity /private/pilot-unique
-node dev/live-validation/cli.mjs sync /private/pilot-unique /private/credentials.json
-```
-
-`identity` emits only the public JWK, fingerprint and binding ID. Its private key remains in `identity.private.json` with private filesystem permissions. Enroll and independently verify this new identity through the normal Cloud procedure in [the technical guide](../../docs/technical-guide.pdf), then bind only its displayed subscription. Combine the connection fields and original private key locally. Do not reuse another worker's credential with an empty outbox or copy an existing worker's state.
-
-Sync sends actual job/validation summaries and the runner state through the SDK outbox. It sends no captures, source, patch or test output. Protocol v1 does not project the draft PR URL or publication outcome automatically; a successful `validated` status is not a claim that Cloud reported publication. No Cloud response authorizes code execution.
 
 Keep all capture, approval and recovery evidence until the pilot is reviewed. This workflow deliberately has no destructive reset or automatic fixture-branch deletion.

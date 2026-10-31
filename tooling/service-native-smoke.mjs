@@ -15,7 +15,7 @@ import { provisionWindowsServiceFixture, readWindowsServiceEvidence } from './se
 assert.equal(process.env.GITHUB_ACTIONS, 'true');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
 const repository = resolve(import.meta.dirname, '..');
-const name = `keepseamci${randomBytes(6).toString('hex')}`;
+const name = `managedapici${randomBytes(6).toString('hex')}`;
 const target = ({ win32: 'windows', linux: 'systemd', darwin: 'launchd' })[process.platform];
 assert(target, 'Unsupported native supervisor');
 const userScope = process.argv[2] === '--user';
@@ -227,7 +227,7 @@ try {
     }
     // The PID is read only from this test's private, uniquely named state.
     if (target === 'systemd') systemctl(['kill', '--kill-who=main', '--signal=SIGKILL', `${name}.service`]);
-    else if (target === 'launchd') run('sudo', ['launchctl', 'kill', 'SIGKILL', `system/com.keepseam.${name}`]);
+    else if (target === 'launchd') run('sudo', ['launchctl', 'kill', 'SIGKILL', `system/com.selfmanagedapi.${name}`]);
     else run('taskkill.exe', ['/PID', String(first.pid), '/F']);
     let recovered = await running(first.runId, target === 'windows' ? 2 : 1);
     assert.notEqual(recovered.pid, first.pid);

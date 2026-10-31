@@ -148,16 +148,16 @@ export async function prepareJobProposal(options: JobProposalOptions): Promise<J
       unmappedChangeCount: impact.unmappedChangeIndexes.length, inspectionIssueCount: inventory.issues.length });
     const modelRequest = prepareModelProposal({ adapter: input.adapter, files,
       evidence: [
-        { id: 'keepseam/job', text: JSON.stringify(binding) },
-        { id: 'keepseam/contract-base', text: Buffer.from(baseline.bytes).toString('utf8') },
-        { id: 'keepseam/contract-revision', text: Buffer.from(revision.bytes).toString('utf8') },
-        { id: 'keepseam/impact', text: JSON.stringify({ comparison, provider: impact.provider, calls, matches: impact.matches,
+        { id: 'self-managed-api/job', text: JSON.stringify(binding) },
+        { id: 'self-managed-api/contract-base', text: Buffer.from(baseline.bytes).toString('utf8') },
+        { id: 'self-managed-api/contract-revision', text: Buffer.from(revision.bytes).toString('utf8') },
+        { id: 'self-managed-api/impact', text: JSON.stringify({ comparison, provider: impact.provider, calls, matches: impact.matches,
           unmappedChangeIndexes: impact.unmappedChangeIndexes, unresolvedCallIds: impact.unresolvedCallIds, issues: inventory.issues,
           coverage: impact.coverage }) },
         ...(input.evidence ?? []),
       ],
       requiredDecisions: [...(input.requiredDecisions ?? []), ...(discovery.unresolvedCallCount || discovery.unmappedChangeCount || discovery.inspectionIssueCount
-        ? [{ id: 'keepseam-coverage', question: 'Review unresolved calls, unmapped contract changes and inspection issues; selected edits and tests do not establish complete integration coverage.' }] : [])],
+        ? [{ id: 'self-managed-api-coverage', question: 'Review unresolved calls, unmapped contract changes and inspection issues; selected edits and tests do not establish complete integration coverage.' }] : [])],
       ...(input.sensitiveValues ? { sensitiveValues: input.sensitiveValues } : {}), ...(input.limits ? { limits: input.limits } : {}),
     });
     await sourceIsFresh();

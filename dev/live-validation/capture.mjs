@@ -17,7 +17,7 @@ export async function captureGitHub(path, version) {
   const endpoint = origin + path;
   const response = await fetch(endpoint, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(15000),
     headers: { Accept: 'application/vnd.github+json', 'Accept-Encoding': 'identity',
-      'User-Agent': 'keepseam-client-live-validation/0.1.0', 'X-GitHub-Api-Version': version } });
+      'User-Agent': 'self-managed-api-live-validation/0.1.0', 'X-GitHub-Api-Version': version } });
   assert.equal(response.status, 200, 'Live GitHub must succeed; no fixture fallback');
   assert.equal(response.url, endpoint);
   assert(response.headers.get('content-type')?.startsWith('application/json'));

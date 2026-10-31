@@ -79,7 +79,7 @@ test('review requires explicit GitHub reads, exposes the exact destination and o
   assert.match(result.stdout, /github\.com\/fixture-owner\/fixture-repo/u);
   assert.match(result.stdout, /repository ID 123/u);
   assert.match(result.stdout, /Mode: simulation/u);
-  assert.match(result.stdout, /Plumber Cloud receives nothing/u);
+  assert.match(result.stdout, /Selected modified source is sent directly to the selected GitHub repository/u);
   assert.match(result.stdout, /one attempt and expires after 15 minutes/u);
   assert(!result.stdout.includes(context.candidate.files[0].before));
   assert(!result.stdout.includes(context.candidate.files[0].after));

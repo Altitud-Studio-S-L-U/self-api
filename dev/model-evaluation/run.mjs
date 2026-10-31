@@ -29,7 +29,7 @@ await mkdir(directory, { recursive: false, mode: 0o700 }); await mkdir(runtime);
 // container UID. The owning run directory prevents access by other host users.
 if (process.platform !== 'win32') await chmod(output, 0o777);
 assert.equal(await realpath(directory), directory);
-const ownerLabel = `io.keepseam.model-evaluation=${runId}`, server = `keepseam-model-${runId}`, client = `keepseam-model-probe-${runId}`;
+const ownerLabel = `io.self-managed-api.model-evaluation=${runId}`, server = `self-managed-api-model-${runId}`, client = `self-managed-api-model-probe-${runId}`;
 const containers = [];
 
 async function run(command, args, { cwd = root, timeout = 60000, expected = 0 } = {}) {
@@ -54,9 +54,9 @@ const isolation = ['--pull=never', '--platform=linux/amd64', '--read-only', '--u
   '--pids-limit=128', '--tmpfs=/tmp:rw,nosuid,nodev,size=64m,mode=1777'];
 try {
   for (const image of [profile.serverImage, profile.nodeImage]) await run('docker', ['image', 'inspect', image]);
-  await run(process.execPath, [pnpm, 'pack', '--out', join(directory, 'keepseam-client.tgz')]);
-  await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'keepseam-model-evaluation-runtime', private: true, type: 'module',
-    dependencies: { 'keepseam-client': 'file:../keepseam-client.tgz' } }), { flag: 'wx' });
+  await run(process.execPath, [pnpm, 'pack', '--out', join(directory, 'self-managed-api.tgz')]);
+  await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'self-managed-api-model-evaluation-runtime', private: true, type: 'module',
+    dependencies: { 'self-managed-api': 'file:../self-managed-api.tgz' } }), { flag: 'wx' });
   // A flat, private install avoids host-absolute Windows junctions when mounted
   // into Linux; no package lifecycle scripts execute during installation.
   await run(process.execPath, [pnpm, 'install', '--offline', '--ignore-scripts', '--ignore-workspace', '--node-linker=hoisted'], { cwd: runtime });
@@ -76,7 +76,7 @@ try {
   assert.equal(configured.Mounts.length, 1); assert.equal(configured.Mounts[0].RW, false);
   containers.push(client);
   const result = await run('docker', ['run', '--name', client, '--label', ownerLabel, ...isolation, `--network=container:${server}`,
-    '--cpus=1', '--memory=512m', '--memory-swap=512m', `--env=KEEPSEAM_MODEL_EVALUATION_PROFILE=${profileName}`, '--mount', `type=bind,source=${runtime},target=/runtime,readonly`,
+    '--cpus=1', '--memory=512m', '--memory-swap=512m', `--env=SELF_MANAGED_API_MODEL_EVALUATION_PROFILE=${profileName}`, '--mount', `type=bind,source=${runtime},target=/runtime,readonly`,
     '--mount', `type=bind,source=${output},target=/output`, '--workdir=/runtime', profile.nodeImage, 'node', 'probe.mjs'], { timeout: 450000 });
   await writeFile(join(output, 'probe.stdout.txt'), result.stdout, { flag: 'wx' });
   await writeFile(join(output, 'probe.stderr.txt'), result.stderr, { flag: 'wx' });
@@ -100,7 +100,7 @@ try {
       assert.equal(dirname(fixture), directory);
       await writeFile(join(fixture, 'payment.mjs'), revision === 'baseline' ? scenario.source : changed.after, { flag: 'wx' });
       await writeFile(join(fixture, 'payment.test.mjs'), scenario.test, { flag: 'wx' });
-      const name = `keepseam-model-test-${runId}-${outcome.tests.length}-${raw.outcomes.indexOf(outcome)}`;
+      const name = `self-managed-api-model-test-${runId}-${outcome.tests.length}-${raw.outcomes.indexOf(outcome)}`;
       containers.push(name);
       const test = await run('docker', ['run', '--name', name, '--label', ownerLabel, ...isolation, '--network=none', '--cpus=1', '--memory=256m', '--memory-swap=256m',
         '--mount', `type=bind,source=${fixture},target=/fixture,readonly`, '--workdir=/fixture', profile.nodeImage, 'node', '--test', 'payment.test.mjs'], { expected: null, timeout: 30000 });
@@ -121,7 +121,7 @@ try {
     const inspected = await run('docker', ['inspect', name], { expected: null });
     if (inspected.code !== 0) continue;
     const value = JSON.parse(inspected.stdout)[0];
-    assert.equal(value.Config.Labels['io.keepseam.model-evaluation'], runId, 'Cleanup is restricted to this evaluation container.');
+    assert.equal(value.Config.Labels['io.self-managed-api.model-evaluation'], runId, 'Cleanup is restricted to this evaluation container.');
     if (name === server) {
       const logs = await run('docker', ['logs', '--tail', '300', name], { expected: null });
       await writeFile(join(output, 'server.log'), logs.stdout + logs.stderr, { flag: 'wx' });

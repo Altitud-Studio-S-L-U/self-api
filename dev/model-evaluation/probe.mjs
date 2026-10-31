@@ -3,13 +3,13 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createHttpModelAdapter, prepareModelProposal, approveModelProposal, proposeMigrationWithModel } from 'keepseam-client';
+import { createHttpModelAdapter, prepareModelProposal, approveModelProposal, proposeMigrationWithModel } from 'self-managed-api';
 import { cases } from './fixtures.mjs';
 import { selectProfile } from './profile.mjs';
 import { describeProposal } from './classification.mjs';
 
 const sha = text => createHash('sha256').update(text).digest('hex');
-const profile = selectProfile(process.env.KEEPSEAM_MODEL_EVALUATION_PROFILE);
+const profile = selectProfile(process.env.SELF_MANAGED_API_MODEL_EVALUATION_PROFILE);
 const endpoint = 'http://127.0.0.1:8080/v1/chat/completions';
 const output = '/output';
 await writeFile(`${output}/probe-started.json`, JSON.stringify({ kind: 'synthetic-output-write-preflight', uid: process.getuid() }), { flag: 'wx' });

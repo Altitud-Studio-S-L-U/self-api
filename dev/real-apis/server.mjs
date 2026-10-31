@@ -3,11 +3,11 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Client as LegacyNotion } from 'notion-v4';
-import { defineIntegrationBoundary, getIntegrationBoundary } from 'keepseam-client';
+import { defineIntegrationBoundary, getIntegrationBoundary } from 'self-managed-api';
 import { providers, providerManifest } from './catalog.mjs';
 
 export const fixtureContext = Object.freeze({ databaseId: '00000000-0000-4000-8000-000000000001',
-  dataSourceId: '00000000-0000-4000-8000-000000000002', token: 'keepseam-fixture-not-a-secret' });
+  dataSourceId: '00000000-0000-4000-8000-000000000002', token: 'self-managed-api-fixture-not-a-secret' });
 export const pageResponse = Object.freeze({ results: [{ object: 'page', id: 'local-page-one' }], has_more: true, next_cursor: 'local-next-cursor' });
 
 export function simulatedNotion(url, init, version) {

@@ -1,6 +1,6 @@
 self-hosted-runner:
   labels:
-    - keepseam-release-linux
-    - keepseam-release-windows
-    - keepseam-release-macos
-    - keepseam-release-signing
+    - self-managed-api-release-linux
+    - self-managed-api-release-windows
+    - self-managed-api-release-macos
+    - self-managed-api-release-signing

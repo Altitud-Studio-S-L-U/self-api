@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { registerLocalSubscription, observeOnce, runWorkerLoop, listMaintenanceJobs, prepareJobValidation,
-  approveJobValidation, queueJobValidation, runApprovedJobsOnce, listJobExecutions } from 'keepseam-client';
+  approveJobValidation, queueJobValidation, runApprovedJobsOnce, listJobExecutions } from 'self-managed-api';
 import { seedDevelopment, selectProviderVersion, fixtureRoot, repositoryRoot } from './environment.mjs';
 
 const [command, argument, requestId, ...extra] = process.argv.slice(2);
@@ -18,7 +18,7 @@ const usage = `Local development (fictional payments only):
 Run seed before docker compose up -d --wait. State persists in work/local-dev.
 Plan grants no approval. validate explicitly authorizes only the exact reviewed
 fictional request and executes its tests on the supported Linux Docker host.
-The live consumer stays unchanged. No GitHub, Cloud, AI or real payments are used.
+The live consumer stays unchanged. No GitHub, AI or real payments are used.
 `;
 const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 if (!command || command === '--help') { process.stdout.write(usage); process.exit(0); }

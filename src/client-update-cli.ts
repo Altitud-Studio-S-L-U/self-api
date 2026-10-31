@@ -24,7 +24,7 @@ export async function runClientUpdateCli(args: string[], output: { readonly stdo
     const statePath = (config as { statePath: string }).statePath;
     if (action === 'status') { stdout(jsonLine({ status: await readClientUpdateStatus({ statePath }) })); return 0; }
     const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { name?: unknown; version?: unknown };
-    if (metadata.name !== 'keepseam-client' || typeof metadata.version !== 'string') throw new ClientUpdateError('verification-failed');
+    if (metadata.name !== 'self-managed-api' || typeof metadata.version !== 'string') throw new ClientUpdateError('verification-failed');
     process.on('SIGINT', cancel); process.on('SIGTERM', cancel);
     const options = { statePath, currentVersion: metadata.version, repository: (config as { repository: ClientUpdateRepository }).repository, signal: controller.signal };
     const result = await (action === 'stage' ? stageClientUpdate(options) : checkClientUpdate(options));

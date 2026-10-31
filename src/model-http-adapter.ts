@@ -99,7 +99,7 @@ function payload(provider: HttpModelProvider, model: string, maximumOutputTokens
   const schema = recipeSchema(context);
   if (provider === 'openai') return { model, store: false, stream: false, max_output_tokens: maximumOutputTokens,
     instructions: INSTRUCTIONS, input: [{ role: 'user', content: input }],
-    text: { format: { type: 'json_schema', name: 'keepseam_migration_recipe', strict: true, schema } } };
+    text: { format: { type: 'json_schema', name: 'self_managed_api_migration_recipe', strict: true, schema } } };
   if (provider === 'anthropic') return { model, stream: false, max_tokens: maximumOutputTokens,
     system: INSTRUCTIONS, messages: [{ role: 'user', content: input }],
     output_config: { format: { type: 'json_schema', schema } } };
@@ -109,7 +109,7 @@ function payload(provider: HttpModelProvider, model: string, maximumOutputTokens
       responseMimeType: 'application/json', responseJsonSchema: schema } };
   return { model, stream: false, max_tokens: maximumOutputTokens,
     messages: [{ role: 'system', content: INSTRUCTIONS }, { role: 'user', content: input }],
-    response_format: { type: 'json_schema', json_schema: { name: 'keepseam_migration_recipe', strict: true, schema } } };
+    response_format: { type: 'json_schema', json_schema: { name: 'self_managed_api_migration_recipe', strict: true, schema } } };
 }
 
 function extract(provider: HttpModelProvider, response: unknown, expectedModel: string): string {
@@ -230,7 +230,7 @@ function httpFailure(status: number, body: unknown): ModelFailureKind {
   return status === 408 || status >= 500 && status <= 599 ? 'transient' : 'invalid-response';
 }
 
-const PROBE_PROMPT = 'Connection check. Return exactly the JSON object {"keepseam":"ok"}. No other text.';
+const PROBE_PROMPT = 'Connection check. Return exactly the JSON object {"self-managed-api":"ok"}. No other text.';
 export const MODEL_PROBE_OUTPUT_TOKENS = 128;
 export interface ModelConnectionProbe {
   readonly status: 'verified';
@@ -239,16 +239,16 @@ export interface ModelConnectionProbe {
 }
 
 function probePayload(provider: HttpModelProvider, model: string): unknown {
-  const schema = object({ keepseam: { type: 'string', enum: ['ok'] } });
+  const schema = object({ 'self-managed-api': { type: 'string', enum: ['ok'] } });
   if (provider === 'openai') return { model, store: false, stream: false, max_output_tokens: MODEL_PROBE_OUTPUT_TOKENS,
-    input: PROBE_PROMPT, text: { format: { type: 'json_schema', name: 'keepseam_connection', strict: true, schema } } };
+    input: PROBE_PROMPT, text: { format: { type: 'json_schema', name: 'self_managed_api_connection', strict: true, schema } } };
   if (provider === 'anthropic') return { model, stream: false, max_tokens: MODEL_PROBE_OUTPUT_TOKENS,
     messages: [{ role: 'user', content: PROBE_PROMPT }], output_config: { format: { type: 'json_schema', schema } } };
   if (provider === 'google') return { contents: [{ role: 'user', parts: [{ text: PROBE_PROMPT }] }],
     generationConfig: { maxOutputTokens: MODEL_PROBE_OUTPUT_TOKENS, candidateCount: 1, responseMimeType: 'application/json', responseJsonSchema: schema } };
   return { model, stream: false, max_tokens: MODEL_PROBE_OUTPUT_TOKENS,
     messages: [{ role: 'user', content: PROBE_PROMPT }],
-    response_format: { type: 'json_schema', json_schema: { name: 'keepseam_connection', strict: true, schema } } };
+    response_format: { type: 'json_schema', json_schema: { name: 'self_managed_api_connection', strict: true, schema } } };
 }
 
 function validateOptions(options: HttpModelAdapterOptions): URL {
@@ -277,7 +277,7 @@ async function invokeHttpModel(options: HttpModelAdapterOptions, dependencies: H
     }
     if (signal.aborted) failed('cancelled');
     const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json',
-      'Accept-Encoding': 'identity', 'User-Agent': 'keepseam-client/0.1.0' };
+      'Accept-Encoding': 'identity', 'User-Agent': 'self-managed-api/0.1.0' };
     if (provider === 'anthropic') headers['anthropic-version'] = '2023-06-01';
     if (options.getApiKey) {
       let key: string;
@@ -316,7 +316,7 @@ export async function probeHttpModelConnection(options: HttpModelAdapterOptions,
   let response: unknown;
   try { response = JSON.parse(result); } catch { failed(); }
   if (!response || typeof response !== 'object' || Array.isArray(response) || Object.keys(response).length !== 1
-    || !('keepseam' in response) || response.keepseam !== 'ok') failed('model');
+    || !('self-managed-api' in response) || response['self-managed-api'] !== 'ok') failed('model');
   return Object.freeze({ status: 'verified', latencyMs: Math.ceil(performance.now() - startedAt), maximumOutputTokens: MODEL_PROBE_OUTPUT_TOKENS });
 }
 

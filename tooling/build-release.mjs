@@ -20,7 +20,7 @@ assert(asset, `Unsupported release platform: ${platform}`);
 assert(process.env.npm_execpath, 'Run through pnpm release:build');
 const output = join(root, 'work', 'releases');
 const staging = join(output, `build-${randomUUID()}`);
-const bundle = join(staging, `keepseam-${info.version}-${platform}`);
+const bundle = join(staging, `self-managed-api-${info.version}-${platform}`);
 const library = join(bundle, 'lib');
 const childEnv = { ...process.env };
 for (const name of Object.keys(childEnv)) if (name.startsWith('npm_') || name.startsWith('PNPM_') || name === 'INIT_CWD') delete childEnv[name];
@@ -28,11 +28,12 @@ await mkdir(library, { recursive: true });
 const pnpm = args => run(process.execPath, [process.env.npm_execpath, ...args], { cwd: root, windowsHide: true, maxBuffer: 1024 * 1024 });
 await run(process.execPath, ['tooling/build-docs.mjs', '--check'], { cwd: root, windowsHide: true });
 await copyFile(join(root, 'docs', 'technical-guide.pdf'), join(bundle, 'technical-guide.pdf'));
+await copyFile(join(root, 'LICENSE'), join(bundle, 'LICENSE'));
 await pnpm(['pack', '--pack-destination', staging]);
 const archive = join(staging, `${info.name}-${info.version}.tgz`);
-await writeFile(join(library, 'package.json'), JSON.stringify({ private: true, type: 'module', dependencies: { [info.name]: `file:${archive.replaceAll('\\', '/')}` } }));
-// A dereferenced isolated pnpm tree loses the dependency siblings of its virtual package.
-await run(process.execPath, [process.env.npm_execpath, '--dir', library, '--ignore-workspace', 'install', '--prod', '--offline', '--ignore-scripts', '--node-linker=hoisted'], { cwd: library, env: childEnv, windowsHide: true, maxBuffer: 1024 * 1024 });
+// The dedicated deployment lockfile preserves the exact root dependency graph;
+// a fresh tarball consumer would otherwise re-resolve transitive semver ranges.
+await pnpm(['--filter', info.name, 'deploy', '--config.inject-workspace-packages=true', '--prod', '--offline', '--ignore-scripts', '--node-linker=hoisted', '--frozen-lockfile', join(library, 'node_modules', info.name)]);
 // Materialize pnpm links so the extracted archive never depends on a store or checkout.
 const materialized = join(staging, 'materialized');
 await cp(join(library, 'node_modules'), materialized, { recursive: true, dereference: true });
@@ -42,7 +43,7 @@ await writeFile(join(library, 'package.json'), JSON.stringify({ private: true, t
 await mkdir(join(bundle, 'engine'));
 await copyFile(join(root, 'work', 'tools', 'oasdiff', asset.binaryName), join(bundle, 'engine', asset.binaryName));
 await copyFile(join(root, 'work', 'tools', 'oasdiff', 'LICENSE'), join(bundle, 'engine', 'LICENSE'));
-const executable = join(bundle, process.platform === 'win32' ? 'keepseam.exe' : 'keepseam');
+const executable = join(bundle, process.platform === 'win32' ? 'self-managed-api.exe' : 'self-managed-api');
 const blob = join(staging, 'sea.blob');
 const config = join(staging, 'sea.json');
 await writeFile(config, JSON.stringify({ main: join(root, 'tooling', 'sea-entry.cjs'), output: blob, disableExperimentalSEAWarning: true, useSnapshot: false, useCodeCache: false, execArgvExtension: 'none' }));
@@ -53,7 +54,7 @@ await inject(executable, 'NODE_SEA_BLOB', await readFile(blob), { sentinelFuse: 
 if (process.platform === 'darwin') await run('codesign', ['--sign', '-', executable]);
 await chmod(executable, 0o755);
 const nativeSigningEnv={...process.env};
-for(const name of ['KEEPSEAM_WINDOWS_SIGN_CERT_SHA1','KEEPSEAM_SIGNTOOL_PATH','KEEPSEAM_WINDOWS_TIMESTAMP_URL','KEEPSEAM_WINDOWS_PUBLISHER','KEEPSEAM_APPLE_SIGN_IDENTITY','KEEPSEAM_APPLE_NOTARY_PROFILE','KEEPSEAM_APPLE_PUBLISHER'])if(nativeSigningEnv[name]==='')delete nativeSigningEnv[name];
+for(const name of ['SELF_MANAGED_API_WINDOWS_SIGN_CERT_SHA1','SELF_MANAGED_API_SIGNTOOL_PATH','SELF_MANAGED_API_WINDOWS_TIMESTAMP_URL','SELF_MANAGED_API_WINDOWS_PUBLISHER','SELF_MANAGED_API_APPLE_SIGN_IDENTITY','SELF_MANAGED_API_APPLE_NOTARY_PROFILE','SELF_MANAGED_API_APPLE_PUBLISHER'])if(nativeSigningEnv[name]==='')delete nativeSigningEnv[name];
 const nativeSignature=await nativeSigningReceipt(executable,{env:nativeSigningEnv,bundleDirectory:bundle,stagingDirectory:staging,
   additionalExecutables:process.platform==='darwin'?[join(bundle,'engine',asset.binaryName)]:[]});
 // Node distributions carry their own notices; obtain the exact runtime's license explicitly.
@@ -65,19 +66,19 @@ const signingNotice = nativeSignature.verified && nativeSignature.publisher
   : process.platform === 'win32' ? 'Windows executable has no verified publisher signature.'
     : process.platform === 'darwin' ? 'macOS executable is ad-hoc signed, not notarized.'
       : 'Linux archive authenticity requires the separately trusted signed release metadata.';
-await writeFile(join(bundle, 'INSTALL.txt'), `Keepseam ${info.version}\nExtract this entire directory. Keep keepseam and lib together.\nNo Node installation is required. Use: keepseam --help\nContract comparison uses --engine <this-directory>/engine/${asset.binaryName}.\nConsumer validation requires the documented Linux x64 Docker profiles.\n${signingNotice}\nAutomatic worker services require a signed Cloud license; manual SDK tools remain available locally.\nSDK package remains separately version-pinned.\n`);
-const archiveName = `keepseam-${info.version}-${platform}.tar.gz`;
+await writeFile(join(bundle, 'INSTALL.txt'), `Self-managed API ${info.version}\nExtract this entire directory. Keep self-managed-api and lib together.\nNo Node installation is required. Use: self-managed-api --help\nContract comparison uses --engine <this-directory>/engine/${asset.binaryName}.\nConsumer validation requires the documented Linux x64 Docker profiles.\n${signingNotice}\nLocal worker services need no account, license token or hosted control server. Model providers and GitHub are optional and require your own explicit configuration and credentials.\nSDK package remains separately version-pinned.\n`);
+const archiveName = `self-managed-api-${info.version}-${platform}.tar.gz`;
 const stagedArchive = join(staging, archiveName);
-await run('tar', ['-czf', stagedArchive, '-C', staging, `keepseam-${info.version}-${platform}`], { windowsHide: true });
+await run('tar', ['-czf', stagedArchive, '-C', staging, `self-managed-api-${info.version}-${platform}`], { windowsHide: true });
 const temporaryRoot = await realpath(tmpdir());
-const verification = await mkdtemp(join(temporaryRoot, 'keepseam-release-'));
+const verification = await mkdtemp(join(temporaryRoot, 'self-managed-api-release-'));
 try {
   // Checkout dependencies previously hid a broken portable dependency layout.
   const fromCheckout = relative(root, verification);
   assert(fromCheckout === '..' || fromCheckout.startsWith('..' + sep) || isAbsolute(fromCheckout), 'Release verification must run outside the checkout.');
   await run('tar', ['-xzf', stagedArchive, '-C', verification], { windowsHide: true });
-  const installed = join(verification, `keepseam-${info.version}-${platform}`);
-  const installedExecutable = join(installed, process.platform === 'win32' ? 'keepseam.exe' : 'keepseam');
+  const installed = join(verification, `self-managed-api-${info.version}-${platform}`);
+  const installedExecutable = join(installed, process.platform === 'win32' ? 'self-managed-api.exe' : 'self-managed-api');
   const verificationEnv = { ...childEnv };
   delete verificationEnv.NODE_OPTIONS;
   delete verificationEnv.NODE_PATH;
@@ -99,10 +100,11 @@ try {
   });
   assert.deepEqual(await readFile(join(installed, 'technical-guide.pdf')), await readFile(join(root, 'docs', 'technical-guide.pdf')));
   await readFile(join(installed, 'NODE-LICENSE'));
+  assert.deepEqual(await readFile(join(installed, 'LICENSE')), await readFile(join(root, 'LICENSE')));
 } finally {
   const owned = await realpath(verification);
   assert.equal(dirname(owned), temporaryRoot, 'Refuse cleanup outside the temporary release parent.');
-  assert(basename(owned).startsWith('keepseam-release-'), 'Refuse cleanup of an unrelated temporary directory.');
+  assert(basename(owned).startsWith('self-managed-api-release-'), 'Refuse cleanup of an unrelated temporary directory.');
   await rm(owned, { recursive: true, force: true });
 }
 const digest = createHash('sha256').update(await readFile(stagedArchive)).digest('hex');

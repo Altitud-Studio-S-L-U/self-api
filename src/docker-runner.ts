@@ -44,7 +44,7 @@ const PYTHON_DRIVER = [
   'suite = unittest.TestSuite()',
   'for index, test in enumerate(sys.argv[1:]):',
   '    sys.path.insert(0, str(pathlib.Path(test).parent))',
-  '    name = "keepseam_validation_" + str(index)',
+  '    name = "self_managed_api_validation_" + str(index)',
   '    spec = importlib.util.spec_from_file_location(name, test)',
   '    module = importlib.util.module_from_spec(spec)',
   '    sys.modules[name] = module',
@@ -80,7 +80,7 @@ export const JAVA_DOCKER_PROFILE = Object.freeze({
   id: 'java25-linux-amd64-v1',
   image: 'eclipse-temurin@sha256:51ae87bbb1949c1afdff51f6a3e6c5f283d84a4bd68512c9657fdc6605026a49',
   entrypoint: '/bin/sh',
-  command: Object.freeze(['-c', JAVA_DRIVER, 'keepseam-java-validation']),
+  command: Object.freeze(['-c', JAVA_DRIVER, 'self-managed-api-java-validation']),
 });
 
 const PYTEST_DRIVER = [
@@ -112,8 +112,8 @@ const MAVEN_DRIVER = [
   '  tests=${tests:+$tests,}$name',
   'done',
   'export HOME=/tmp MAVEN_OPTS="-Xmx256m -XX:ActiveProcessorCount=1"',
-  '/opt/maven/bin/mvn -o -B -ntp -s /opt/keepseam/settings.xml -Dmaven.repo.local=/opt/keepseam/repository -Dtest="$tests" -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true -DskipTests=false -Dmaven.test.skip=false -Dmaven.compiler.proc=none -DargLine="-Xmx256m -XX:ActiveProcessorCount=1" test',
-  'exec java -Xmx128m -XX:ActiveProcessorCount=1 --class-path /opt/keepseam/check KeepseamReports /tmp/project/target/surefire-reports "$tests"',
+  '/opt/maven/bin/mvn -o -B -ntp -s /opt/self-managed-api/settings.xml -Dmaven.repo.local=/opt/self-managed-api/repository -Dtest="$tests" -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true -DskipTests=false -Dmaven.test.skip=false -Dmaven.compiler.proc=none -DargLine="-Xmx256m -XX:ActiveProcessorCount=1" test',
+  'exec java -Xmx128m -XX:ActiveProcessorCount=1 --class-path /opt/self-managed-api/check SelfManagedApiReports /tmp/project/target/surefire-reports "$tests"',
 ].join('\n');
 
 function frameworkProfile(input: ValidationRuntime) {
@@ -122,7 +122,7 @@ function frameworkProfile(input: ValidationRuntime) {
     id: runtime.kind === 'pytest' ? 'pytest9-python313-linux-amd64-v1' as const : 'maven3-junit6-java25-linux-amd64-v1' as const,
     image: runtime.imageId, runtime,
     entrypoint: runtime.kind === 'pytest' ? '/usr/local/bin/python3' : '/bin/sh',
-    command: Object.freeze(runtime.kind === 'pytest' ? ['-B', '-c', PYTEST_DRIVER] : ['-c', MAVEN_DRIVER, 'keepseam-maven-validation']),
+    command: Object.freeze(runtime.kind === 'pytest' ? ['-B', '-c', PYTEST_DRIVER] : ['-c', MAVEN_DRIVER, 'self-managed-api-maven-validation']),
     timeoutMs: 120_000,
     isolationArgs: Object.freeze(DOCKER_PROFILE.isolationArgs.map(value => value === '--memory=512m' ? '--memory=768m'
       : value === '--memory-swap=512m' ? '--memory-swap=768m'
@@ -455,7 +455,7 @@ async function readJournal(directory: string, state: string, phase: Phase, ident
   }
   if (!exactFields(intent, INTENT_FIELDS) || intent.schemaVersion !== 1 || intent.phase !== phase
     || intent.statePathSha256 !== pathHash(state) || intent.profileSha256 !== hashJson(profile)
-    || typeof intent.owner !== 'string' || !UUID.test(intent.owner) || intent.containerName !== `keepseam-validation-${intent.owner}`
+    || typeof intent.owner !== 'string' || !UUID.test(intent.owner) || intent.containerName !== `self-managed-api-validation-${intent.owner}`
     || typeof intent.imageId !== 'string' || !IMAGE_ID.test(intent.imageId)
     || typeof intent.commandSha256 !== 'string' || !HASH.test(intent.commandSha256) || !timestamp(intent.recordedAt)
     || !sameIdentity(intent as unknown as ContainerIntent, identity)) throw new Error('Journal identity does not match the attempt.');
@@ -577,13 +577,13 @@ export function createDockerValidationRunner(options: RunnerOptions): (input: Do
           try {
             const labels: unknown = JSON.parse(metadata.stdout);
             if (metadata.status !== 'exited' || metadata.exitCode !== 0 || !object(labels)
-              || labels['io.keepseam.validation.recipe'] !== profile.runtime.recipeSha256
-              || labels['io.keepseam.validation.dependencies'] !== profile.runtime.dependenciesSha256
-              || labels['io.keepseam.validation.framework'] !== profile.runtime.kind) throw new Error('Runtime metadata mismatch');
+              || labels['io.self-managed-api.validation.recipe'] !== profile.runtime.recipeSha256
+              || labels['io.self-managed-api.validation.dependencies'] !== profile.runtime.dependenciesSha256
+              || labels['io.self-managed-api.validation.framework'] !== profile.runtime.kind) throw new Error('Runtime metadata mismatch');
           } catch { return blocked('The prepared runtime does not match its approved recipe and dependency manifest.'); }
         }
         ownership = randomUUID();
-        containerName = `keepseam-validation-${ownership}`;
+        containerName = `self-managed-api-validation-${ownership}`;
         const command = [...profile.command, ...paths.tests.map(path => `${profile.mountTarget}/${path}`)];
         if (executionContext !== undefined) {
           const inspectedImage = await control(['image', 'inspect', '--format', '{{.Id}}', profile.image]);

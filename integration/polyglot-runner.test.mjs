@@ -41,7 +41,7 @@ async function validate(t, filename, source) {
   const result = await runDockerValidation({ snapshotPath, statePath, testPaths: [filename] });
   assert.equal(hash(await readFile(path)), before, 'The isolated runner changed its captured test.');
   assert.equal(result.cleanup, 'removed', `${result.status}: ${result.reason ?? result.stderr}`);
-  assert.match(result.containerName, /^keepseam-validation-[a-f0-9-]+$/u);
+  assert.match(result.containerName, /^self-managed-api-validation-[a-f0-9-]+$/u);
   await assert.rejects(execute('docker', ['container', 'inspect', result.containerName], dockerOptions), error => {
     assert.equal(error.code, 1);
     assert.match(error.stderr, /No such (?:object|container)/iu);
@@ -91,7 +91,7 @@ for (const [description, source, errorPattern] of [
 }
 
 test('Python imports unittest once and preserves the guarded main block', { timeout: 60_000 }, async t => {
-  const source = 'import builtins, unittest\nbuiltins.keepseam_synthetic_imports = getattr(builtins, "keepseam_synthetic_imports", 0) + 1\nclass ContractTest(unittest.TestCase):\n    def test_contract(self):\n        self.assertEqual(builtins.keepseam_synthetic_imports, 1)\nif __name__ == "__main__":\n    raise AssertionError("the unittest module must be imported, not launched as a script")\n';
+  const source = 'import builtins, unittest\nbuiltins.self_managed_api_synthetic_imports = getattr(builtins, "self_managed_api_synthetic_imports", 0) + 1\nclass ContractTest(unittest.TestCase):\n    def test_contract(self):\n        self.assertEqual(builtins.self_managed_api_synthetic_imports, 1)\nif __name__ == "__main__":\n    raise AssertionError("the unittest module must be imported, not launched as a script")\n';
   const result = await validate(t, 'test_contract.py', source);
   assert.equal(result.status, 'passed', `${result.stdout}\n${result.stderr}`);
   assert.equal(result.exitCode, 0);

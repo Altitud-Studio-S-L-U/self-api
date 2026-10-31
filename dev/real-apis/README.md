@@ -1,8 +1,8 @@
 # Real API maintenance laboratory
 
-This application uses the public Keepseam SDK (`import … from 'keepseam-client'`), its persistent worker and its approval/validation flow. Ten official public sources are fetched through the normal bounded HTTPS observer. Downloaded documents and worker evidence stay in ignored `work/real-apis`; they are never executed or sent to Cloud.
+This application uses the public SelfManagedApi SDK (`import … from 'self-managed-api'`), its persistent worker and its approval/validation flow. Ten official public sources are fetched through the normal bounded HTTPS observer. Downloaded documents and worker evidence stay in ignored `work/real-apis` and are never executed.
 
-Provider operations use a deliberately closed, simulated transport. No provider API keys, payments, orders, uploads or real messages are involved. The Notion SDK versions are genuine, pinned development dependencies: `4.0.2` and `5.27.0` (MIT, Node >=18). They are not runtime dependencies of the distributed Keepseam client.
+Provider operations use a deliberately closed, simulated transport. No provider API keys, payments, orders, uploads or real messages are involved. The Notion SDK versions are genuine, pinned development dependencies: `4.0.2` and `5.27.0` (MIT, Node >=18). They are not runtime dependencies of the distributed SelfManagedApi client.
 
 ## Run
 
@@ -63,16 +63,13 @@ Source selection was reviewed on 2026-10-08. `catalog.mjs` records the exact ret
 
 All ten have discoverable native call paths and explicit manifests. Only the Notion exercise currently has a complete reviewed migration recipe; the other nine are discovery/documentation scenarios, not nine fabricated successful migrations. No third-party documentation is committed to the repository.
 
-## Connect the actual worker
-
-Enroll the generated worker key in Cloud, compare and approve its fingerprint with a current passkey, and bind the selected local subscription to the intended Cloud integration. Use the client connection procedure for the exact credential shape. Credentials belong in a private file outside the consumer checkout; never paste them into source, a command argument value or a support message.
+## Run the local worker
 
 ```sh
-pnpm dev:apis cloud-sync /private/keepseam-worker.json
-pnpm dev:apis worker /private/keepseam-worker.json
+pnpm dev:apis worker
 ```
 
-The lab shares only its explicitly selected Notion subscription and protocol status. It sends no docs, code, paths, tokens, prompts or raw test output. The loop checks local contracts every 15 seconds and public documentation every 15 minutes. Temporary Cloud connection failures retain the outbox and retry after 60 seconds while local observation continues. Rejected credentials or status stop Cloud retries until the operator fixes the connection and restarts the supervisor; local observation still continues. Local observation/state failures stop this development supervisor visibly. Cloud revocation does not modify the consumer and no Cloud message grants code execution. Review jobs remain local until an explicitly approved action runs.
+The loop checks local contracts every 15 seconds and public documentation every 15 minutes. Local observation/state failures stop this development supervisor visibly. Review jobs remain local until an explicitly approved action runs. This worker does not need an account or enrollment.
 
 ## Verification
 

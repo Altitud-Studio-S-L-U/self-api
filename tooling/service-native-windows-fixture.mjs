@@ -23,13 +23,13 @@ async function entries(statePath) {
 }
 function run(script, paths) {
   return execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
-    env: { ...process.env, PSModulePath: join(systemRoot, 'System32/WindowsPowerShell/v1.0/Modules'), KEEPSEAM_NATIVE_FIXTURE_PATHS: JSON.stringify(paths) },
+    env: { ...process.env, PSModulePath: join(systemRoot, 'System32/WindowsPowerShell/v1.0/Modules'), SELF_MANAGED_API_NATIVE_FIXTURE_PATHS: JSON.stringify(paths) },
     encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 65_536,
   });
 }
 const prelude = `
 $ErrorActionPreference = 'Stop'
-$paths = ConvertFrom-Json -InputObject $env:KEEPSEAM_NATIVE_FIXTURE_PATHS
+$paths = ConvertFrom-Json -InputObject $env:SELF_MANAGED_API_NATIVE_FIXTURE_PATHS
 $allowed = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-19')
 `;
 

@@ -2,7 +2,7 @@
 // its internal network; Docker Desktop cannot publish an internal-network port.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-const upstream = process.env.KEEPSEAM_MODEL_UPSTREAM;
+const upstream = process.env.SELF_MANAGED_API_MODEL_UPSTREAM;
 assert.match(upstream ?? '', /^http:\/\/172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}:8080$/u);
 const maximumBytes = 2 * 1024 * 1024;
 createServer({ maxHeaderSize: 8192, requestTimeout: 150000, headersTimeout: 10000 }, async (request, response) => {

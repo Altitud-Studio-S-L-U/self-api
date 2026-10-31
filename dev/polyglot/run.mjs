@@ -15,7 +15,7 @@ const images = {
   python: 'python@sha256:f040863673aea2570c3ff6a5c3fb4c673a016cbc5375005ad145915922b6b78a',
   java: 'eclipse-temurin@sha256:51ae87bbb1949c1afdff51f6a3e6c5f283d84a4bd68512c9657fdc6605026a49',
 };
-const runId = randomUUID(), ownerLabel = `io.keepseam.polyglot=${runId}`;
+const runId = randomUUID(), ownerLabel = `io.self-managed-api.polyglot=${runId}`;
 const outcomes = [];
 
 async function run(command, args, cwd, expected = 0, timeout = 60000) {
@@ -68,10 +68,10 @@ await mkdir(output, { recursive: false });
 assert.equal(await realpath(output), output, 'Use a canonical owned output directory');
 const runtime = join(output, 'runtime');
 await mkdir(runtime); await mkdir(join(output, 'contracts'));
-await writeFile(join(output, 'acceptance-owner.json'), JSON.stringify({ runId, kind: 'keepseam-polyglot-acceptance', syntheticProvider: true, output }, null, 2), { flag: 'wx' });
-await run(process.execPath, [pnpm, 'pack', '--out', join(output, 'keepseam-client.tgz')], root);
+await writeFile(join(output, 'acceptance-owner.json'), JSON.stringify({ runId, kind: 'self-managed-api-polyglot-acceptance', syntheticProvider: true, output }, null, 2), { flag: 'wx' });
+await run(process.execPath, [pnpm, 'pack', '--out', join(output, 'self-managed-api.tgz')], root);
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'keepseam-polyglot-acceptance-runtime', private: true, type: 'module', packageManager: manifest.packageManager, dependencies: { 'keepseam-client': 'file:../keepseam-client.tgz' } }), { flag: 'wx' });
+await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'self-managed-api-polyglot-acceptance-runtime', private: true, type: 'module', packageManager: manifest.packageManager, dependencies: { 'self-managed-api': 'file:../self-managed-api.tgz' } }), { flag: 'wx' });
 await run(process.execPath, [pnpm, 'install', '--offline', '--ignore-scripts', '--ignore-workspace'], runtime);
 await copyFile(join(import.meta.dirname, 'sdk-probe.mjs'), join(runtime, 'sdk-probe.mjs'));
 for (const language of ['python', 'java']) {
@@ -83,12 +83,12 @@ for (const language of ['python', 'java']) {
   }
 }
 await captureContracts();
-const engine = process.env.KEEPSEAM_ENGINE ?? join(root, 'work/tools/oasdiff', process.platform === 'win32' ? 'oasdiff.exe' : 'oasdiff');
+const engine = process.env.SELF_MANAGED_API_ENGINE ?? join(root, 'work/tools/oasdiff', process.platform === 'win32' ? 'oasdiff.exe' : 'oasdiff');
 await run(process.execPath, [join(runtime, 'sdk-probe.mjs'), output, engine, root], runtime);
 for (const [language, image] of Object.entries(images)) {
  await run('docker', ['image', 'inspect', image], root);
  for (const [revision, providerVersion, expected] of [['baseline', 'A', 0], ['baseline', 'B', 1], ['candidate', 'B', 0]]) {
-  const name = `keepseam-polyglot-${runId}-${language}-${revision}-${providerVersion.toLowerCase()}`;
+  const name = `self-managed-api-polyglot-${runId}-${language}-${revision}-${providerVersion.toLowerCase()}`;
   try {
     const command = language === 'python'
       ? ['--entrypoint=/usr/local/bin/python3', image, '-B', 'test_payment.py', providerVersion]
@@ -101,7 +101,7 @@ for (const [language, image] of Object.entries(images)) {
     const inspected = await run('docker', ['container', 'inspect', name], root, null);
     if (inspected.code === 0) {
       const [container] = JSON.parse(inspected.stdout);
-      assert.equal(container.Config.Labels['io.keepseam.polyglot'], runId); assert.equal(container.Name, '/' + name);
+      assert.equal(container.Config.Labels['io.self-managed-api.polyglot'], runId); assert.equal(container.Name, '/' + name);
       await run('docker', ['rm', '--force', name], root);
     }
     const removed = await run('docker', ['container', 'inspect', name], root, null);
@@ -116,6 +116,6 @@ for (const [language, test] of [['python', 'test_payment.py'], ['java', 'Payment
 const summary = { schemaVersion: 1, syntheticProvider: true, sdk: JSON.parse(await readFile(join(output, 'sdk-observation.json'), 'utf8')), consumerTests: outcomes,
   migrationAuthor: 'manually-reviewed-fixture', sdkMigratedConsumer: false, sdkExecutedPolyglotValidation: true,
   javaImage: images.java, pythonImage: images.python,
-  artifactSha256: createHash('sha256').update(await readFile(join(output, 'keepseam-client.tgz'))).digest('hex') };
+  artifactSha256: createHash('sha256').update(await readFile(join(output, 'self-managed-api.tgz'))).digest('hex') };
 await writeFile(join(output, 'acceptance.json'), JSON.stringify(summary, null, 2) + '\n', { flag: 'wx' });
 process.stdout.write(JSON.stringify(summary, null, 2) + '\n');

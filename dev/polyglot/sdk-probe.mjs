@@ -4,12 +4,12 @@ import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scanConsumer, compareOpenApi, analyzeImpact, createMigrationPlan, prepareModelProposal, prepareJobValidation, approveJobValidation, queueJobValidation, runApprovedJobsOnce,
-  registerLocalSubscription, observeOnce, listMaintenanceJobs } from 'keepseam-client';
-import { runCli } from 'keepseam-client/cli';
+  registerLocalSubscription, observeOnce, listMaintenanceJobs } from 'self-managed-api';
+import { runCli } from 'self-managed-api/cli';
 
 const [output, enginePath, sourceRepo] = process.argv.slice(2);
 const directory = resolve(output), installed = await realpath(join(import.meta.dirname, 'node_modules'));
-const entry = await realpath(fileURLToPath(import.meta.resolve('keepseam-client')));
+const entry = await realpath(fileURLToPath(import.meta.resolve('self-managed-api')));
 const relativeEntry = relative(installed, entry), relativeRepo = relative(resolve(sourceRepo), entry);
 assert.ok(relativeEntry && !isAbsolute(relativeEntry) && !relativeEntry.startsWith(`..${sep}`));
 assert.ok(relativeRepo === '..' || relativeRepo.startsWith(`..${sep}`) || isAbsolute(relativeRepo), 'SDK must be installed outside the source checkout');

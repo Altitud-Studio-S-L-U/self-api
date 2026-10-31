@@ -16,7 +16,7 @@ export async function queryNative(context) {
   return pageIds(await response.json());
 }
 
-// The actual SDK is supplied by the application. Keepseam metadata does not wrap its behavior.
+// The actual SDK is supplied by the application. SelfManagedApi metadata does not wrap its behavior.
 export async function querySdk(notion, context) {
   return pageIds(await notion.databases.query({ database_id: context.databaseId, page_size: 20 }));
 }

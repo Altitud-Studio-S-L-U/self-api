@@ -61,7 +61,7 @@ const rejected = rejections.map(rejection => {
   const original = proposals.find(value => value.scenario.id === rejection.scenarioId); assert(original);
   return { id: original.scenario.id, ...reviewRejection({ ...original, rejection }) };
 });
-const sdk = await import(pathToFileURL(join(directory, 'runtime/node_modules/keepseam-client/dist/migration-recipe.js')).href);
+const sdk = await import(pathToFileURL(join(directory, 'runtime/node_modules/self-managed-api/dist/migration-recipe.js')).href);
 const reviewed = authorization.reviews.map(review => {
   const original = proposals.find(value => value.scenario.id === review.scenarioId);
   assert(original, 'Refused, rejected and ambiguous scenarios cannot receive substitute edits.');
@@ -89,7 +89,7 @@ async function docker(args, expected = 0) {
 const outcomes = evaluation.outcomes.map(value => ({ ...value }));
 for (const rejection of rejected) Object.assign(outcomes.find(value => value.id === rejection.id), rejection);
 try {
-  const installed = join(directory, 'runtime/node_modules/keepseam-client/dist');
+  const installed = join(directory, 'runtime/node_modules/self-managed-api/dist');
   const executionSdk = polyglot ? await import(pathToFileURL(join(installed, 'index.js')).href) : null;
   const runtimeModule = polyglot ? await import(pathToFileURL(join(installed, 'validation-runtime.js')).href) : null;
   if (!polyglot) await docker(['image', 'inspect', evaluation.profile.nodeImage]);
@@ -110,8 +110,8 @@ try {
       const fixture = join(reviewDirectory, `${item.scenario.id}-${revision}`); await mkdir(fixture);
       await writeFile(join(fixture, 'payment.mjs'), revision === 'baseline' ? item.scenario.source : item.candidate, { flag: 'wx' });
       await writeFile(join(fixture, 'payment.test.mjs'), item.scenario.test, { flag: 'wx' });
-      const name = `keepseam-semantic-${reviewId}-${containers.length}`; containers.push(name);
-      const result = await docker(['run', '--name', name, '--label', `io.keepseam.semantic-review=${reviewId}`,
+      const name = `self-managed-api-semantic-${reviewId}-${containers.length}`; containers.push(name);
+      const result = await docker(['run', '--name', name, '--label', `io.self-managed-api.semantic-review=${reviewId}`,
         '--pull=never', '--platform=linux/amd64', '--read-only', '--user=65534:65534', '--cap-drop=ALL', '--security-opt=no-new-privileges=true',
         '--network=none', '--cpus=1', '--memory=256m', '--memory-swap=256m', '--pids-limit=128', '--tmpfs=/tmp:rw,nosuid,nodev,size=64m,mode=1777',
         '--mount', `type=bind,source=${fixture},target=/fixture,readonly`, '--workdir=/fixture', evaluation.profile.nodeImage,
@@ -128,7 +128,7 @@ try {
 } finally {
   for (const name of containers.reverse()) {
     const inspected = await docker(['inspect', name], null); if (inspected.code !== 0) continue;
-    const config = JSON.parse(inspected.stdout)[0]; assert.equal(config.Config.Labels['io.keepseam.semantic-review'], reviewId);
+    const config = JSON.parse(inspected.stdout)[0]; assert.equal(config.Config.Labels['io.self-managed-api.semantic-review'], reviewId);
     await docker(['rm', '-f', name]);
   }
 }

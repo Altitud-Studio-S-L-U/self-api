@@ -47,7 +47,7 @@ async function propose(adapter, request = prepare(adapter)) {
 
 for (const provider of ['openai', 'anthropic', 'google', 'local-openai-compatible']) {
   test(`${provider} functional connection check performs synthetic bounded inference without consumer code or tools`, async () => {
-    const fixture = transport(responseFor(provider, '{"keepseam":"ok"}'));
+    const fixture = transport(responseFor(provider, '{"self-managed-api":"ok"}'));
     const result = await probeHttpModelConnection(options(provider), new AbortController().signal, fixture.dependencies);
     assert.equal(result.status, 'verified'); assert.equal(result.maximumOutputTokens, 128); assert.equal(fixture.calls.length, 1);
     const { body, url } = fixture.calls[0];
@@ -55,11 +55,11 @@ for (const provider of ['openai', 'anthropic', 'google', 'local-openai-compatibl
     assert(!url.includes('fictional-provider-key'));
     assert.equal(body.max_output_tokens ?? body.max_tokens ?? body.generationConfig.maxOutputTokens, 128);
     if (provider === 'openai') assert.equal(body.store, false);
-    for (const output of ['not JSON', '{"keepseam":"wrong"}', '{"keepseam":"ok","secret":"untrusted"}']) {
+    for (const output of ['not JSON', '{"self-managed-api":"wrong"}', '{"self-managed-api":"ok","secret":"untrusted"}']) {
       const invalid = transport(responseFor(provider, output));
       await assert.rejects(probeHttpModelConnection(options(provider), new AbortController().signal, invalid.dependencies), { code: 'ENGINE_FAILED' });
     }
-    const mismatched = transport({ ...responseFor(provider, '{"keepseam":"ok"}'), [provider === 'google' ? 'modelVersion' : 'model']: 'unapproved-model' });
+    const mismatched = transport({ ...responseFor(provider, '{"self-managed-api":"ok"}'), [provider === 'google' ? 'modelVersion' : 'model']: 'unapproved-model' });
     await assert.rejects(probeHttpModelConnection(options(provider), new AbortController().signal, mismatched.dependencies), { kind: 'model' });
   });
 }
@@ -79,14 +79,14 @@ for (const model of ['gemini-fixture-001', 'models/gemini-fixture-001']) {
   test(`Google ${model} uses the same exact resource for its functional check and generation`, async () => {
     const destination = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-fixture-001:generateContent';
     const configuration = options('google', { model });
-    const check = transport({ ...responseFor('google', '{"keepseam":"ok"}'), modelVersion: 'gemini-fixture-001' });
+    const check = transport({ ...responseFor('google', '{"self-managed-api":"ok"}'), modelVersion: 'gemini-fixture-001' });
     const generation = transport({ ...responseFor('google'), modelVersion: 'gemini-fixture-001' });
     const adapter = createHttpModelAdapter(configuration, generation.dependencies);
     assert.equal(adapter.destination, destination);
     assert.equal((await probeHttpModelConnection(configuration, new AbortController().signal, check.dependencies)).status, 'verified');
     assert.equal((await propose(adapter)).status, 'proposal-ready');
     assert.deepEqual([...check.calls, ...generation.calls].map(call => call.url), [destination, destination]);
-    for (const [text, operation] of [['{"keepseam":"ok"}', 'probe'], [json, 'generation']]) {
+    for (const [text, operation] of [['{"self-managed-api":"ok"}', 'probe'], [json, 'generation']]) {
       const otherModel = transport({ ...responseFor('google', text), modelVersion: 'gemini-fixture-002' });
       await assert.rejects(operation === 'probe'
         ? probeHttpModelConnection(configuration, new AbortController().signal, otherModel.dependencies)

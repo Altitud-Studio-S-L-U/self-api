@@ -62,7 +62,7 @@ async function downloadArchive(url, destination) {
       signal,
       redirect: 'manual',
       credentials: 'omit',
-      headers: { 'User-Agent': 'keepseam-engine-setup', Accept: 'application/octet-stream' },
+      headers: { 'User-Agent': 'self-managed-api-engine-setup', Accept: 'application/octet-stream' },
     });
     if (![301, 302, 303, 307, 308].includes(response.status)) break;
     await response.body?.cancel();

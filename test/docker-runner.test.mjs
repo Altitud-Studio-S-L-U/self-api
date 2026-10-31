@@ -96,10 +96,10 @@ test('prepared framework image labels must match the approved recipe and depende
   await writeFile(join(input.snapshotPath, 'test_contract.py'), 'def test_contract(): assert True\n');
   const runtime = { schemaVersion: 1, kind: 'pytest', imageId: `sha256:${'a'.repeat(64)}`,
     recipeSha256: runtimeRecipeSha256('pytest'), dependenciesSha256: 'b'.repeat(64) };
-  for (const change of [{ 'io.keepseam.validation.recipe': '0'.repeat(64) }, { 'io.keepseam.validation.dependencies': '0'.repeat(64) }, { 'io.keepseam.validation.framework': 'maven-junit' }]) {
+  for (const change of [{ 'io.self-managed-api.validation.recipe': '0'.repeat(64) }, { 'io.self-managed-api.validation.dependencies': '0'.repeat(64) }, { 'io.self-managed-api.validation.framework': 'maven-junit' }]) {
     const docker = fakeDocker({ image: ({ call, response }) => call.args.includes('{{json .Config.Labels}}') ? { code: 0, stdout: JSON.stringify({
-      'io.keepseam.validation.recipe': runtime.recipeSha256, 'io.keepseam.validation.dependencies': runtime.dependenciesSha256,
-      'io.keepseam.validation.framework': runtime.kind, ...change }) } : response });
+      'io.self-managed-api.validation.recipe': runtime.recipeSha256, 'io.self-managed-api.validation.dependencies': runtime.dependenciesSha256,
+      'io.self-managed-api.validation.framework': runtime.kind, ...change }) } : response });
     const result = await docker.runner()({ ...input, testPaths: ['test_contract.py'], runtime });
     assert.equal(result.status, 'blocked');
     assert.equal(result.cleanup, 'not-created');
@@ -114,7 +114,7 @@ test('validates selected tests with fixed policy and verifies removal before ret
   assert.equal(result.status, 'passed');
   assert.equal(result.exitCode, 0);
   assert.equal(result.cleanup, 'removed');
-  assert.match(result.containerName, /^keepseam-validation-[a-f0-9-]{36}$/);
+  assert.match(result.containerName, /^self-managed-api-validation-[a-f0-9-]{36}$/);
   assert.equal(result.stdout, 'synthetic test passed\n');
   assert.deepEqual(docker.calls.map(call => call.args[0]), ['info', 'image', 'create', 'start', 'inspect', 'inspect', 'rm', 'inspect', 'inspect']);
   const create = docker.calls.find(call => call.args[0] === 'create');

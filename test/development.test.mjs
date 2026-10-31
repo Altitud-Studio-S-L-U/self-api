@@ -16,7 +16,7 @@ test('development status describes operational commands without loading a delive
   assert.match(result.stdout, /Build: pnpm build/u);
   assert.match(result.stdout, /Validation: pnpm dev:check/u);
   assert.match(result.stdout, /Local laboratory: pnpm dev:local --help/u);
-  assert.match(result.stdout, /CLI: pnpm keepseam --help/u);
+  assert.match(result.stdout, /CLI: pnpm self-managed-api --help/u);
   assert.match(result.stdout, /Technical documentation: docs\/technical-guide\.pdf/u);
   assert.doesNotMatch(result.stdout, /Next implementation|planned|in-progress|milestone|delivery\.json/u);
 });

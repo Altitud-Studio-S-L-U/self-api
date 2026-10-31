@@ -14,10 +14,10 @@ export async function prepareValidationRuntime(kind: ValidationFramework, output
   try { await lstat(destination); throw new Error('Choose a new runtime manifest path; existing approvals must retain their exact runtime.'); }
   catch (error) { if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') throw error; }
   await mkdir(dirname(destination), { recursive: true });
-  const context = await mkdtemp(join(dirname(destination), '.keepseam-runtime-'));
+  const context = await mkdtemp(join(dirname(destination), '.self-managed-api-runtime-'));
   const id = randomUUID();
-  const tag = `keepseam-validation-preparation:${id}`;
-  const finalTag = `keepseam-validation:${id}`;
+  const tag = `self-managed-api-validation-preparation:${id}`;
+  const finalTag = `self-managed-api-validation:${id}`;
   let preparationCreated = false;
   let finalCreated = false;
   let manifestSaved = false;
@@ -39,38 +39,38 @@ export async function prepareValidationRuntime(kind: ValidationFramework, output
     if (kind === 'pytest') {
       const names: string[] = [];
       for (const definition of PYTEST_ARTIFACTS) names.push(await artifact(definition));
-      setup = `COPY *.whl /opt/keepseam/wheels/\nRUN python3 -m pip install --no-index --no-deps ${names.map(name => `/opt/keepseam/wheels/${name}`).join(' ')}\n`;
+      setup = `COPY *.whl /opt/self-managed-api/wheels/\nRUN python3 -m pip install --no-index --no-deps ${names.map(name => `/opt/self-managed-api/wheels/${name}`).join(' ')}\n`;
     } else {
       const archive = await artifact(MAVEN_ARTIFACT);
       await writeFile(join(context, 'pom.xml'), MAVEN_FIXTURE_POM);
-      await writeFile(join(context, 'KeepseamReports.java'), MAVEN_REPORT_CHECK);
+      await writeFile(join(context, 'SelfManagedApiReports.java'), MAVEN_REPORT_CHECK);
       await writeFile(join(context, 'PreparationTest.java'), 'import org.junit.jupiter.api.Test;\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nclass PreparationTest { @Test void works() { assertEquals(4, 2 + 2); } }\n');
-      await writeFile(join(context, 'settings.xml'), '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"><mirrors><mirror><id>keepseam-central</id><mirrorOf>*</mirrorOf><url>https://repo.maven.apache.org/maven2</url></mirror></mirrors></settings>\n');
+      await writeFile(join(context, 'settings.xml'), '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"><mirrors><mirror><id>self-managed-api-central</id><mirrorOf>*</mirrorOf><url>https://repo.maven.apache.org/maven2</url></mirror></mirrors></settings>\n');
       setup = `COPY ${archive} /tmp/maven.tar.gz
-RUN mkdir -p /opt/maven /opt/keepseam/check /opt/keepseam/repository && tar -xzf /tmp/maven.tar.gz --strip-components=1 -C /opt/maven && rm /tmp/maven.tar.gz
-COPY settings.xml /opt/keepseam/settings.xml
-COPY KeepseamReports.java /tmp/KeepseamReports.java
-RUN javac -proc:none -d /opt/keepseam/check /tmp/KeepseamReports.java && rm /tmp/KeepseamReports.java
+RUN mkdir -p /opt/maven /opt/self-managed-api/check /opt/self-managed-api/repository && tar -xzf /tmp/maven.tar.gz --strip-components=1 -C /opt/maven && rm /tmp/maven.tar.gz
+COPY settings.xml /opt/self-managed-api/settings.xml
+COPY SelfManagedApiReports.java /tmp/SelfManagedApiReports.java
+RUN javac -proc:none -d /opt/self-managed-api/check /tmp/SelfManagedApiReports.java && rm /tmp/SelfManagedApiReports.java
 COPY pom.xml /tmp/preparation/pom.xml
 COPY PreparationTest.java /tmp/preparation/src/test/java/PreparationTest.java
-RUN /opt/maven/bin/mvn -C -B -ntp -s /opt/keepseam/settings.xml -Dmaven.repo.local=/opt/keepseam/repository -f /tmp/preparation/pom.xml test && rm -r /tmp/preparation && chmod -R a+rX /opt/keepseam
+RUN /opt/maven/bin/mvn -C -B -ntp -s /opt/self-managed-api/settings.xml -Dmaven.repo.local=/opt/self-managed-api/repository -f /tmp/preparation/pom.xml test && rm -r /tmp/preparation && chmod -R a+rX /opt/self-managed-api
 `;
     }
     const base = FRAMEWORK_BASE_IMAGES[kind];
     const recipe = runtimeRecipeSha256(kind);
-    await writeFile(join(context, 'Dockerfile'), `FROM ${base}\n${setup}\nLABEL io.keepseam.validation.preparation="${id}"\n`);
+    await writeFile(join(context, 'Dockerfile'), `FROM ${base}\n${setup}\nLABEL io.self-managed-api.validation.preparation="${id}"\n`);
     docker('build', '--platform=linux/amd64', `--network=${kind === 'pytest' ? 'none' : 'default'}`, '--tag', tag, context);
     preparationCreated = true;
     const dependencyCommand = kind === 'pytest'
-      ? 'cd /opt/keepseam/wheels && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum'
-      : 'cd /opt/keepseam && find repository check -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum';
-    const dependenciesSha256 = docker('run', '--rm', '--name', `keepseam-runtime-check-${id}`, '--network=none', '--read-only',
+      ? 'cd /opt/self-managed-api/wheels && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum'
+      : 'cd /opt/self-managed-api && find repository check -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum';
+    const dependenciesSha256 = docker('run', '--rm', '--name', `self-managed-api-runtime-check-${id}`, '--network=none', '--read-only',
       '--user=65534:65534', '--cap-drop=ALL', '--security-opt=no-new-privileges=true', '--entrypoint=/bin/sh', tag, '-c', dependencyCommand).trim().split(/\s/u)[0]!;
     if (!/^[a-f0-9]{64}$/u.test(dependenciesSha256)) throw new Error('Preparation did not produce a dependency digest.');
     const preparedId = docker('image', 'inspect', '--format={{.Id}}', tag).trim();
     // BuildKit resolves a bare sha256 image ID as a remote repository. The unique local tag is
     // checked on both sides; only the final content-addressed ID is exposed for authorization.
-    await writeFile(join(context, 'Dockerfile.final'), `FROM ${tag}\nLABEL io.keepseam.validation.recipe="${recipe}" io.keepseam.validation.dependencies="${dependenciesSha256}" io.keepseam.validation.framework="${kind}"\n`);
+    await writeFile(join(context, 'Dockerfile.final'), `FROM ${tag}\nLABEL io.self-managed-api.validation.recipe="${recipe}" io.self-managed-api.validation.dependencies="${dependenciesSha256}" io.self-managed-api.validation.framework="${kind}"\n`);
     docker('build', '--pull=false', '--network=none', '--platform=linux/amd64', '--file', join(context, 'Dockerfile.final'), '--tag', finalTag, context);
     finalCreated = true;
     if (docker('image', 'inspect', '--format={{.Id}}', tag).trim() !== preparedId) throw new Error('Preparation image changed while finalizing its manifest.');
