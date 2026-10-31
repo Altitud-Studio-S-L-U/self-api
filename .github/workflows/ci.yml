@@ -109,9 +109,24 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      # systemd 249 delegates memory and pids by default, but user CPU quotas
-      # also require cpu delegation. This runner is disposable.
-      - run: sudo systemctl set-property --runtime "user@$(id -u).service" 'Delegate=cpu memory pids'
+      # systemd 249 accepts delegation for existing services through unit files,
+      # not set-property. Keep this runner-only configuration under /run.
+      - name: Delegate required controllers to the disposable user manager
+        run: |
+          manager="user@$(id -u).service"
+          drop_in="/run/systemd/system/$manager.d"
+          sudo mkdir -p "$drop_in"
+          printf '%s\n' '[Service]' 'Delegate=cpu memory pids' | sudo tee "$drop_in/90-self-managed-api-ci.conf" >/dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl restart "$manager"
+          test "$(sudo systemctl show "$manager" --property=Delegate --value)" = yes
+          delegated="$(sudo systemctl show "$manager" --property=DelegateControllers --value)"
+          for controller in cpu memory pids; do
+            case " $delegated " in
+              *" $controller "*) ;;
+              *) printf 'Required controller not delegated: %s\n' "$controller" >&2; exit 1 ;;
+            esac
+          done
       - run: node tooling/service-native-smoke.mjs --user
 
   acceptance:

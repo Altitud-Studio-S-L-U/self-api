@@ -56,7 +56,6 @@ try {
     packageManager: manifest.packageManager,
     dependencies: { 'self-managed-api': 'file:../self-managed-api.tgz' },
     devDependencies: {
-      typescript: manifest.devDependencies.typescript,
       '@types/node': manifest.devDependencies['@types/node'],
     },
   }));
@@ -138,7 +137,8 @@ void reviewedRecipe;
     },
     files: ['use-types.ts'],
   }));
-  run([pnpmPath, 'exec', 'tsc', '--project', 'tsconfig.json'], consumer);
+  // Reuse the pinned compiler without re-resolving its foreign-platform optional binaries offline.
+  run([join(root, 'node_modules', 'typescript', 'bin', 'tsc'), '--project', join(consumer, 'tsconfig.json')], consumer);
   const runtime = run([
     join(consumer, 'use-sdk.mjs'),
     join(root, 'work', 'tools', 'oasdiff', process.platform === 'win32' ? 'oasdiff.exe' : 'oasdiff'),
